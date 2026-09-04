@@ -38,6 +38,14 @@ export interface EngineConfig {
    * advances by exactly this many seconds regardless of wall time.
    */
   fixedFrameDelta: number | null;
+  /**
+   * Compile every shader a scene's first frame needs before `loadScene`
+   * resolves (asynchronously, in parallel, behind `loading` events) instead of
+   * letting three compile them synchronously on that frame, which stalls the
+   * GPU process for seconds on a dense scene. Off is for measuring the stall
+   * (docs/performance/cold-start.md); URL `warmup=0`.
+   */
+  shaderWarmUp: boolean;
   logLevel: LogLevel;
 }
 
@@ -55,12 +63,13 @@ export const DEFAULT_CONFIG: Omit<EngineConfig, 'container'> = {
   entityCapacity: 10_000,
   seed: 1,
   fixedFrameDelta: null,
+  shaderWarmUp: true,
   logLevel: 'info',
 };
 
 /**
  * Parse the subset of config that may be overridden from the URL.
- * Recognised: `backend`, `preset`, `scale`, `dpr`, `seed`, `overlay`, `inspector`, `fixedclock`, `log`.
+ * Recognised: `backend`, `preset`, `scale`, `dpr`, `seed`, `overlay`, `inspector`, `fixedclock`, `warmup`, `log`.
  * Unknown or malformed values are ignored, never thrown on.
  */
 export function configFromSearch(search: string): Partial<Omit<EngineConfig, 'container'>> {
@@ -95,6 +104,10 @@ export function configFromSearch(search: string): Partial<Omit<EngineConfig, 'co
     const hz = parseFloat(fixed);
     out.fixedFrameDelta = Number.isFinite(hz) && hz > 0 ? 1 / hz : 1 / 60;
   }
+
+  const warmup = params.get('warmup');
+  if (warmup === '0' || warmup === 'false') out.shaderWarmUp = false;
+  if (warmup === '1' || warmup === 'true') out.shaderWarmUp = true;
 
   const log = params.get('log');
   if (log === 'debug' || log === 'info' || log === 'warn' || log === 'error' || log === 'silent') out.logLevel = log;

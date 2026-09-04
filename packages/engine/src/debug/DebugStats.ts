@@ -21,6 +21,9 @@ export interface DebugSnapshot {
   sceneHeight: number;
   /** Post effects actually rendering, in graph order. */
   postEffects: string[];
+  /** GPU pipelines / shader programs created so far (each new one is a compile; see docs/performance/cold-start.md). */
+  pipelines: number;
+  programs: number;
   drawCalls: number;
   triangles: number;
   fixedSteps: number;
@@ -133,6 +136,8 @@ export class DebugStats implements Disposable {
       sceneWidth: source.render.sceneWidth,
       sceneHeight: source.render.sceneHeight,
       postEffects: source.render.postEffects,
+      pipelines: source.render.pipelines,
+      programs: source.render.programs,
       drawCalls: source.render.drawCalls,
       triangles: source.render.triangles,
       fixedSteps: source.fixedSteps,
@@ -168,6 +173,7 @@ export class DebugStats implements Disposable {
     this.set('Fixed Steps', String(s.fixedSteps));
     this.set('Preset', s.preset);
     this.set('Post', s.postEffects.length ? s.postEffects.join(' ') : 'none');
+    this.set('Pipelines', `${s.pipelines} (${s.programs} programs)`);
   }
 
   private set(key: string, value: string): void {

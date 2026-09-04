@@ -23,7 +23,7 @@ pnpm install
 pnpm dev                     # benchmark app on http://localhost:5173
 ```
 
-URL parameters: `scene=bootstrap`, `backend=webgpu|webgl|auto`, `preset=low|medium|high|ultra|cinematic`, `scale=0.5..1`, `dpr=1`, `seed=1`, `overlay=0`, `inspector=1` (engine inspector on three's Inspector addon; F2 toggles it at runtime, never shown when `overlay=0`), `fixedclock=60`, `paused=1`, `size=1280x720`, `log=debug`.
+URL parameters: `scene=bootstrap`, `backend=webgpu|webgl|auto`, `preset=low|medium|high|ultra|cinematic`, `scale=0.5..1`, `dpr=1`, `seed=1`, `overlay=0`, `inspector=1` (engine inspector on three's Inspector addon; F2 toggles it at runtime, never shown when `overlay=0`), `fixedclock=60`, `paused=1`, `size=1280x720`, `warmup=0` (skip the shader warm-up and take three's synchronous first-frame compile instead; see `docs/performance/cold-start.md`), `log=debug`.
 
 ## Verify
 

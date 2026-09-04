@@ -25,8 +25,22 @@ import { World } from '../world/World';
 
 export type EngineState = 'created' | 'initializing' | 'ready' | 'running' | 'disposed';
 
+/**
+ * `loading` phases. `scene` is the scene's own `create()` (assets, geometry;
+ * indeterminate, `total` is 0). `compile` is the shader warm-up that follows:
+ * `done / total` GPU pipelines ready. `sceneLoaded` follows the last one.
+ */
+export type LoadingPhase = 'scene' | 'compile';
+
+export interface LoadingProgress {
+  phase: LoadingPhase;
+  done: number;
+  total: number;
+}
+
 export interface EngineEvents extends Record<string, unknown> {
   initialized: { backend: string };
+  loading: LoadingProgress;
   sceneLoaded: { name: string };
   resize: { width: number; height: number };
   frame: { frame: number; dt: number };
@@ -255,8 +269,16 @@ export class Engine implements Disposable {
     this.events.emit('initialized', { backend: this.rendererInstance.capabilities.backend });
   }
 
+  /**
+   * Build a scene, compile every shader its first frame needs, render that
+   * frame, then resolve. `loading` events report the two phases; nothing is
+   * presented with half its materials missing. On a running engine the loop
+   * keeps rendering the previous scene meanwhile and the new one compiles
+   * synchronously on its first frame, as three does by default.
+   */
   async loadScene(definition: SceneDefinition): Promise<SceneInstance> {
     const renderer = this.renderer;
+    this.events.emit('loading', { phase: 'scene', done: 0, total: 0 });
     const instance = await this.world.load(definition, {
       config: this.config,
       quality: this.quality,
@@ -272,13 +294,37 @@ export class Engine implements Disposable {
       random: this.random.fork(),
       logger: new Logger(`scene:${definition.name}`),
     });
-    // Warm-up frame: the first render of a scene compiles every material and
-    // pass pipeline (several seconds on a dense scene, during which rAF stalls).
-    // Taking that hit here, before the caller starts the loop, keeps the stall
-    // out of frame pacing and out of the dynamic-resolution controller's view.
-    if (this.stateValue === 'ready') this.step();
+    // Shader warm-up, then the first frame. The first render of a scene creates
+    // every material × pass pipeline; created synchronously that is a multi-
+    // second stall of the GPU process (rAF stops) on a dense scene. The warm-up
+    // creates them asynchronously and in parallel, without drawing, and waits;
+    // the frame that follows then renders in one go, before the caller starts
+    // the loop, so neither frame pacing nor the dynamic-resolution controller
+    // ever sees a compile (docs/performance/cold-start.md).
+    // A warm-up failure is a scene failure: it is the scene's first render, and a
+    // throw mid-render leaves three's render state unusable, so there is no
+    // synchronous fallback to fall back to.
+    if (this.stateValue === 'ready') {
+      if (this.config.shaderWarmUp) {
+        await renderer.warmUp(instance.scene, instance.camera, (done, total) => this.events.emit('loading', { phase: 'compile', done, total }));
+      }
+      if (this.stateValue === 'ready') this.step();
+    }
     this.events.emit('sceneLoaded', { name: definition.name });
     return instance;
+  }
+
+  /**
+   * Resolves once the next frame's GPU work has completed: on a running loop
+   * that is the next `frame` event plus the queue drain, on a stopped engine
+   * the drain of whatever `step()` submitted. This is when a frame is on
+   * screen, so it is what "ready" should wait for.
+   */
+  async whenPresented(): Promise<void> {
+    if (this.stateValue === 'running') {
+      await new Promise<void>((resolve) => this.events.once('frame', () => resolve()));
+    }
+    if (this.rendererInstance) await this.rendererInstance.waitForGpu();
   }
 
   start(): void {

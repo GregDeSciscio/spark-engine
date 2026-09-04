@@ -7,6 +7,7 @@ import {
   max,
   metalness,
   mrt,
+  nodeObject,
   normalView,
   output,
   packNormalToRGB,
@@ -39,6 +40,37 @@ import { Logger } from '../core/Logger';
 import type { QualitySettings } from './QualityPresets';
 import type { ActiveBackend } from './Renderer';
 import { VolumeFogNode, type VolumeFogSettings } from './VolumeFog';
+import { PREPASS_NAME, SCENE_PASS_NAME } from './WarmUp';
+
+/**
+ * A scene pass rendered with `renderer.lighting` off. Materials built for it
+ * get no light, shadow or environment code (NodeMaterial skips all three when
+ * lighting is disabled), so the AO prepass, which only writes depth and the
+ * material's final normal, compiles a few-KB shader per material instead of
+ * a copy of the full PBR shader with every light unrolled. Its render list
+ * key includes the lighting flag, so it never shares (or invalidates) a scene
+ * pass program. Shadow maps are rendered by the scene pass instead, which is
+ * what happens in any layout without a prepass.
+ */
+class UnlitPassNode extends THREE.PassNode {
+  override updateBefore(frame: THREE.NodeFrame): boolean | undefined {
+    const lighting = frame.renderer?.lighting;
+    if (!lighting) return super.updateBefore(frame);
+    const previous = lighting.enabled;
+    lighting.enabled = false;
+    try {
+      return super.updateBefore(frame);
+    } finally {
+      lighting.enabled = previous;
+    }
+  }
+}
+
+/** The one temporal stage with history: reset it after a no-draw warm-up (see `prepareFirstFrame`). */
+interface TemporalNode {
+  setSize(width: number, height: number): void;
+  _jitterIndex: number;
+}
 
 /**
  * Post stages the pipeline knows about, in graph order. Every one is
@@ -230,6 +262,7 @@ export class RenderPipeline implements Disposable {
   private activeEffects: PostEffectName[] = [];
   private aoActive = false;
   private traaActive = false;
+  private traaNode: TemporalNode | null = null;
   private toneMapping: THREE.ToneMapping = THREE.ACESFilmicToneMapping;
   private outputColorSpace: string = THREE.SRGBColorSpace;
 
@@ -530,6 +563,22 @@ export class RenderPipeline implements Disposable {
     };
   }
 
+  /**
+   * After a no-draw warm-up (`SparkRenderer.warmUp`): put the temporal stages
+   * back to their never-rendered state so the first real frame is identical to
+   * a cold one. TRAA copies the beauty buffer into its history when its size
+   * changes, so a 1×1 history restarts it on the next frame with the real
+   * image rather than the cleared warm-up target; its jitter sequence restarts
+   * too, and the camera loses the warm-up's last view offset.
+   */
+  prepareFirstFrame(): void {
+    if (this.traaNode) {
+      this.traaNode.setSize(1, 1);
+      this.traaNode._jitterIndex = 0;
+    }
+    (this.layout?.camera as (THREE.Camera & { clearViewOffset?: () => void }) | undefined)?.clearViewOffset?.();
+  }
+
   render(scene: THREE.Scene, camera: THREE.Camera): void {
     if (this.disposed) return;
     const layout = this.ensureLayout(scene, camera);
@@ -579,7 +628,7 @@ export class RenderPipeline implements Disposable {
     const samples = msaa ? q.msaaSamples : 0;
 
     const scenePass = pass(scene, camera, { samples });
-    scenePass.name = 'Scene';
+    scenePass.name = SCENE_PASS_NAME;
     scenePass.setResolutionScale(this.renderScale);
 
     let velocityProjection: THREE.Matrix4 | null = null;
@@ -612,8 +661,8 @@ export class RenderPipeline implements Disposable {
       velocity.setProjectionMatrix(velocityProjection);
     }
     if (this.backend === 'webgpu' && !msaa && q.ambientOcclusion !== 'off') {
-      prePass = pass(scene, camera);
-      prePass.name = 'Prepass';
+      prePass = nodeObject(new UnlitPassNode(THREE.PassNode.COLOR, scene, camera));
+      prePass.name = PREPASS_NAME;
       prePass.transparent = false;
       prePass.setResolutionScale(this.renderScale);
       prePass.setMRT(mrt({ output: packNormalToRGB(normalView) }));
@@ -749,6 +798,7 @@ export class RenderPipeline implements Disposable {
       // the scene materials' velocity uniform is always this object (r185).
       (traaNode as unknown as { _originalProjectionMatrix: THREE.Matrix4 })._originalProjectionMatrix = layout.velocityProjection;
       this.nodes.push(traaNode);
+      this.traaNode = traaNode as unknown as TemporalNode;
       // TRAANode exposes its resolve target as a texture node (not in the typings).
       colorTexture = (traaNode as unknown as { getTextureNode(): THREE.TextureNode }).getTextureNode();
       color = traaNode;
@@ -895,6 +945,7 @@ export class RenderPipeline implements Disposable {
     }
     this.nodes = [];
     this.activeEffects = [];
+    this.traaNode = null;
   }
 
   dispose(): void {

@@ -15,6 +15,14 @@ function showError(message: string): void {
   el.textContent = message;
 }
 
+/** The `#loading` overlay: shown from boot until the first frame has presented, text from the engine's `loading` events. */
+function setLoading(text: string | null): void {
+  const el = document.getElementById('loading');
+  if (!el) return;
+  el.hidden = text === null;
+  if (text !== null) el.textContent = text;
+}
+
 async function main(): Promise<void> {
   const params = new URLSearchParams(location.search);
   const sceneName = params.get('scene') ?? 'bootstrap';
@@ -25,6 +33,11 @@ async function main(): Promise<void> {
 
   const engine = new Engine({ container, ...ENGINE_HINTS[sceneName], ...configFromSearch(location.search) });
   const api = exposeForCapture(engine, sceneName);
+  setLoading('Starting renderer…');
+  engine.events.on('loading', ({ phase, done, total }) => {
+    if (phase === 'scene') setLoading(`Loading ${sceneName}…`);
+    else setLoading(total > 0 ? `Compiling shaders ${done} / ${total}` : 'Compiling shaders…');
+  });
 
   try {
     const definition = getScene(sceneName);
@@ -37,10 +50,14 @@ async function main(): Promise<void> {
     } else {
       engine.start();
     }
+    // Ready means a real frame is on screen, not that the loop was started.
+    await engine.whenPresented();
+    setLoading(null);
     api.ready = true;
   } catch (error) {
     const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
     api.error = message;
+    setLoading(null);
     showError(message);
     throw error;
   }

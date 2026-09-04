@@ -5,8 +5,30 @@ import { Logger } from '../core/Logger';
 import { DynamicResolutionController } from './DynamicResolution';
 import type { QualitySettings } from './QualityPresets';
 import { RenderPipeline } from './RenderPipeline';
+import { classifyRenderObject, createWarmUpCounts, formatWarmUp, totalWarmUpCount, trackCompilation, type RenderObjectLike, type WarmUpResult } from './WarmUp';
 
 export type ActiveBackend = 'webgpu' | 'webgl';
+
+/**
+ * Graph renders per warm-up. The second pass picks up anything the first one
+ * composed lazily (godrays wait for the light's shadow map to exist), so no
+ * stage is left to compile synchronously on the first real frame.
+ */
+const WARM_UP_GRAPH_PASSES = 2;
+
+/** The two backend entry points the warm-up shadows for its duration (three calls them through the instance). */
+interface WarmUpBackend {
+  createRenderPipeline(renderObject: RenderObjectLike, promises: Promise<void>[] | null): void;
+  draw(renderObject: unknown, info: unknown): void;
+  device?: GPUDevice;
+}
+
+interface ThreeInternals {
+  backend: WarmUpBackend;
+  info: { reset(): void };
+  _nodes: { nodeFrame: { lastTime?: number } };
+  _pipelines?: { caches: Map<string, unknown>; programs: Record<string, Map<string, unknown>> };
+}
 
 export interface RendererCapabilities {
   readonly backend: ActiveBackend;
@@ -52,6 +74,10 @@ export interface RenderFrameStats {
   renderScale: number;
   /** Post effects actually rendering this frame, in graph order. */
   postEffects: string[];
+  /** GPU render + compute pipelines three has created so far (one per material × pass variant; each is a shader compile). */
+  pipelines: number;
+  /** Distinct shader programs behind those pipelines (vertex + fragment + compute stages). */
+  programs: number;
 }
 
 export class RendererInitError extends Error {
@@ -358,6 +384,60 @@ export class SparkRenderer implements Disposable {
   }
 
   /**
+   * Compile every GPU pipeline the first frame of `scene` needs, without
+   * drawing anything, and resolve once they are all ready and the GPU queue
+   * is idle. Call once after a scene is built and before its first real frame.
+   *
+   * Two backend entry points are shadowed while the graph renders:
+   * `createRenderPipeline` is given a promise list, which makes three use the
+   * asynchronous pipeline API (WebGPU `createRenderPipelineAsync`, WebGL
+   * `KHR_parallel_shader_compile`), so compiles run in parallel on driver
+   * worker threads instead of serialising on the GPU process; `draw` is a
+   * no-op, so the passes clear their targets but leave no partial image
+   * behind. The node frame id is not advanced: FRAME-gated nodes run again on
+   * the first real frame, and frame-indexed sequences (GTAO's temporal
+   * rotation) are unchanged. `prepareFirstFrame` then resets the temporal
+   * stages, so the first real frame is pixel-identical to a cold first frame.
+   *
+   * `onProgress(done, total)` fires once at `0 / total` and once per compile.
+   */
+  async warmUp(scene: THREE.Scene, camera: THREE.Camera, onProgress?: (done: number, total: number) => void): Promise<WarmUpResult> {
+    const start = performance.now();
+    const three = this.three as unknown as ThreeInternals;
+    const backend = three.backend;
+    const proto = Object.getPrototypeOf(backend) as WarmUpBackend;
+    const promises: Promise<void>[] = [];
+    const byPass = createWarmUpCounts();
+    backend.createRenderPipeline = function (this: WarmUpBackend, renderObject, pending) {
+      byPass[classifyRenderObject(renderObject)]++;
+      proto.createRenderPipeline.call(this, renderObject, pending ?? promises);
+    };
+    backend.draw = () => {};
+    try {
+      three.info.reset();
+      for (let pass = 0; pass < WARM_UP_GRAPH_PASSES; pass++) this.pipeline.render(scene, camera);
+    } finally {
+      delete (backend as Partial<WarmUpBackend>).createRenderPipeline;
+      delete (backend as Partial<WarmUpBackend>).draw;
+    }
+    await trackCompilation(promises, onProgress);
+    await this.waitForGpu();
+    this.pipeline.prepareFirstFrame();
+    // TSL `time` accumulates wall-clock deltas between frames; the wait is not frame time.
+    three._nodes.nodeFrame.lastTime = performance.now();
+    const result: WarmUpResult = { pipelines: totalWarmUpCount(byPass), byPass, ms: performance.now() - start };
+    this.log.info(formatWarmUp(result));
+    return result;
+  }
+
+  /** Resolves when every GPU command submitted so far has completed (the last frame is presented). Immediate on WebGL2. */
+  async waitForGpu(): Promise<void> {
+    if (this.disposed) return;
+    const device = (this.three as unknown as ThreeInternals).backend.device;
+    if (device) await device.queue.onSubmittedWorkDone();
+  }
+
+  /**
    * What three's internal animation loop does before each frame
    * (src/renderers/common/Animation.js): reset per-frame counters, advance the
    * node frame id, publish it on `info`. The engine owns the loop, so it owns
@@ -397,7 +477,12 @@ export class SparkRenderer implements Disposable {
     const pipeline = this.pipeline.stats();
     const drawingWidth = this.three.domElement.width;
     const drawingHeight = this.three.domElement.height;
+    const pipelines = (this.three as unknown as ThreeInternals)._pipelines;
+    let programs = 0;
+    if (pipelines) for (const stage of Object.values(pipelines.programs)) programs += stage.size;
     return {
+      pipelines: pipelines?.caches.size ?? 0,
+      programs,
       drawCalls: info.drawCalls,
       triangles: info.triangles,
       points: info.points,

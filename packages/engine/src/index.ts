@@ -1,6 +1,6 @@
 // @spark/engine public API. Apps import from here and nowhere deeper.
 
-export { Engine, type EngineEvents, type EngineInitOptions, type EngineState } from './core/Engine';
+export { Engine, type EngineEvents, type EngineInitOptions, type EngineState, type LoadingPhase, type LoadingProgress } from './core/Engine';
 export {
   configFromSearch,
   resolveConfig,
@@ -27,6 +27,8 @@ export {
   type RenderFrameStats,
 } from './rendering/Renderer';
 export { QUALITY_SETTINGS, getQualitySettings, type QualitySettings } from './rendering/QualityPresets';
+export { classifyRenderObject, formatWarmUp, trackCompilation, type WarmUpCounts, type WarmUpPass, type WarmUpResult } from './rendering/WarmUp';
+export { materialParam, type MaterialParamType } from './rendering/MaterialParams';
 
 export * from './ecs/index';
 

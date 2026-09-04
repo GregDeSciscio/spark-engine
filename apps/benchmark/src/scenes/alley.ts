@@ -9,6 +9,7 @@ import {
   length,
   materialColor,
   materialOpacity,
+  materialRoughness,
   max,
   min,
   mix,
@@ -37,6 +38,7 @@ import {
   applySceneEnvironment,
   createHeightFog,
   damp,
+  materialParam,
   prepareDecalMaterial,
   type AnimationGraphDef,
   type CameraRigPreset,
@@ -322,14 +324,21 @@ export const alleyScene: SceneDefinition = {
       for (const g of geometries) g.dispose();
       for (const m of materials) m.dispose();
     });
+    // Material graphs are shared, never rebuilt per material: three keys a shader
+    // program on the node *instances* of the graph, so two materials only share a
+    // compiled pipeline when they reference the same nodes and differ through
+    // material properties (`materialColor`, `materialRoughness`, `userData`
+    // references). Every per-material constant baked into a fresh graph is one
+    // more 0.2–0.8 s shader compile per pass (docs/performance/cold-start.md).
+    const wetSheen = createWetSheenGraph();
     /** A lit prop material with rain sheen: glossy on upward faces and in the splash zone near the ground. */
     const wetStandard = (hex: number, roughnessValue: number, metalnessValue: number): THREE.MeshStandardNodeMaterial => {
       const m = mat(new THREE.MeshStandardNodeMaterial());
       m.color.setHex(hex);
+      m.roughness = roughnessValue;
       m.metalness = metalnessValue;
-      const wet = saturate(saturate(normalWorld.y).mul(0.8).add(smoothstep(1.3, 0.0, positionWorld.y).mul(0.35)));
-      m.roughnessNode = mix(float(roughnessValue), float(0.13), wet);
-      m.colorNode = mix(color(hex), color(hex).mul(0.6), wet.mul(0.7));
+      m.roughnessNode = wetSheen.roughness;
+      m.colorNode = wetSheen.color;
       return m;
     };
     /**
@@ -342,21 +351,19 @@ export const alleyScene: SceneDefinition = {
      * physical: the clear-coat variant compiled for ~18 s on D3D11 and stalled
      * the first frames; standard with a low wet roughness reads the same here.
      */
+    const wetSkinGraph = createWetSkinGraph();
     const wetSkin = (source: THREE.MeshStandardMaterial, height: number): THREE.MeshStandardNodeMaterial => {
       const m = mat(new THREE.MeshStandardNodeMaterial());
       m.name = `${source.name}_wet`;
       // The asset ships a light showroom grey; under the 3400 cd key spot that clips to white, so the hero wears the alley palette: dark slate with near-black trim.
-      const base = source.name.includes('accent') ? 0x0c0d12 : 0x232838;
-      const up = saturate(normalWorld.y);
-      const streakNoise = mx_noise_float(vec3(positionGeometry.x.mul(14 / height), positionGeometry.y.mul(2.4 / height), positionGeometry.z.mul(14 / height)));
-      const drips = smoothstep(0.25, 0.8, streakNoise.mul(0.5).add(0.5));
-      const splash = smoothstep(0.5, 0.0, positionWorld.y);
-      const wet = saturate(up.mul(0.7).add(drips.mul(0.5)).add(splash.mul(0.45)));
-      m.colorNode = mix(color(base), color(base).mul(0.5), wet.mul(0.8));
-      m.roughnessNode = mix(float(source.roughness), float(0.1), wet);
-      m.metalnessNode = float(source.metalness);
-      const rim = saturate(normalView.z).oneMinus().pow(3.0);
-      m.emissiveNode = color(0x4a5f9e).mul(rim).mul(0.3);
+      m.color.setHex(source.name.includes('accent') ? 0x0c0d12 : 0x232838);
+      m.roughness = source.roughness;
+      m.metalness = source.metalness;
+      // Drip streak frequency in bind-pose units, per mesh height (read by the shared graph).
+      m.userData.streakScale = new THREE.Vector3(14 / height, 2.4 / height, 14 / height);
+      m.colorNode = wetSkinGraph.color;
+      m.roughnessNode = wetSkinGraph.roughness;
+      m.emissiveNode = wetSkinGraph.emissive;
       return m;
     };
 
@@ -748,12 +755,21 @@ export const alleyScene: SceneDefinition = {
     const decals = new Decals(scene, { dynamicCapacity: 12 });
     bag.add(decals);
     const up = new THREE.Vector3(0, 1, 0);
+    // One mask graph per decal family; colour, roughness and the mask parameters are material properties.
+    const blobMask = decalBlobMask();
+    const blobDecal = (hex: number, roughnessValue: number, edge: number, seed: number, opacity = 1): THREE.MeshStandardNodeMaterial => {
+      const m = mat(prepareDecalMaterial(new THREE.MeshStandardNodeMaterial()));
+      m.color.setHex(hex);
+      m.roughness = roughnessValue;
+      m.metalness = 0;
+      m.opacity = opacity;
+      m.userData.edge = edge;
+      m.userData.seed = seed;
+      m.opacityNode = blobMask;
+      return m;
+    };
     {
-      const oilMat = mat(prepareDecalMaterial(new THREE.MeshStandardNodeMaterial()));
-      oilMat.colorNode = color(0x07080b);
-      oilMat.roughnessNode = float(0.04);
-      oilMat.metalnessNode = float(0.0);
-      oilMat.opacityNode = decalBlobMask(0.55, 3.1);
+      const oilMat = blobDecal(0x07080b, 0.04, 0.55, 3.1);
       for (const [x, z, size, rot] of [
         [1.6, -1.5, 3.2, 0.4],
         [-2.2, -12.5, 2.6, 2.1],
@@ -761,11 +777,7 @@ export const alleyScene: SceneDefinition = {
       ] as const) {
         decals.addDecal({ position: new THREE.Vector3(x, 0, z), normal: up, size: new THREE.Vector3(size, size * 0.7, 0.4), rotation: rot, target: ground, material: oilMat });
       }
-      const grimeMat = mat(prepareDecalMaterial(new THREE.MeshStandardNodeMaterial()));
-      grimeMat.colorNode = color(0x141210);
-      grimeMat.roughnessNode = float(0.95);
-      grimeMat.metalnessNode = float(0.0);
-      grimeMat.opacityNode = decalBlobMask(0.4, 5.3).mul(0.85);
+      const grimeMat = blobDecal(0x141210, 0.95, 0.4, 5.3, 0.85);
       for (let i = 0; i < 7; i++) {
         const side = random.bool() ? -1 : 1;
         decals.addDecal({
@@ -779,9 +791,9 @@ export const alleyScene: SceneDefinition = {
       }
       // Damp streaks climbing the walls from the kerb.
       const dampMat = mat(prepareDecalMaterial(new THREE.MeshStandardNodeMaterial()));
-      dampMat.colorNode = color(0x0c0d10);
-      dampMat.roughnessNode = float(0.3);
-      dampMat.metalnessNode = float(0.0);
+      dampMat.color.setHex(0x0c0d10);
+      dampMat.roughness = 0.3;
+      dampMat.metalness = 0;
       dampMat.opacityNode = decalStreakMask();
       for (let i = 0; i < 6; i++) {
         const side = i % 2 === 0 ? -1 : 1;
@@ -802,15 +814,21 @@ export const alleyScene: SceneDefinition = {
         [0xf2c94c, 0x1b1b1b],
         [0x2b2b30, 0xff2bd6],
       ];
+      const posterArt = posterColor();
+      const tornMask = decalTornMask();
       for (let i = 0; i < 6; i++) {
         const side = random.bool() ? -1 : 1;
         const wall = walls[side === -1 ? 0 : 1] as THREE.Mesh;
         const [paper, accent] = random.pick(posterPalette);
         const posterMat = mat(prepareDecalMaterial(new THREE.MeshStandardNodeMaterial()));
-        posterMat.colorNode = posterColor(paper, accent, random.range(2, 6));
-        posterMat.roughnessNode = float(0.55);
-        posterMat.metalnessNode = float(0.0);
-        posterMat.opacityNode = decalTornMask(random.range(0, 100));
+        posterMat.color.setHex(paper);
+        posterMat.roughness = 0.55;
+        posterMat.metalness = 0;
+        posterMat.userData.accent = new THREE.Color(accent);
+        posterMat.userData.stripes = random.range(2, 6);
+        posterMat.userData.seed = random.range(0, 100);
+        posterMat.colorNode = posterArt;
+        posterMat.opacityNode = tornMask;
         decals.addDecal({
           position: new THREE.Vector3(side * ALLEY_HALF_WIDTH, random.range(1.6, 2.4), random.range(-28, 9)),
           normal: new THREE.Vector3(-side, 0, 0),
@@ -822,11 +840,7 @@ export const alleyScene: SceneDefinition = {
       }
     }
     // Impact marks from the dynamic pool: one per "thump" (see update()).
-    const impactMat = mat(prepareDecalMaterial(new THREE.MeshStandardNodeMaterial()));
-    impactMat.colorNode = color(0x050505);
-    impactMat.roughnessNode = float(0.85);
-    impactMat.metalnessNode = float(0.0);
-    impactMat.opacityNode = decalBlobMask(0.7, 9.1);
+    const impactMat = blobDecal(0x050505, 0.85, 0.7, 9.1);
     const impactRandom = random.fork();
 
     // ---- particles: GPU rain / steam / splashes, CPU rain as the compat fallback ----
@@ -1022,6 +1036,38 @@ export const alleyScene: SceneDefinition = {
 };
 
 // ---- procedural materials --------------------------------------------------------
+//
+// Graphs that several materials share read their per-material values through
+// material references (`materialColor`, `materialRoughness`) and `materialParam`
+// (`userData.*`), so the whole family compiles to one program per pass. Anything
+// baked in as a constant would split it (see the note in `create()`).
+
+/** Rain sheen for lit props: glossy on upward faces and in the splash zone near the ground; base colour / roughness from the material. */
+function createWetSheenGraph(): { color: THREE.Node<'vec3'>; roughness: THREE.Node<'float'> } {
+  const wet = saturate(saturate(normalWorld.y).mul(0.8).add(smoothstep(1.3, 0.0, positionWorld.y).mul(0.35)));
+  const base = vec3(materialColor);
+  return {
+    roughness: mix(materialRoughness, float(0.13), wet) as unknown as THREE.Node<'float'>,
+    color: mix(base, base.mul(0.6), wet.mul(0.7)) as unknown as THREE.Node<'vec3'>,
+  };
+}
+
+/** The hero's wet skin (see `wetSkin` in `create()`); drip streak frequency from `userData.streakScale`. */
+function createWetSkinGraph(): { color: THREE.Node<'vec3'>; roughness: THREE.Node<'float'>; emissive: THREE.Node<'vec3'> } {
+  const up = saturate(normalWorld.y);
+  const streakScale = materialParam('streakScale', 'vec3');
+  const streakNoise = mx_noise_float(positionGeometry.mul(streakScale));
+  const drips = smoothstep(0.25, 0.8, streakNoise.mul(0.5).add(0.5));
+  const splash = smoothstep(0.5, 0.0, positionWorld.y);
+  const wet = saturate(up.mul(0.7).add(drips.mul(0.5)).add(splash.mul(0.45)));
+  const base = vec3(materialColor);
+  const rim = saturate(normalView.z).oneMinus().pow(3.0);
+  return {
+    color: mix(base, base.mul(0.5), wet.mul(0.8)) as unknown as THREE.Node<'vec3'>,
+    roughness: mix(materialRoughness, float(0.1), wet) as unknown as THREE.Node<'float'>,
+    emissive: color(0x4a5f9e).mul(rim).mul(0.3) as unknown as THREE.Node<'vec3'>,
+  };
+}
 
 /**
  * Brick facade. Bricks tile along world Z (the alley axis) and Y with a
@@ -1120,12 +1166,12 @@ function windowInterior(): THREE.Node<'vec3'> {
   return vec3(materialColor).mul(glow.mul(slats).mul(mullion));
 }
 
-/** Soft blob mask for a decal quad: radial falloff eaten by noise so the edge is ragged. */
-function decalBlobMask(edge: number, seed: number): THREE.Node<'float'> {
+/** Soft blob mask for a decal quad: radial falloff eaten by noise so the edge is ragged. `userData.edge` / `userData.seed` per material. */
+function decalBlobMask(): THREE.Node<'float'> {
   const centred = uv().sub(0.5).mul(2.0);
   const radial = length(centred);
-  const n = mx_fractal_noise_float(vec3(uv().mul(4.0), seed), 3, 2.0, 0.5, 0.5).mul(0.5);
-  return smoothstep(1.0, edge, radial.add(n)).mul(materialOpacity);
+  const n = mx_fractal_noise_float(vec3(uv().mul(4.0), materialParam('seed', 'float')), 3, 2.0, 0.5, 0.5).mul(0.5);
+  return smoothstep(1.0, materialParam('edge', 'float'), radial.add(n)).mul(materialOpacity);
 }
 
 /** Vertical damp streaks rising from the bottom edge of the decal. */
@@ -1137,22 +1183,23 @@ function decalStreakMask(): THREE.Node<'float'> {
   return rise.mul(sideFade).mul(0.8).mul(materialOpacity);
 }
 
-/** Torn-paper mask: the rectangle minus a noisy bite along the edges. */
-function decalTornMask(seed: number): THREE.Node<'float'> {
+/** Torn-paper mask: the rectangle minus a noisy bite along the edges (`userData.seed`). */
+function decalTornMask(): THREE.Node<'float'> {
   const u = uv();
   const edgeDist = min(min(u.x, u.x.oneMinus()), min(u.y, u.y.oneMinus()));
-  const bite = mx_fractal_noise_float(vec3(u.mul(6.0), seed), 2, 2.0, 0.5, 0.5).mul(0.14);
+  const bite = mx_fractal_noise_float(vec3(u.mul(6.0), materialParam('seed', 'float')), 2, 2.0, 0.5, 0.5).mul(0.14);
   return smoothstep(0.0, 0.06, edgeDist.sub(bite).add(0.03)).mul(materialOpacity);
 }
 
-/** Poster artwork: paper with a band of accent stripes and a fake headline block. */
-function posterColor(paper: number, accent: number, stripes: number): THREE.Node<'vec3'> {
+/** Poster artwork: paper (material colour) with a band of `userData.accent` stripes (`userData.stripes` of them) and a fake headline block. */
+function posterColor(): THREE.Node<'vec3'> {
   const u = uv();
   const band = smoothstep(0.55, 0.57, u.y).mul(smoothstep(0.92, 0.9, u.y));
-  const stripe = fract(u.x.mul(stripes)).greaterThan(0.5).select(float(1.0), float(0.0));
+  const stripe = fract(u.x.mul(materialParam('stripes', 'float'))).greaterThan(0.5).select(float(1.0), float(0.0));
   const headline = smoothstep(0.18, 0.2, u.y).mul(smoothstep(0.32, 0.3, u.y)).mul(smoothstep(0.1, 0.12, u.x)).mul(smoothstep(0.9, 0.88, u.x));
   const wear = mx_noise_float(vec3(u.mul(7.0), 3.0)).mul(0.5).add(0.5);
-  const art = mix(color(paper), color(accent), max(band.mul(stripe), headline));
+  const accent = materialParam('accent', 'color');
+  const art = mix(vec3(materialColor), accent, max(band.mul(stripe), headline));
   return mix(art, art.mul(0.55), wear.mul(0.5)).mul(0.9);
 }
 
