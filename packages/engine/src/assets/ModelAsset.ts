@@ -30,6 +30,16 @@ export interface InstantiateOptions {
   name?: string | undefined;
 }
 
+/** Per-clip metadata: glTF animation extras survive the pipeline as `AnimationClip.userData`. */
+export interface ModelClipInfo {
+  readonly name: string;
+  readonly duration: number;
+  /** All extras on the glTF animation. */
+  readonly extras: Readonly<Record<string, unknown>>;
+  /** Only the `spark.*` keys, prefix stripped: `spark.events` → `events`, `spark.loop` → `loop`. */
+  readonly spark: Readonly<Record<string, unknown>>;
+}
+
 export interface ModelAssetInfo {
   readonly meshes: number;
   readonly triangles: number;
@@ -49,6 +59,8 @@ export class ModelAsset implements CachedAsset {
   readonly kind = 'model' as const;
   readonly template: THREE.Group;
   readonly animations: readonly THREE.AnimationClip[];
+  /** Name, duration and extras of every clip, in `animations` order. */
+  readonly clips: readonly ModelClipInfo[];
   /** Nodes that carry any glTF extras. */
   readonly nodes: readonly ModelNodeExtras[];
   /** Nodes with at least one `spark.*` extra. */
@@ -68,6 +80,10 @@ export class ModelAsset implements CachedAsset {
   ) {
     this.template = gltf.scene;
     this.animations = gltf.animations;
+    this.clips = gltf.animations.map((clip) => {
+      const extras = readExtras(clip as unknown as THREE.Object3D) ?? {};
+      return { name: clip.name, duration: clip.duration, extras, spark: sparkSubset(extras) };
+    });
 
     const nodes: ModelNodeExtras[] = [];
     const geometries = new Set<THREE.BufferGeometry>();
@@ -122,6 +138,11 @@ export class ModelAsset implements CachedAsset {
       animations: this.animations.length,
       skinned,
     };
+  }
+
+  /** A clip by name, or undefined. */
+  getClip(name: string): THREE.AnimationClip | undefined {
+    return this.animations.find((clip) => clip.name === name);
   }
 
   get isDisposed(): boolean {

@@ -1,5 +1,7 @@
 import type * as THREE from 'three/webgpu';
+import type { AnimationWorld } from '../animation/Animator';
 import type { AssetManager } from '../assets/AssetManager';
+import type { ParticleSystem } from '../vfx/ParticleSystem';
 import type { Disposable } from '../core/Disposable';
 import type { EngineConfig } from '../core/Config';
 import type { Logger } from '../core/Logger';
@@ -20,6 +22,10 @@ export interface SceneContext {
   readonly input: Input;
   /** Shared physics world (Rapier, fixed step). Scenes remove the bodies they add by destroying their entities. */
   readonly physics: PhysicsWorld;
+  /** Shared animation world (Milestone 6). Attach skinned instances to entities; detached when the entity is destroyed. */
+  readonly animation: AnimationWorld;
+  /** GPU particle emitters (Milestone 8). Check `vfx.available`; it is false on the WebGL2 tier. */
+  readonly vfx: ParticleSystem;
   /** Engine-owned asset cache. Scenes `release()` what they `load*()` in `dispose()`. */
   readonly assets: AssetManager;
   /** A fresh, seeded stream for this scene. Same seed → same scene. */

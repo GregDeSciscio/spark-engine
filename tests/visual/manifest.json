@@ -42,6 +42,18 @@
       "scene": "alley",
       "backend": "webgl",
       "preset": "low"
+    },
+    {
+      "scene": "vfx",
+      "backend": "webgpu",
+      "preset": "high",
+      "frames": 90
+    },
+    {
+      "scene": "animation",
+      "backend": "webgpu",
+      "preset": "high",
+      "frames": 90
     }
   ]
 }

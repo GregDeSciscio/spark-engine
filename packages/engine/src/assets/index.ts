@@ -24,5 +24,6 @@ export {
   materialTextures,
   type InstantiateOptions,
   type ModelAssetInfo,
+  type ModelClipInfo,
   type ModelNodeExtras,
 } from './ModelAsset';

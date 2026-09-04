@@ -23,6 +23,16 @@
       "scene": "alley",
       "backend": "webgpu",
       "preset": "high"
+    },
+    {
+      "scene": "vfx",
+      "backend": "webgpu",
+      "preset": "high"
+    },
+    {
+      "scene": "animation",
+      "backend": "webgpu",
+      "preset": "high"
     }
   ]
 }

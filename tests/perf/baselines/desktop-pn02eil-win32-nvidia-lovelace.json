@@ -1,43 +1,61 @@
 {
   "machineId": "desktop-pn02eil-win32-nvidia-lovelace",
-  "recordedAt": "2026-09-04T05:14:18.373Z",
+  "recordedAt": "2026-09-04T09:19:43.148Z",
   "cpu": "AMD Ryzen 7 3700X 8-Core Processor             ",
   "results": {
     "bootstrap-webgpu-high": {
-      "fps": 126.34238786161643,
-      "frameMs": 7.915000000596047,
-      "cpuMs": 1.683333326379458,
-      "renderMs": 1.6399999986092249,
-      "gpuMs": 1.6097279999999998,
+      "fps": 126.90355329629271,
+      "frameMs": 7.880000000198682,
+      "cpuMs": 1.6566666603088378,
+      "renderMs": 1.594999998807907,
+      "gpuMs": 1.5626239999999998,
       "drawCalls": 61,
       "triangles": 145593
     },
     "entities-webgpu-high": {
-      "fps": 126.15643398761924,
-      "frameMs": 7.92666666607062,
-      "cpuMs": 1.9766666650772096,
-      "renderMs": 1.5783333361148835,
-      "gpuMs": 1.038336,
+      "fps": 127.63241864404274,
+      "frameMs": 7.834999999403953,
+      "cpuMs": 2.0150000005960464,
+      "renderMs": 1.5933333357175192,
+      "gpuMs": 1.7254399999999996,
       "drawCalls": 31,
       "triangles": 88165
     },
     "physics-webgpu-high": {
-      "fps": 127.091717849968,
-      "frameMs": 7.868333333730698,
-      "cpuMs": 2.5933333367109297,
-      "renderMs": 1.6833333333333333,
-      "gpuMs": 1.5288319999999993,
+      "fps": 126.98412698412699,
+      "frameMs": 7.875,
+      "cpuMs": 2.36166666050752,
+      "renderMs": 1.5199999968210856,
+      "gpuMs": 1.482752,
       "drawCalls": 42,
       "triangles": 240857
     },
     "alley-webgpu-high": {
-      "fps": 126.05042016806722,
-      "frameMs": 7.933333333333334,
-      "cpuMs": 4.153333330154419,
-      "renderMs": 3.999999995032946,
-      "gpuMs": 1.64352,
+      "fps": 126.10340478876992,
+      "frameMs": 7.930000000198683,
+      "cpuMs": 4.003333339095116,
+      "renderMs": 3.8916666666666666,
+      "gpuMs": 1.6005119999999995,
       "drawCalls": 330,
       "triangles": 59135
+    },
+    "vfx-webgpu-high": {
+      "fps": 126.23606143171712,
+      "frameMs": 7.921666666865349,
+      "cpuMs": 3.0133333295583724,
+      "renderMs": 2.8799999982118605,
+      "gpuMs": 0.5621760000000002,
+      "drawCalls": 170,
+      "triangles": 417905
+    },
+    "animation-webgpu-high": {
+      "fps": 125.89173310322809,
+      "frameMs": 7.943333333730697,
+      "cpuMs": 6.03333332836628,
+      "renderMs": 5.380000003178915,
+      "gpuMs": 1.639424,
+      "drawCalls": 387,
+      "triangles": 37353
     }
   }
 }

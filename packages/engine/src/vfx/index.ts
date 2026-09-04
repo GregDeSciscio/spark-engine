@@ -1,0 +1,33 @@
+export {
+  ParticleSystem,
+  ParticleEmitter,
+  VFX_ORDER,
+  type EmitterHandle,
+  type ParticleStats,
+} from './ParticleSystem';
+export {
+  resolveEmitterDescriptor,
+  sampleCurve,
+  sampleColorCurve,
+  bakeCurve,
+  bakeColorCurve,
+  hash01,
+  particleHashBase,
+  particleRandom,
+  spawnCountForStep,
+  SpawnAccumulator,
+  LiveEstimator,
+  CURVE_SAMPLES,
+  MAX_EMITTER_CAPACITY,
+  SHAPE_CODE,
+  type ColorKey,
+  type CurveKey,
+  type EmitterShape,
+  type MeshRenderDescriptor,
+  type ParticleEmitterDescriptor,
+  type ParticleEmitterDescriptorInput,
+  type RenderDescriptor,
+  type ShapeKind,
+  type SpriteRenderDescriptor,
+} from './descriptor';
+export { PARTICLE_PRESETS, PARTICLE_PRESET_NAMES, isParticlePresetName, type ParticlePresetName } from './presets';

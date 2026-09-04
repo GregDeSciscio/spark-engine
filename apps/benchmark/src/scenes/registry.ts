@@ -4,6 +4,8 @@ import { entitiesScene } from './entities';
 import { alleyScene } from './alley';
 import { physicsScene } from './physics';
 import { assetsScene } from './assets';
+import { animationScene } from './animation';
+import { vfxScene } from './vfx';
 
 const scenes: Record<string, SceneDefinition> = {
   [bootstrapScene.name]: bootstrapScene,
@@ -11,6 +13,8 @@ const scenes: Record<string, SceneDefinition> = {
   [alleyScene.name]: alleyScene,
   [physicsScene.name]: physicsScene,
   [assetsScene.name]: assetsScene,
+  [animationScene.name]: animationScene,
+  [vfxScene.name]: vfxScene,
 };
 
 export const SCENE_NAMES: readonly string[] = Object.keys(scenes);

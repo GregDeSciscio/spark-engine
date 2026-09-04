@@ -5,12 +5,15 @@ import { EventEmitter } from './Events';
 import { GameLoop } from './Loop';
 import { Logger } from './Logger';
 import { Random } from './Random';
+import { AnimationWorld } from '../animation/Animator';
+import { createAnimationSystems } from '../animation/systems';
 import { AssetManager } from '../assets/AssetManager';
 import { DebugStats } from '../debug/DebugStats';
 import { EntityWorld } from '../ecs/EntityWorld';
 import { Input } from '../input/Input';
 import { PhysicsWorld } from '../physics/PhysicsWorld';
 import { createPhysicsSystems } from '../physics/systems';
+import { ParticleSystem } from '../vfx/ParticleSystem';
 import { getQualitySettings, type QualitySettings } from '../rendering/QualityPresets';
 import { SparkRenderer } from '../rendering/Renderer';
 import type { SceneDefinition, SceneInstance } from '../world/Scene';
@@ -50,6 +53,8 @@ export class Engine implements Disposable {
   private assetsInstance: AssetManager | null = null;
   private inputInstance: Input | null = null;
   private physicsInstance: PhysicsWorld | null = null;
+  private animationInstance: AnimationWorld | null = null;
+  private vfxInstance: ParticleSystem | null = null;
   private statsInstance: DebugStats | null = null;
   private quality: QualitySettings;
   private stateValue: EngineState = 'created';
@@ -114,6 +119,18 @@ export class Engine implements Disposable {
     return this.physicsInstance;
   }
 
+  /** Skeletal animation: state machines, blend trees, events, root motion (Milestone 6). */
+  get animation(): AnimationWorld {
+    if (!this.animationInstance) throw new Error('Engine: animation is not available before initialize()');
+    return this.animationInstance;
+  }
+
+  /** GPU particle emitters (Milestone 8). `vfx.available` is false on the WebGL2 tier. */
+  get vfx(): ParticleSystem {
+    if (!this.vfxInstance) throw new Error('Engine: vfx is not available before initialize()');
+    return this.vfxInstance;
+  }
+
   /** Ref-counted asset loading (GLB/Meshopt/KTX2/HDR, Milestone 3). */
   get assets(): AssetManager {
     if (!this.assetsInstance) throw new Error('Engine: assets are not available before initialize()');
@@ -162,6 +179,11 @@ export class Engine implements Disposable {
     this.inputInstance = new Input(this.rendererInstance.canvas);
     this.physicsInstance = await PhysicsWorld.create({ entities: this.entities, fixedStepHz: this.config.fixedStepHz });
     for (const system of createPhysicsSystems(this.physicsInstance)) this.entities.addSystem(system);
+    this.animationInstance = new AnimationWorld(this.entities);
+    for (const system of createAnimationSystems(this.animationInstance)) this.entities.addSystem(system);
+    // GPU particles (Milestone 8): fixed stage after physics; off on WebGL2 (ADR-001).
+    this.vfxInstance = new ParticleSystem(this.entities, this.rendererInstance, { seed: this.config.seed });
+    this.entities.addSystem(this.vfxInstance);
     this.statsInstance = new DebugStats(container, this.config.debugOverlay);
     this.lastSize = { ...this.rendererInstance.size };
     this.stateValue = 'ready';
@@ -178,6 +200,8 @@ export class Engine implements Disposable {
       entities: this.entities,
       input: this.input,
       physics: this.physics,
+      animation: this.animation,
+      vfx: this.vfx,
       assets: this.assets,
       random: this.random.fork(),
       logger: new Logger(`scene:${definition.name}`),
@@ -255,6 +279,8 @@ export class Engine implements Disposable {
     // After entities: destroying them releases their bodies from the live world.
     this.physicsInstance?.dispose();
     this.physicsInstance = null;
+    this.animationInstance?.dispose();
+    this.animationInstance = null;
     this.statsInstance?.dispose();
     this.statsInstance = null;
     this.inputInstance?.dispose();

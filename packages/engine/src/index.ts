@@ -36,6 +36,12 @@ export * from './physics/index';
 // ---- assets (Milestone 3) ----
 export * from './assets/index';
 
+// ---- vfx (Milestone 8) ----
+export * from './vfx/index';
+
+// ---- animation (Milestone 6) ----
+export * from './animation/index';
+
 export { Input, type PointerButton } from './input/Input';
 export { World } from './world/World';
 export type { SceneContext, SceneDefinition, SceneInstance } from './world/Scene';

@@ -7,6 +7,9 @@
  *   prop-pipe.glb         low-poly cylinder cluster, one shared mesh, five nodes
  *   hero-placeholder.glb  capsule with two spark.* nodes (spawn, prop), a COL_ collision
  *                         node, and one short animation clip
+ *   mannequin.glb         skinned humanoid (13 joints, rigid box segments) with idle/walk/run/
+ *                         attack/hit/death clips; `spark.events` markers and `spark.loop` live in
+ *                         each animation's extras, `spark.rootBone` marks the root-motion joint
  *
  *   node tools/asset-pipeline/make-test-assets.mjs [--out=assets/source] [--no-pipeline]
  *
@@ -364,6 +367,423 @@ function makeHero() {
   return doc;
 }
 
+// ---- mannequin: skinned humanoid + clips (Milestone 6) --------------------------
+
+/**
+ * Joint tree in bind pose (model space, metres, Y up, facing +Z). `root` is the
+ * root-motion bone: `walk`/`run` translate it forward, the engine reads that
+ * delta and neutralises it on the skeleton.
+ */
+const MANNEQUIN_JOINTS = [
+  { name: 'root', parent: null, pos: [0, 0, 0] },
+  { name: 'hips', parent: 'root', pos: [0, 0.95, 0] },
+  { name: 'spine', parent: 'hips', pos: [0, 1.1, 0] },
+  { name: 'chest', parent: 'spine', pos: [0, 1.28, 0] },
+  { name: 'head', parent: 'chest', pos: [0, 1.55, 0] },
+  { name: 'upperArm_L', parent: 'chest', pos: [-0.25, 1.5, 0] },
+  { name: 'lowerArm_L', parent: 'upperArm_L', pos: [-0.25, 1.22, 0] },
+  { name: 'upperArm_R', parent: 'chest', pos: [0.25, 1.5, 0] },
+  { name: 'lowerArm_R', parent: 'upperArm_R', pos: [0.25, 1.22, 0] },
+  { name: 'upperLeg_L', parent: 'hips', pos: [-0.11, 0.93, 0] },
+  { name: 'lowerLeg_L', parent: 'upperLeg_L', pos: [-0.11, 0.48, 0] },
+  { name: 'upperLeg_R', parent: 'hips', pos: [0.11, 0.93, 0] },
+  { name: 'lowerLeg_R', parent: 'upperLeg_R', pos: [0.11, 0.48, 0] },
+];
+
+/** Rigid box segments, each bound 100% to one joint. `accent` picks the second material. */
+const MANNEQUIN_SEGMENTS = [
+  { joint: 'hips', center: [0, 1.02, 0], size: [0.34, 0.16, 0.2] },
+  { joint: 'spine', center: [0, 1.19, 0], size: [0.3, 0.17, 0.18] },
+  { joint: 'chest', center: [0, 1.415, 0], size: [0.4, 0.26, 0.22] },
+  { joint: 'head', center: [0, 1.72, 0], size: [0.24, 0.26, 0.24], accent: true },
+  { joint: 'head', center: [0, 1.7, 0.13], size: [0.1, 0.06, 0.04] }, // nose: shows facing
+  { joint: 'upperArm_L', center: [-0.25, 1.36, 0], size: [0.11, 0.27, 0.11] },
+  { joint: 'lowerArm_L', center: [-0.25, 1.08, 0], size: [0.1, 0.27, 0.1] },
+  { joint: 'lowerArm_L', center: [-0.25, 0.9, 0], size: [0.09, 0.1, 0.07], accent: true },
+  { joint: 'upperArm_R', center: [0.25, 1.36, 0], size: [0.11, 0.27, 0.11] },
+  { joint: 'lowerArm_R', center: [0.25, 1.08, 0], size: [0.1, 0.27, 0.1] },
+  { joint: 'lowerArm_R', center: [0.25, 0.9, 0], size: [0.09, 0.1, 0.07], accent: true },
+  { joint: 'upperLeg_L', center: [-0.11, 0.705, 0], size: [0.15, 0.44, 0.15] },
+  { joint: 'lowerLeg_L', center: [-0.11, 0.26, 0], size: [0.13, 0.42, 0.13] },
+  { joint: 'lowerLeg_L', center: [-0.11, 0.04, 0.05], size: [0.13, 0.08, 0.26], accent: true },
+  { joint: 'upperLeg_R', center: [0.11, 0.705, 0], size: [0.15, 0.44, 0.15] },
+  { joint: 'lowerLeg_R', center: [0.11, 0.26, 0], size: [0.13, 0.42, 0.13] },
+  { joint: 'lowerLeg_R', center: [0.11, 0.04, 0.05], size: [0.13, 0.08, 0.26], accent: true },
+];
+
+const CLIP_FPS = 30;
+
+function quatFromEuler(x, y, z) {
+  const c1 = Math.cos(x / 2);
+  const c2 = Math.cos(y / 2);
+  const c3 = Math.cos(z / 2);
+  const s1 = Math.sin(x / 2);
+  const s2 = Math.sin(y / 2);
+  const s3 = Math.sin(z / 2);
+  return [s1 * c2 * c3 + c1 * s2 * s3, c1 * s2 * c3 - s1 * c2 * s3, c1 * c2 * s3 + s1 * s2 * c3, c1 * c2 * c3 - s1 * s2 * s3];
+}
+
+function smoothstep(t) {
+  const x = Math.max(0, Math.min(1, t));
+  return x * x * (3 - 2 * x);
+}
+
+/** Piecewise-linear ramp through `[time, value]` points, held outside the range. */
+function ramp(points, t) {
+  if (t <= points[0][0]) return points[0][1];
+  for (let i = 1; i < points.length; i++) {
+    const [t1, v1] = points[i];
+    if (t <= t1) {
+      const [t0, v0] = points[i - 1];
+      return v0 + (v1 - v0) * smoothstep((t - t0) / (t1 - t0));
+    }
+  }
+  return points[points.length - 1][1];
+}
+
+/**
+ * Clip definitions. `pose(t)` returns `{ rot: { joint: [x, y, z] euler }, pos: { joint: [x, y, z] } }`
+ * (translation values are absolute local positions). Only joints present in
+ * the returned objects get a channel, so untouched joints fall back to the bind
+ * pose through the mixer's original-value path.
+ */
+function mannequinClips() {
+  const TAU = Math.PI * 2;
+  const hipsY = MANNEQUIN_JOINTS[1].pos[1];
+  const locomotion = (T, stride, legAmp, kneeAmp, armAmp, forearm, lean, bob) => (t) => {
+    const p = (TAU * t) / T;
+    const s = Math.sin(p);
+    const c = Math.cos(p);
+    return {
+      rot: {
+        hips: [0, 0.08 * s, 0.04 * s],
+        chest: [lean, -0.1 * s, 0],
+        head: [-lean * 0.5, 0.05 * s, 0],
+        upperLeg_L: [-legAmp * s, 0, 0],
+        lowerLeg_L: [kneeAmp * Math.max(0, c), 0, 0],
+        upperLeg_R: [legAmp * s, 0, 0],
+        lowerLeg_R: [kneeAmp * Math.max(0, -c), 0, 0],
+        upperArm_L: [armAmp * s, 0, -0.08],
+        lowerArm_L: [forearm, 0, 0],
+        upperArm_R: [-armAmp * s, 0, 0.08],
+        lowerArm_R: [forearm, 0, 0],
+      },
+      pos: {
+        hips: [0, hipsY - bob * s * s, 0],
+        root: [0, 0, stride * (t / T)],
+      },
+    };
+  };
+  return [
+    {
+      name: 'idle',
+      duration: 2.0,
+      loop: true,
+      events: [],
+      pose: (t) => {
+        const p = (TAU * t) / 2.0;
+        const b = Math.sin(p);
+        return {
+          rot: {
+            chest: [0.025 * b, 0, 0],
+            spine: [0.015 * b, 0, 0],
+            head: [-0.02 * b, 0.04 * Math.sin(p * 0.5), 0],
+            upperArm_L: [0.02 * b, 0, -0.1 + 0.02 * b],
+            upperArm_R: [0.02 * b, 0, 0.1 - 0.02 * b],
+            lowerArm_L: [-0.15, 0, 0],
+            lowerArm_R: [-0.15, 0, 0],
+          },
+          pos: { hips: [0, hipsY + 0.006 * b, 0], root: [0, 0, 0] },
+        };
+      },
+    },
+    {
+      name: 'walk',
+      duration: 1.0,
+      loop: true,
+      events: [
+        { name: 'footstep', time: 0.25, foot: 'L' },
+        { name: 'footstep', time: 0.75, foot: 'R' },
+      ],
+      pose: locomotion(1.0, 1.2, 0.5, 0.7, 0.35, -0.3, 0.05, 0.03),
+    },
+    {
+      name: 'run',
+      duration: 0.7,
+      loop: true,
+      events: [
+        { name: 'footstep', time: 0.175, foot: 'L' },
+        { name: 'footstep', time: 0.525, foot: 'R' },
+      ],
+      pose: locomotion(0.7, 2.8, 0.9, 1.3, 0.8, -1.2, 0.2, 0.05),
+    },
+    {
+      name: 'attack',
+      duration: 0.6,
+      loop: false,
+      events: [{ name: 'hit', time: 0.3 }],
+      // Frame 0 is the rest pose so the additive delta (clip minus frame 0) is pure swing.
+      pose: (t) => ({
+        rot: {
+          upperArm_R: [
+            ramp(
+              [
+                [0, 0],
+                [0.18, 1.6],
+                [0.3, -1.7],
+                [0.6, 0],
+              ],
+              t,
+            ),
+            0,
+            ramp(
+              [
+                [0, 0],
+                [0.18, 0.5],
+                [0.3, 0.2],
+                [0.6, 0],
+              ],
+              t,
+            ),
+          ],
+          lowerArm_R: [
+            ramp(
+              [
+                [0, 0],
+                [0.18, -1.2],
+                [0.3, -0.1],
+                [0.6, 0],
+              ],
+              t,
+            ),
+            0,
+            0,
+          ],
+          chest: [
+            0,
+            ramp(
+              [
+                [0, 0],
+                [0.18, 0.35],
+                [0.3, -0.4],
+                [0.6, 0],
+              ],
+              t,
+            ),
+            0,
+          ],
+          spine: [
+            0,
+            ramp(
+              [
+                [0, 0],
+                [0.18, 0.15],
+                [0.3, -0.2],
+                [0.6, 0],
+              ],
+              t,
+            ),
+            0,
+          ],
+          head: [
+            0,
+            ramp(
+              [
+                [0, 0],
+                [0.18, -0.2],
+                [0.3, 0.15],
+                [0.6, 0],
+              ],
+              t,
+            ),
+            0,
+          ],
+        },
+        pos: {},
+      }),
+    },
+    {
+      name: 'hit',
+      duration: 0.4,
+      loop: false,
+      events: [{ name: 'flinch', time: 0.05 }],
+      pose: (t) => {
+        const bump = Math.sin((Math.PI * t) / 0.4);
+        return {
+          rot: {
+            chest: [-0.4 * bump, 0, 0],
+            head: [-0.35 * bump, 0, 0],
+            spine: [-0.15 * bump, 0, 0],
+            upperArm_L: [-0.5 * bump, 0, -0.3 * bump],
+            upperArm_R: [-0.5 * bump, 0, 0.3 * bump],
+            lowerArm_L: [-0.6 * bump, 0, 0],
+            lowerArm_R: [-0.6 * bump, 0, 0],
+            upperLeg_L: [-0.15 * bump, 0, 0],
+            upperLeg_R: [0.1 * bump, 0, 0],
+          },
+          pos: { root: [0, 0, -0.15 * smoothstep(t / 0.25)] },
+        };
+      },
+    },
+    {
+      name: 'death',
+      duration: 1.2,
+      loop: false,
+      events: [{ name: 'land', time: 0.7 }],
+      pose: (t) => {
+        const fall = Math.min(1, t / 0.7);
+        const f = fall * fall; // gravity: slow start, hard landing
+        const settle = t > 0.7 ? Math.sin(((t - 0.7) / 0.5) * Math.PI) * 0.06 : 0;
+        return {
+          rot: {
+            hips: [-1.5 * f + settle, 0, 0],
+            spine: [0.15 * f, 0, 0],
+            chest: [0.2 * f, 0, 0],
+            head: [0.35 * f, 0, 0],
+            upperArm_L: [-0.3 * f, 0, -0.9 * f],
+            upperArm_R: [-0.3 * f, 0, 0.9 * f],
+            lowerArm_L: [-0.4 * f, 0, 0],
+            lowerArm_R: [-0.4 * f, 0, 0],
+            upperLeg_L: [0.25 * f, 0, -0.1 * f],
+            upperLeg_R: [0.15 * f, 0, 0.1 * f],
+            lowerLeg_L: [0.35 * f, 0, 0],
+            lowerLeg_R: [0.2 * f, 0, 0],
+          },
+          pos: { hips: [0, hipsY - 0.78 * f, -0.1 * f], root: [0, 0, 0] },
+        };
+      },
+    },
+  ];
+}
+
+function makeMannequin() {
+  const doc = new Document();
+  doc.createBuffer('mannequin');
+  const buffer = doc.getRoot().listBuffers()[0];
+  const scene = doc.createScene('Scene');
+  const bodyMat = doc.createMaterial('mannequin_body').setBaseColorFactor([0.62, 0.66, 0.72, 1]).setMetallicFactor(0.05).setRoughnessFactor(0.55);
+  const accentMat = doc.createMaterial('mannequin_accent').setBaseColorFactor([0.22, 0.24, 0.3, 1]).setMetallicFactor(0.2).setRoughnessFactor(0.4);
+
+  // Joints.
+  const jointNodes = new Map();
+  const jointIndex = new Map();
+  MANNEQUIN_JOINTS.forEach((j, i) => {
+    const parent = j.parent ? MANNEQUIN_JOINTS.find((p) => p.name === j.parent) : null;
+    const local = parent ? j.pos.map((v, k) => v - parent.pos[k]) : j.pos.slice();
+    const node = doc.createNode(j.name).setTranslation(local);
+    if (j.name === 'root') node.setExtras({ 'spark.rootBone': true });
+    jointNodes.set(j.name, node);
+    jointIndex.set(j.name, i);
+    if (parent) jointNodes.get(parent.name).addChild(node);
+  });
+  const rootJoint = jointNodes.get('root');
+
+  // Skinned mesh: two primitives (body / accent), rigid weights, IBMs = inverse bind translations.
+  const parts = { body: { positions: [], normals: [], uvs: [], joints: [], weights: [], indices: [] }, accent: { positions: [], normals: [], uvs: [], joints: [], weights: [], indices: [] } };
+  for (const seg of MANNEQUIN_SEGMENTS) {
+    const part = seg.accent ? parts.accent : parts.body;
+    const geo = box(1);
+    const base = part.positions.length / 3;
+    for (let v = 0; v < geo.positions.length / 3; v++) {
+      part.positions.push(
+        geo.positions[v * 3] * seg.size[0] + seg.center[0],
+        geo.positions[v * 3 + 1] * seg.size[1] + seg.center[1],
+        geo.positions[v * 3 + 2] * seg.size[2] + seg.center[2],
+      );
+      part.normals.push(geo.normals[v * 3], geo.normals[v * 3 + 1], geo.normals[v * 3 + 2]);
+      part.uvs.push(geo.uvs[v * 2], geo.uvs[v * 2 + 1]);
+      part.joints.push(jointIndex.get(seg.joint), 0, 0, 0);
+      part.weights.push(1, 0, 0, 0);
+    }
+    for (const i of geo.indices) part.indices.push(base + i);
+  }
+  const mesh = doc.createMesh('mannequin');
+  for (const [key, part] of Object.entries(parts)) {
+    const name = `mannequin_${key}`;
+    const position = doc.createAccessor(`${name}_pos`).setType('VEC3').setArray(new Float32Array(part.positions)).setBuffer(buffer);
+    const normal = doc.createAccessor(`${name}_nrm`).setType('VEC3').setArray(new Float32Array(part.normals)).setBuffer(buffer);
+    const uv = doc.createAccessor(`${name}_uv`).setType('VEC2').setArray(new Float32Array(part.uvs)).setBuffer(buffer);
+    const joints = doc.createAccessor(`${name}_joints`).setType('VEC4').setArray(new Uint8Array(part.joints)).setBuffer(buffer);
+    const weights = doc.createAccessor(`${name}_weights`).setType('VEC4').setArray(new Float32Array(part.weights)).setBuffer(buffer);
+    const indices = doc.createAccessor(`${name}_idx`).setType('SCALAR').setArray(new Uint16Array(part.indices)).setBuffer(buffer);
+    mesh.addPrimitive(
+      doc
+        .createPrimitive()
+        .setAttribute('POSITION', position)
+        .setAttribute('NORMAL', normal)
+        .setAttribute('TEXCOORD_0', uv)
+        .setAttribute('JOINTS_0', joints)
+        .setAttribute('WEIGHTS_0', weights)
+        .setIndices(indices)
+        .setMaterial(key === 'accent' ? accentMat : bodyMat),
+    );
+  }
+  const ibm = new Float32Array(16 * MANNEQUIN_JOINTS.length);
+  MANNEQUIN_JOINTS.forEach((j, i) => {
+    const o = i * 16;
+    ibm[o] = 1;
+    ibm[o + 5] = 1;
+    ibm[o + 10] = 1;
+    ibm[o + 15] = 1;
+    ibm[o + 12] = -j.pos[0];
+    ibm[o + 13] = -j.pos[1];
+    ibm[o + 14] = -j.pos[2];
+  });
+  const ibmAccessor = doc.createAccessor('mannequin_ibm').setType('MAT4').setArray(ibm).setBuffer(buffer);
+  const skin = doc.createSkin('mannequin_skin').setInverseBindMatrices(ibmAccessor).setSkeleton(rootJoint);
+  for (const j of MANNEQUIN_JOINTS) skin.addJoint(jointNodes.get(j.name));
+
+  const root = doc.createNode('mannequin').setExtras({ 'spark.type': 'character', 'spark.budget': 'enemy' });
+  scene.addChild(root);
+  root.addChild(rootJoint);
+  root.addChild(doc.createNode('mannequin_mesh').setMesh(mesh).setSkin(skin));
+
+  // Clips: sampled at CLIP_FPS, LINEAR; one channel per animated joint property.
+  for (const clip of mannequinClips()) {
+    const frames = Math.round(clip.duration * CLIP_FPS);
+    const times = new Float32Array(frames + 1);
+    for (let f = 0; f <= frames; f++) times[f] = Math.min(clip.duration, f / CLIP_FPS);
+    const samples = Array.from(times, (t) => clip.pose(t));
+    const rotJoints = new Set();
+    const posJoints = new Set();
+    for (const s of samples) {
+      for (const k of Object.keys(s.rot)) rotJoints.add(k);
+      for (const k of Object.keys(s.pos ?? {})) posJoints.add(k);
+    }
+    const animation = doc.createAnimation(clip.name).setExtras({
+      'spark.loop': clip.loop,
+      'spark.events': clip.events,
+    });
+    const input = doc.createAccessor(`${clip.name}_t`).setType('SCALAR').setArray(times).setBuffer(buffer);
+    for (const joint of rotJoints) {
+      const values = new Float32Array(samples.length * 4);
+      samples.forEach((s, i) => {
+        const e = s.rot[joint] ?? [0, 0, 0];
+        values.set(quatFromEuler(e[0], e[1], e[2]), i * 4);
+      });
+      const output = doc.createAccessor(`${clip.name}_${joint}_rot`).setType('VEC4').setArray(values).setBuffer(buffer);
+      const sampler = doc.createAnimationSampler().setInput(input).setOutput(output).setInterpolation('LINEAR');
+      const channel = doc.createAnimationChannel().setTargetNode(jointNodes.get(joint)).setTargetPath('rotation').setSampler(sampler);
+      animation.addSampler(sampler).addChannel(channel);
+    }
+    for (const joint of posJoints) {
+      const rest = MANNEQUIN_JOINTS.find((j) => j.name === joint);
+      const parent = rest.parent ? MANNEQUIN_JOINTS.find((p) => p.name === rest.parent) : null;
+      const values = new Float32Array(samples.length * 3);
+      samples.forEach((s, i) => {
+        // Positions are given in model space; convert to the joint's local space.
+        const p = s.pos?.[joint] ?? rest.pos;
+        values.set(parent ? p.map((v, k) => v - parent.pos[k]) : p, i * 3);
+      });
+      const output = doc.createAccessor(`${clip.name}_${joint}_pos`).setType('VEC3').setArray(values).setBuffer(buffer);
+      const sampler = doc.createAnimationSampler().setInput(input).setOutput(output).setInterpolation('LINEAR');
+      const channel = doc.createAnimationChannel().setTargetNode(jointNodes.get(joint)).setTargetPath('translation').setSampler(sampler);
+      animation.addSampler(sampler).addChannel(channel);
+    }
+  }
+  return doc;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const outDir = path.resolve(repoRoot, String(args.out ?? 'assets/source'));
@@ -373,6 +793,7 @@ async function main() {
     ['crate.glb', makeCrate],
     ['prop-pipe.glb', makePipes],
     ['hero-placeholder.glb', makeHero],
+    ['mannequin.glb', makeMannequin],
   ];
   for (const [file, build] of models) {
     const doc = build();
