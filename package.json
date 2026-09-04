@@ -17,6 +17,7 @@
     "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build",
     "capture": "node tools/capture/capture.mjs",
     "visual": "node tools/capture/visual.mjs",
+    "thumbnails": "node tools/capture/thumbnails.mjs",
     "perf": "node tools/benchmarks/perf.mjs",
     "assets": "node tools/asset-pipeline/pipeline.mjs"
   },
