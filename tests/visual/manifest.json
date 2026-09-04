@@ -1,0 +1,47 @@
+{
+  "defaults": {
+    "frames": 30,
+    "width": 1280,
+    "height": 720,
+    "seed": 1,
+    "threshold": 0.005
+  },
+  "entries": [
+    {
+      "scene": "bootstrap",
+      "backend": "webgpu",
+      "preset": "high"
+    },
+    {
+      "scene": "bootstrap",
+      "backend": "webgl",
+      "preset": "low"
+    },
+    {
+      "scene": "entities",
+      "backend": "webgpu",
+      "preset": "high"
+    },
+    {
+      "scene": "physics",
+      "backend": "webgpu",
+      "preset": "high",
+      "frames": 120
+    },
+    {
+      "scene": "assets",
+      "backend": "webgpu",
+      "preset": "high"
+    },
+    {
+      "scene": "alley",
+      "backend": "webgpu",
+      "preset": "high"
+    },
+    {
+      "scene": "alley",
+      "backend": "webgl",
+      "preset": "low"
+    }
+  ]
+}

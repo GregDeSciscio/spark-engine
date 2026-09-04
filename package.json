@@ -1,0 +1,40 @@
+{
+  "name": "spark-engine",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Spark Engine: a WebGPU-first browser game engine on Three.js",
+  "type": "module",
+  "packageManager": "pnpm@10.17.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @spark/benchmark dev",
+    "build": "pnpm -r --filter ./packages/* --filter ./apps/* build",
+    "typecheck": "tsc -b tsconfig.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build",
+    "capture": "node tools/capture/capture.mjs",
+    "visual": "node tools/capture/visual.mjs",
+    "perf": "node tools/benchmarks/perf.mjs",
+    "assets": "node tools/asset-pipeline/pipeline.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.4",
+    "@gltf-transform/cli": "4.5.0",
+    "@gltf-transform/core": "4.5.0",
+    "@gltf-transform/extensions": "4.5.0",
+    "@gltf-transform/functions": "4.5.0",
+    "@types/node": "22.19.0",
+    "eslint": "9.39.4",
+    "meshoptimizer": "1.2.0",
+    "pixelmatch": "7.1.0",
+    "playwright": "1.62.1",
+    "pngjs": "7.0.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.55.0",
+    "vite": "8.2.2",
+    "vitest": "5.0.0"
+  }
+}

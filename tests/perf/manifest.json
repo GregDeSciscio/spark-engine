@@ -1,0 +1,28 @@
+{
+  "defaults": {
+    "width": 1280,
+    "height": 720
+  },
+  "entries": [
+    {
+      "scene": "bootstrap",
+      "backend": "webgpu",
+      "preset": "high"
+    },
+    {
+      "scene": "entities",
+      "backend": "webgpu",
+      "preset": "high"
+    },
+    {
+      "scene": "physics",
+      "backend": "webgpu",
+      "preset": "high"
+    },
+    {
+      "scene": "alley",
+      "backend": "webgpu",
+      "preset": "high"
+    }
+  ]
+}

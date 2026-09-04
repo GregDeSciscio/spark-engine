@@ -1,0 +1,24 @@
+{
+  "name": "@spark/engine",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Spark Engine core: WebGPU-first browser game engine on Three.js",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "0.20.0",
+    "bitecs": "0.4.0",
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "@types/three": "0.185.0",
+    "@webgpu/types": "0.1.72"
+  }
+}
