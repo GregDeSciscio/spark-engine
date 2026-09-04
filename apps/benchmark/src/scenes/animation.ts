@@ -237,6 +237,8 @@ export const animationScene: SceneDefinition = {
       whiteSpace: 'pre',
       zIndex: '10',
     } satisfies Partial<CSSStyleDeclaration>);
+    // Human-facing only: hidden with `overlay=0` so goldens and thumbnails carry no DOM text.
+    if (!ctx.config.debugOverlay) label.style.display = 'none';
     ctx.config.container.appendChild(label);
     bag.add(() => label.remove());
     const updateLabel = (): void => {

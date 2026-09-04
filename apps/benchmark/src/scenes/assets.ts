@@ -81,6 +81,8 @@ export const assetsScene: SceneDefinition = {
       zIndex: '10',
     } satisfies Partial<CSSStyleDeclaration>);
     progressEl.textContent = 'loading assets…';
+    // Human-facing only: hidden with `overlay=0` so goldens and thumbnails carry no DOM text.
+    if (!ctx.config.debugOverlay) progressEl.style.display = 'none';
     ctx.config.container.appendChild(progressEl);
     bag.add(() => progressEl.remove());
     bag.add(

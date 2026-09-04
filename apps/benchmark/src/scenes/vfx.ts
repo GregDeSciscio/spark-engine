@@ -262,6 +262,8 @@ export const vfxScene: SceneDefinition = {
       whiteSpace: 'pre',
     } satisfies Partial<CSSStyleDeclaration>);
     note.textContent = vfx.available ? 'GPU particles: warming up' : 'GPU particles unavailable on this backend (WebGL2 tier, ADR-001)';
+    // Human-facing only: hidden with `overlay=0` so goldens and thumbnails carry no DOM text.
+    if (!ctx.config.debugOverlay) note.style.display = 'none';
     container.appendChild(note);
     bag.add(() => note.remove());
     let lastPaint = -1;
