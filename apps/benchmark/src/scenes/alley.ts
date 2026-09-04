@@ -447,6 +447,7 @@ export const alleyScene: SceneDefinition = {
     }
 
     // ---- windows: two instanced draws (lit / dark) -------------------------
+    const windowLights: THREE.PointLight[] = [];
     {
       const windowGeo = geo(new THREE.PlaneGeometry(1.1, 1.5));
       // transparent: true opts these out of the GTAO context (unlit surfaces must not receive AO grain).
@@ -467,6 +468,7 @@ export const alleyScene: SceneDefinition = {
       const palette = [0xffb86b, 0xffd9a0, 0x9fd4ff, 0xff8cc8, 0xc8ffd6, 0xfff1c9];
       let litCount = 0;
       let darkCount = 0;
+      const litWindows: { side: -1 | 1; y: number; z: number; color: THREE.Color }[] = [];
       for (const side of [-1, 1] as const) {
         q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), side === -1 ? Math.PI / 2 : -Math.PI / 2);
         for (const y of rows) {
@@ -477,6 +479,7 @@ export const alleyScene: SceneDefinition = {
               lit.setMatrixAt(litCount, m);
               c.setHex(random.pick(palette)).multiplyScalar(random.range(0.35, 1.0));
               lit.setColorAt(litCount, c);
+              litWindows.push({ side, y, z, color: c.clone() });
               litCount++;
             } else {
               dark.setMatrixAt(darkCount, m);
@@ -508,10 +511,27 @@ export const alleyScene: SceneDefinition = {
       frames.castShadow = true;
       frames.receiveShadow = true;
       scene.add(frames);
+
+      // Window spill: a small warm/cool point just inside the alley from every
+      // third lit window on the lower rows. Clustered on WebGPU (LightingSystem),
+      // so they cost a buffer entry each, not a shader term; the preset budget
+      // keeps only the nearest/brightest on the compat tier.
+      let spill = 0;
+      for (const w of litWindows) {
+        if (w.y > 9.5 || spill % 3 !== 0) {
+          spill++;
+          continue;
+        }
+        spill++;
+        const light = new THREE.PointLight(w.color, 5, 3.6, 2);
+        light.position.set(w.side * (ALLEY_HALF_WIDTH - 0.6), w.y - 0.3, w.z);
+        scene.add(light);
+        windowLights.push(light);
+      }
     }
 
     // ---- neon signs + matching lights ---------------------------------------
-    const flickering: { material: THREE.MeshBasicNodeMaterial; light: THREE.PointLight; base: number; phase: number; color: THREE.Color }[] = [];
+    const flickering: { material: THREE.MeshBasicNodeMaterial; light: THREE.PointLight; accents: THREE.PointLight[]; base: number; phase: number; color: THREE.Color }[] = [];
     {
       const housingMat = wetStandard(0x121317, 0.55, 0.5);
       const bracketGeo = geo(new THREE.BoxGeometry(0.9, 0.08, 0.08));
@@ -578,7 +598,16 @@ export const alleyScene: SceneDefinition = {
         const light = new THREE.PointLight(spec.color, spec.light ?? 140, 9.5, 2);
         light.position.set(x - spec.side * 0.9, spec.y - 0.4, spec.z);
         scene.add(light);
-        if (spec.flicker) flickering.push({ material: neonMat, light, base: light.intensity, phase: random.range(0, 6.28), color: neon });
+        // Tube accents: two short-range points at the ends of the sign so the
+        // housing and the bricks right behind the tubes pick up the neon colour.
+        const accents: THREE.PointLight[] = [];
+        for (const end of [-1, 1] as const) {
+          const accent = new THREE.PointLight(spec.color, (spec.light ?? 140) * 0.06, 3.5, 2);
+          accent.position.set(x - spec.side * 0.35, spec.y + (spec.height / 2) * 0.5, spec.z + end * spec.width * 0.4);
+          scene.add(accent);
+          accents.push(accent);
+        }
+        if (spec.flicker) flickering.push({ material: neonMat, light, accents, base: light.intensity, phase: random.range(0, 6.28), color: neon });
       }
     }
 
@@ -600,6 +629,22 @@ export const alleyScene: SceneDefinition = {
         scene.add(spill, spill.target);
       }
     }
+
+    // Puddle-edge glints: dim neon-coloured points just above the asphalt along
+    // both kerbs, so the ripples and the wet crates catch a colour where no sign
+    // reaches. Cheap on the clustered path; with the sign accents and the window
+    // spill the alley carries about 50 local lights (was 11), all clustered on
+    // WebGPU; the compat tier keeps the 8 nearest/brightest.
+    {
+      const glintColors = [0xff2bd6, 0x22e8ff, 0xff7a1a, 0x4dff6a, 0x3d7bff, 0xffd23d, 0xb14dff, 0xff3d5a];
+      for (let i = 0; i < 8; i++) {
+        const side = i % 2 === 0 ? -1 : 1;
+        const glint = new THREE.PointLight(glintColors[i] as number, 2.5, 3, 2);
+        glint.position.set(side * 3.4, 0.22, 4 - i * 4.6);
+        scene.add(glint);
+      }
+    }
+    logger.info(`alley: ${windowLights.length} window spill lights, ${NEON_SIGNS.length * 2} neon accents, 8 puddle glints (${ctx.lighting.budget} local lights in budget, clustered=${ctx.renderer.capabilities.backend === 'webgpu'})`);
 
     // ---- props ---------------------------------------------------------------
     const acMat = wetStandard(0x8a8d92, 0.42, 0.7);
@@ -1020,6 +1065,7 @@ export const alleyScene: SceneDefinition = {
           const buzz = Math.sin(elapsed * 61 + f.phase) > 0.92 ? 0.55 : 1;
           const on = (n > -0.85 ? 1 : 0.15) * buzz;
           f.light.intensity = f.base * on;
+          for (const accent of f.accents) accent.intensity = f.base * 0.06 * on;
           f.material.color.copy(f.color).multiplyScalar(5.5 * on);
         }
       },

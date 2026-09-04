@@ -54,3 +54,17 @@ At 720p the whole frame is 1.5 ms of GPU and the loop is rAF-bound at 126 fps; t
 | dof | – | – | off | off | on (bokeh 2.0) | `dofBokehScale`; focus from `setFocus` / `CameraRig.bindFocus` |
 
 All five are WebGPU-only and unavailable on the WebGL2 compat tier (`getEffects()` reports `available: false`), and none of them is a shader variant of the scene materials: the SSR MRT attachments are part of the scene-pass layout for presets with `screenSpaceReflections`, everything else is quad-level and toggles by recomposing the cheap end of the graph.
+
+## Clustered lighting
+
+Measured 2026-09-04 with `tools/capture/out/probe-lights.mjs` (same machine and method as above; `gpuMs` is three's `RENDER` timestamp, `compute` its `COMPUTE` timestamp from `LightingStats.computeMs`), scene **lights** (kickoff Benchmark B: 1,600 instanced props, one shadowed sun, N moving coloured point lights on seeded orbits, `?lights=N`), preset **high**, WebGPU. Every point light takes the clustered path (`LightingSystem`; see "Clustered lighting" in `docs/performance/cold-start.md`); the scene sets the light budget to N.
+
+| lights | 1280×720 fps / cpuMs / gpuMs | 1920×1080 fps / cpuMs / gpuMs | compute (cluster assignment) |
+| --- | --- | --- | --- |
+| 13 | 165 / 1.7 / 1.17–1.23 | 165 / 1.7 / 1.67 | ~0.03 ms |
+| 64 | 165 / 1.8 / 1.21–1.27 | 165 / 1.9 / 1.74 | ~0.04 ms |
+| 256 | 165 / 2.1 / 1.32 | 165 / 2.1 / 2.20 | 0.05 ms |
+
+Going from 13 to 256 lights costs **0.5 ms of GPU at 1080p** (0.15 ms at 720p) and 0.4 ms of CPU (the per-frame view-z sort and texture upload of 256 lights), with the lit shaders unchanged (4 lit programs, 33.5 KB fragment WGSL at most, whatever N is; pipelines 32 / programs 49 at every N). The frame stays rAF-bound at 165 fps at both sizes: the **256-light gate (60 fps or better at 1280×720) passes** with a wide margin, and 1080p holds it too. The alley (63 lights, 60 clustered) at 1080p went from 5.9 ms to 4.0 ms of GPU against its 13-light unrolled version, see the cold-start doc.
+
+Where the cost is: the fragment loop is bounded by the lights in the fragment's cluster (two to four in these scenes), so it scales with light density on screen rather than light count; the compute pass is one thread per cluster (48 960 on high) looping over the lights whose view-z range overlaps the cluster's slice. The WebGL2 tier runs none of this (budget capped at 8 unrolled local lights).

@@ -27,6 +27,7 @@ const OUT_DIR = path.join(repoRoot, 'apps', 'benchmark', 'public', 'thumbs');
  */
 const SCENES = [
   { scene: 'alley', preset: 'high', frames: 30 },
+  { scene: 'lights', preset: 'high', frames: 60 },
   { scene: 'hud', preset: 'high', frames: 90 },
   { scene: 'streaming', preset: 'high', frames: 240 },
   { scene: 'physics', preset: 'high', frames: 120 },

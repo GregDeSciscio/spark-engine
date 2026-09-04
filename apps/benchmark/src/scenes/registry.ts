@@ -8,6 +8,7 @@ import { animationScene } from './animation';
 import { vfxScene } from './vfx';
 import { STREAMING_ENTITY_CAPACITY, streamingScene } from './streaming';
 import { hudScene } from './hud';
+import { lightsScene } from './lights';
 
 /** A scene plus the human-facing copy the launcher menu needs. */
 export interface SceneEntry {
@@ -70,6 +71,13 @@ const entries: readonly SceneEntry[] = [
     blurb:
       'An idle/walk/run blend tree with root motion, an additive upper-body attack layered over locomotion, and a crowd of sixty mannequins.',
     controls: 'WASD move · Shift walk · Space attack · H hit · K die · R respawn · drag to orbit',
+  },
+  {
+    definition: lightsScene,
+    title: 'Clustered Lights',
+    blurb:
+      'Benchmark B: 256 moving coloured point lights over a field of 1,600 instanced props under a shadowed sun, culled per screen cluster on the GPU. ?lights=N to change the count.',
+    controls: null,
   },
   {
     definition: entitiesScene,

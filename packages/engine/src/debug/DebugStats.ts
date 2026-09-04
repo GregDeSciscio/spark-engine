@@ -1,4 +1,5 @@
 import type { Disposable } from '../core/Disposable';
+import type { LightingStats } from '../rendering/LightingSystem';
 import type { RenderFrameStats } from '../rendering/Renderer';
 
 export interface DebugSnapshot {
@@ -29,6 +30,8 @@ export interface DebugSnapshot {
   fixedSteps: number;
   frame: number;
   elapsed: number;
+  /** Light budget / clustered lighting counts (`LightingSystem.getStats`), null before a scene is lit. */
+  lights: LightingStats | null;
 }
 
 export interface DebugStatsSource {
@@ -41,6 +44,7 @@ export interface DebugStatsSource {
   systemMs: ReadonlyMap<string, number>;
   fixedSteps: number;
   render: RenderFrameStats;
+  lights?: LightingStats | undefined;
 }
 
 /**
@@ -94,6 +98,8 @@ export class DebugStats implements Disposable {
       'Fixed Steps',
       'Preset',
       'Post',
+      'Pipelines',
+      'Lights',
     ]) {
       const el = document.createElement('div');
       this.lines.set(key, el);
@@ -143,6 +149,7 @@ export class DebugStats implements Disposable {
       fixedSteps: source.fixedSteps,
       frame: source.frame,
       elapsed: source.elapsed,
+      lights: source.lights ?? null,
     };
 
     if (this.visible && nowMs - this.lastPaint > 250) {
@@ -174,6 +181,8 @@ export class DebugStats implements Disposable {
     this.set('Preset', s.preset);
     this.set('Post', s.postEffects.length ? s.postEffects.join(' ') : 'none');
     this.set('Pipelines', `${s.pipelines} (${s.programs} programs)`);
+    const l = s.lights;
+    this.set('Lights', l ? `${l.active}/${l.registered} (${l.clusteredPath ? `clustered ${l.clustered}, ` : ''}unrolled ${l.unrolled}, culled ${l.culled}) budget ${l.budget}` : 'n/a');
   }
 
   private set(key: string, value: string): void {

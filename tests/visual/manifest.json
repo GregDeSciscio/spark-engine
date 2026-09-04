@@ -66,6 +66,12 @@
       "backend": "webgpu",
       "preset": "high",
       "frames": 90
+    },
+    {
+      "scene": "lights",
+      "backend": "webgpu",
+      "preset": "high",
+      "frames": 60
     }
   ]
 }

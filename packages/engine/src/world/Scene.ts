@@ -3,6 +3,7 @@ import type { AnimationWorld } from '../animation/Animator';
 import type { AssetManager } from '../assets/AssetManager';
 import type { AudioSystem } from '../audio/AudioSystem';
 import type { ParticleSystem } from '../vfx/ParticleSystem';
+import type { LightingSystem } from '../rendering/LightingSystem';
 import type { Disposable } from '../core/Disposable';
 import type { EngineConfig } from '../core/Config';
 import type { Logger } from '../core/Logger';
@@ -28,6 +29,12 @@ export interface SceneContext {
   readonly animation: AnimationWorld;
   /** GPU particle emitters (Milestone 8). Check `vfx.available`; it is false on the WebGL2 tier. */
   readonly vfx: ParticleSystem;
+  /**
+   * Light budget and clustered lighting. Lights in the scene graph are adopted
+   * when the scene is attached; register later ones, or drive them from
+   * entities with `attachEntity`. `setBudget` overrides the preset's cap.
+   */
+  readonly lighting: LightingSystem;
   /** Engine-owned asset cache. Scenes `release()` what they `load*()` in `dispose()`. */
   readonly assets: AssetManager;
   /** Engine audio (Milestone 10). Scenes stop what they start in `dispose()`; the context unlocks on the first gesture. */

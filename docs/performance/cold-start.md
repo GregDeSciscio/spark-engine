@@ -64,6 +64,40 @@ Captures (`pnpm capture`, `--backend=both` for the alley) are clean on every sce
 
 - Compute pipelines (particle init / update, 8 in the alley) are still created synchronously; three has no async path for `createComputePipeline`. They compile during `create()` and the first fixed step, off the render path, and did not register in the stall probe after the change.
 - PMREM (`applySceneEnvironment`) compiles its GGX / blur pipelines synchronously during `create()` (~0.3 s). Small, and it overlaps the mannequin load.
-- Scene-pass shaders are still 70–88 KB because of 13 unrolled lights; the compile is now parallel and off the critical path, but `ClusteredLightsNode` would make shader size independent of light count and is the next lever if `ready` on the alley has to get under ~2 s.
+- ~~Scene-pass shaders are still 70–88 KB because of 13 unrolled lights~~ Done, see "Clustered lighting" below: 35–50 KB with the local lights on the clustered path; what is left is the three pinned lights (two of them shadowed) and the material graphs themselves.
 - `loadScene` on a *running* engine (scene swap mid-game) does not warm up; the new scene compiles synchronously on its first frame as before.
 - The warm-up leaves velocity "previous matrices" from the pre-first-frame pose, so frame 1 carries one frame of motion vectors where a cold start had none; TRAA's restarted history makes this invisible in the goldens.
+
+## Clustered lighting
+
+Measured 2026-09-04 on the same machine and setup as above (`tools/capture/out/probe-lights.mjs`: real time after `ready` + 3 s, dynamic resolution pinned off at scale 1.0; `probe-light-churn.mjs`: pipeline / program counts while lights are added, moved, hidden and removed).
+
+The last lever in the list above: `packages/engine/src/rendering/LightingSystem.ts` (engine-owned light budget, attached to the live scene by `Engine.loadScene`) and `ClusteredLights.ts` (`SparkClusteredLightsNode`, a subclass of three's r185 `ClusteredLightsNode` addon). On WebGPU every unshadowed point and spot light takes the clustered path: a compute pass assigns lights to a `60×34×24` cluster grid (high preset; `CLUSTER_PRESETS`) and a lit fragment loops over its cluster's list. Only the pinned lights (directional, hemisphere, ambient, rect-area, any shadow caster) are still unrolled into the material shaders and hashed into the program key. The alley keeps three of those (moon with shadows, hemisphere, shadowed hero spot); its 9 neon points and 2 door spots moved to the clustered list, and 49 more small lights were added (two tube accents per sign, spill from every third lit lower window, eight puddle glints along the kerbs). On the WebGL2 tier nothing is clustered; the budget caps the unrolled local lights at 8 (`COMPAT_LIGHT_CAP`) and picks them by importance.
+
+What the r185 addon does not do, and what the subclass changes (details in `ClusteredLights.ts`): the addon clusters *point* lights only, sizes its grid from the drawing buffer and rebuilds the compute node (a new cache key for every lit material) on resize, divides fragment coordinates by a constant tile size (wrong under a render scale below 1), and never assigns a `distance === 0` light. The subclass adds unshadowed, unprojected spot lights to the clustered list (cone attenuation in the fragment loop, sphere bound for assignment), fixes the grid per preset with a uniform tile size derived from the current pass target, and clusters `distance === 0` lights with the camera far plane as their radius.
+
+Alley, `preset=high`, WebGPU, 1280×720 unless noted:
+
+| | before (13 lights, all unrolled) | after (63 lights: 60 clustered, 3 unrolled) |
+| --- | --- | --- |
+| lit scene-pass fragment WGSL, per pipeline | 71–86 KB (13 PBR shaders), 1096 KB total | **35–50 KB**, 645 KB total |
+| warm-up (info log) | 53 pipelines (shadow 6, prepass 8, scene 23, post 16) in 2.7–3.2 s | 53 pipelines, same split, in **2.1–2.2 s** |
+| `ready` | 3.9–4.6 s | **3.2–3.3 s** |
+| frames after `ready` (250 ms steps) | 0 0 13 37 63 93 124 157 | 0 6 34 74 118 162 204 247 (no stall either way) |
+| fps / cpu / gpu at 720p | 129 / 7.2 ms / 1.8–2.1 ms | **165 / 5.4 ms / 1.6–1.8 ms** |
+| fps / cpu / gpu at 1920×1080 | 110–117 / 7.5 ms / 5.9 ms | **165 / 5.5 ms / 4.0 ms** |
+| pipelines / programs after 5 s | 66 / 105 | 67 / 106 (+1 compute: the cluster assignment) |
+
+The 720p frame rate is headless Chromium's rAF cap; the number that moved is CPU (13 light uniform blocks per draw became a texture and a storage buffer bound once). At 1080p the GPU time dropped by 1.9 ms with five times the lights, because a fragment now evaluates the two to four lights in its cluster instead of all thirteen.
+
+Pipeline stability (`probe-light-churn.mjs`, real time): alley at steady state `pipelines=69 programs=110`; after registering 24 more point lights, moving them, hiding one, zeroing one, then removing them all: `69 / 110` throughout. The lights scene (256 lights) likewise stays at `34 / 53` while 32 lights are added and removed. Adding a *pinned* light (a shadow caster, a directional, a spot with a projection map) still recompiles every lit material, as it did before.
+
+Visual: `alley-webgpu-high` differs from its golden in 5 of 921 600 pixels (0.001 %) with the same 13 lights on the clustered path (the point/spot shading is the same `directPointLight` / `smoothstep` cone as the analytic nodes; what remains is float ordering); with the 49 added lights, 12 643 pixels (1.37 %), all inside the new light pools on the facades, sign housings and kerbs. `vfx`, `hud` and `streaming` (point / spot lights now clustered) capture at 0 pixels difference. `alley-webgl-low` moves 4.0 %: the compat budget keeps the 8 nearest local lights of the 11 the golden was recorded with, so the far sign pools go dark (per spec: Low = 8 dynamic lights). The lights scene golden `lights-webgpu-high.png` was recorded from this change.
+
+Costs and caveats:
+
+- The cluster assignment is one compute dispatch per lit render call (one thread per cluster: 48 960 on high), 0.05 ms of GPU at 256 lights, plus a CPU sort of the clustered lights along view z and a `256 × 4` RGBA float texture upload per frame. Its storage buffer is `clusterStorageBytes`: 6.3 MB on high, 12.5 MB on ultra, 16 MB on cinematic.
+- The compute pipeline compiles synchronously the first time the node runs (inside the warm-up, ~10 ms); three has no async compute pipeline API.
+- The grid is fixed when the scene is attached; a quality change updates the budget but not the grid (a re-attach, i.e. a scene load, does).
+- A cluster holds at most `maxLightsPerCluster` lights (32 on high, 48 ultra, 64 cinematic, 16 low/medium); beyond that the furthest along view z are dropped for that cluster. `LightingSystem` caps the list at 256 (`CLUSTERED_LIGHT_CAPACITY`) and the preset budget (`maxDynamicLights`: 8 / 16 / 64 / 128 / 256) selects which lights fill it by `lightImportance` (intensity over the squared distance from the camera to the light's sphere); a scene can raise or lower the budget with `lighting.setBudget`.
+- With `trackTimestamp` on, the compute pass queues timestamp queries that somebody has to resolve; the lighting system resolves `TimestampQuery.COMPUTE` every frame while the clustered node is live (the particle system only does so while it has emitters) and reports the result as `LightingStats.computeMs`.

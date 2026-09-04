@@ -29,6 +29,26 @@ export {
 export { QUALITY_SETTINGS, getQualitySettings, type QualitySettings } from './rendering/QualityPresets';
 export { classifyRenderObject, formatWarmUp, trackCompilation, type WarmUpCounts, type WarmUpPass, type WarmUpResult } from './rendering/WarmUp';
 export { materialParam, type MaterialParamType } from './rendering/MaterialParams';
+export {
+  LightingSystem,
+  Light,
+  COMPAT_LIGHT_CAP,
+  effectiveLightBudget,
+  lightImportance,
+  selectLights,
+  type LightingStats,
+} from './rendering/LightingSystem';
+export {
+  CLUSTER_PRESETS,
+  CLUSTER_REFERENCE,
+  CLUSTERED_LIGHT_CAPACITY,
+  clusterCount,
+  clusterGridForPreset,
+  clusterStorageBytes,
+  isClusterableLight,
+  type ClusterGrid,
+  type ClusterPresetSettings,
+} from './rendering/ClusteredLights';
 
 export * from './ecs/index';
 

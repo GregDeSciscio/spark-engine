@@ -38,6 +38,11 @@
       "scene": "streaming",
       "backend": "webgpu",
       "preset": "high"
+    },
+    {
+      "scene": "lights",
+      "backend": "webgpu",
+      "preset": "high"
     }
   ]
 }

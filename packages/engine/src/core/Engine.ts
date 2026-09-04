@@ -17,6 +17,7 @@ import { Input } from '../input/Input';
 import { PhysicsWorld } from '../physics/PhysicsWorld';
 import { createPhysicsSystems } from '../physics/systems';
 import { ParticleSystem } from '../vfx/ParticleSystem';
+import { LightingSystem } from '../rendering/LightingSystem';
 import { getQualitySettings, type QualitySettings } from '../rendering/QualityPresets';
 import { SparkRenderer } from '../rendering/Renderer';
 import { UIHost } from '../ui/UIHost';
@@ -73,6 +74,7 @@ export class Engine implements Disposable {
   private physicsInstance: PhysicsWorld | null = null;
   private animationInstance: AnimationWorld | null = null;
   private vfxInstance: ParticleSystem | null = null;
+  private lightingInstance: LightingSystem | null = null;
   private audioInstance: AudioSystem | null = null;
   private uiInstance: UIHost | null = null;
   private statsInstance: DebugStats | null = null;
@@ -155,6 +157,12 @@ export class Engine implements Disposable {
     return this.vfxInstance;
   }
 
+  /** Light budget and, on WebGPU, clustered lighting for the live scene (`rendering/LightingSystem`). */
+  get lighting(): LightingSystem {
+    if (!this.lightingInstance) throw new Error('Engine: lighting is not available before initialize()');
+    return this.lightingInstance;
+  }
+
   /** Ref-counted asset loading (GLB/Meshopt/KTX2/HDR, Milestone 3). */
   get assets(): AssetManager {
     if (!this.assetsInstance) throw new Error('Engine: assets are not available before initialize()');
@@ -216,6 +224,7 @@ export class Engine implements Disposable {
   setQuality(preset: EngineConfig['preset']): void {
     this.quality = getQualitySettings(preset);
     this.rendererInstance?.setQuality(this.quality);
+    this.lightingInstance?.setQuality(this.quality);
   }
 
   async initialize(options: EngineInitOptions = {}): Promise<void> {
@@ -252,6 +261,9 @@ export class Engine implements Disposable {
     // GPU particles (Milestone 8): fixed stage after physics; off on WebGL2 (ADR-001).
     this.vfxInstance = new ParticleSystem(this.entities, this.rendererInstance, { seed: this.config.seed });
     this.entities.addSystem(this.vfxInstance);
+    // Lights: preset budget on both tiers, clustered point/spot lights on WebGPU (ADR-001).
+    this.lightingInstance = new LightingSystem(this.entities, this.rendererInstance, this.quality);
+    this.entities.addSystem(this.lightingInstance);
     // Audio + UI (Milestone 10). Both follow the live scene camera unless a scene overrides it.
     // The audio seed derives from the config, not `this.random`, so scene streams are unchanged.
     const liveCamera = (): THREE.Camera | null => this.world.scene?.camera ?? null;
@@ -288,12 +300,16 @@ export class Engine implements Disposable {
       physics: this.physics,
       animation: this.animation,
       vfx: this.vfx,
+      lighting: this.lighting,
       assets: this.assets,
       audio: this.audio,
       ui: this.ui,
       random: this.random.fork(),
       logger: new Logger(`scene:${definition.name}`),
     });
+    // Adopt the scene's lights and install the clustered lights node before
+    // the first render below builds the scene's render list around it.
+    this.lightingInstance?.attach(instance.scene, instance.camera);
     // Shader warm-up, then the first frame. The first render of a scene creates
     // every material × pass pipeline; created synchronously that is a multi-
     // second stall of the GPU process (rAF stops) on a dense scene. The warm-up
@@ -379,6 +395,7 @@ export class Engine implements Disposable {
       systemMs: this.entities.systems.lastTimings(),
       fixedSteps: this.loop.lastFixedSteps,
       render: renderer.stats(),
+      lights: this.lightingInstance?.getStats(),
     });
     this.inspectorInstance?.update(this.statsInstance?.snapshot() ?? null);
     this.events.emit('frame', { frame: this.clock.frame, dt });
@@ -391,7 +408,10 @@ export class Engine implements Disposable {
     this.inspectorInstance?.dispose();
     this.inspectorInstance = null;
     this.world.dispose();
+    // Before entities: `entities.dispose()` disposes systems, and the lighting system restores three's lighting host.
+    this.lightingInstance?.detach();
     this.entities.dispose();
+    this.lightingInstance = null;
     // After entities: destroying them releases their bodies from the live world.
     this.physicsInstance?.dispose();
     this.physicsInstance = null;
