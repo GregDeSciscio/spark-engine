@@ -35,9 +35,10 @@ export class RenderSync implements System {
   run(world: EntityWorld): void {
     const t = world.store(Transform);
     const r = world.store(Renderable);
-    for (const eid of world.query(Transform, Renderable)) {
-      const object = this.objects.get(eid);
-      if (!object) continue;
+    // Walk the attached objects (usually far fewer than Transform+Renderable
+    // entities once instanced batches are in play) and check membership per entity.
+    for (const [eid, object] of this.objects.entries()) {
+      if (!world.has(eid, Transform) || !world.has(eid, Renderable)) continue;
       object.position.set(t.x[eid] ?? 0, t.y[eid] ?? 0, t.z[eid] ?? 0);
       object.quaternion.set(t.qx[eid] ?? 0, t.qy[eid] ?? 0, t.qz[eid] ?? 0, t.qw[eid] ?? 1);
       object.scale.set(t.sx[eid] ?? 1, t.sy[eid] ?? 1, t.sz[eid] ?? 1);

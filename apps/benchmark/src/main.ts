@@ -1,5 +1,5 @@
 import { Engine, configFromSearch, exposeForCapture } from '@spark/engine';
-import { getScene, SCENE_NAMES } from './scenes/registry';
+import { ENGINE_HINTS, getScene, SCENE_NAMES } from './scenes/registry';
 
 function parseSize(value: string | null): { width: number; height: number } | undefined {
   if (!value) return undefined;
@@ -23,7 +23,7 @@ async function main(): Promise<void> {
   const container = document.getElementById('app');
   if (!container) throw new Error('#app container missing');
 
-  const engine = new Engine({ container, ...configFromSearch(location.search) });
+  const engine = new Engine({ container, ...ENGINE_HINTS[sceneName], ...configFromSearch(location.search) });
   const api = exposeForCapture(engine, sceneName);
 
   try {

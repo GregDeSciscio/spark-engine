@@ -11,4 +11,4 @@ export { SideTable } from './SideTable';
 export { SystemRegistry, type System, type SystemStage } from './System';
 export { Transform, Velocity, Renderable } from './components/Transform';
 export { RenderSync } from './systems/RenderSync';
-export { InstancedBatch, InstancedRenderSync } from './systems/InstancedRenderSync';
+export { InstancedBatch, InstancedRenderSync, type InstancedBatchOptions } from './systems/InstancedRenderSync';

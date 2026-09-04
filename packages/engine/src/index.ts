@@ -52,6 +52,7 @@ export { exposeForCapture, type CaptureAPI } from './debug/CaptureHook';
 export {
   RenderPipeline,
   POST_EFFECT_NAMES,
+  type GodraysOptions,
   type PostEffectName,
   type PostEffectState,
   type RenderPipelineStats,
@@ -69,7 +70,75 @@ export {
   orbitOffset,
   decayTrauma,
   shakeAmount,
+  focusDistanceAlongView,
   type CameraRigOptions,
   type CameraRigPreset,
+  type FocusSink,
 } from './rendering/CameraRig';
 export { applyRoomEnvironment, applySceneEnvironment, loadHDREnvironment } from './rendering/Environment';
+// ---- rendering (Milestone 7) ----
+export {
+  Decals,
+  DecalPool,
+  decalOrientation,
+  prepareDecalMaterial,
+  type DecalHandle,
+  type DecalOptions,
+  type DecalsOptions,
+} from './rendering/Decals';
+export {
+  createHeightFog,
+  heightFogDensity,
+  heightFogFactor,
+  DEFAULT_HEIGHT_FOG,
+  type HeightFog,
+  type HeightFogParams,
+} from './rendering/HeightFog';
+export {
+  VolumeFogNode,
+  VolumeFogSettings,
+  intersectRayBox,
+  DEFAULT_VOLUME_FOG,
+  type VolumeFogParams,
+  type VolumeFogSpot,
+} from './rendering/VolumeFog';
+
+// ---- world (Milestone 9) ----
+export { Cullable, LOD, LOD_UNASSIGNED, SpawnPoint, Streamed, TriggerVolume } from './world/components';
+export {
+  FRUSTUM_FLOATS,
+  FrustumResult,
+  aabbInFrustum,
+  extractFrustumPlanes,
+  raySlabXZ,
+  raySphere,
+  sphereInFrustum,
+  type FrustumResultValue,
+} from './world/Frustum';
+export { SpatialIndex, type SpatialIndexOptions, type SpatialIndexStats } from './world/SpatialIndex';
+export { CullingSystem, isVisible, type CullingStats, type CullingSystemOptions } from './world/CullingSystem';
+export { LODSystem, selectLOD, type LODGroupDefinition, type LODStats } from './world/LODSystem';
+export { StreamingPlanner, type StreamingPlannerOptions } from './world/StreamingPlanner';
+export {
+  StreamingManager,
+  type ChunkDescriptor,
+  type ChunkPlacement,
+  type ChunkSource,
+  type StreamedAssetDefinition,
+  type StreamedAssetLevel,
+  type StreamedModelFactory,
+  type StreamingBudget,
+  type StreamingEvents,
+  type StreamingManagerOptions,
+  type StreamingStats,
+} from './world/StreamingManager';
+export {
+  LevelLoader,
+  collectLevelNodes,
+  parseLevelNodes,
+  type LevelEntityDescriptor,
+  type LevelLoaderOptions,
+  type LevelNode,
+  type LevelPlacement,
+  type LoadedLevel,
+} from './world/LevelLoader';

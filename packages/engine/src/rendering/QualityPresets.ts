@@ -5,8 +5,13 @@ import type { QualityPreset } from '../core/Config';
  * reads lives here so a preset is one object, not scattered conditionals.
  *
  * Milestone 0/1 consumes shadows, MSAA and render scale. The post-processing
- * fields are read by the RenderPipeline from Milestone 2 on; they are declared
- * now so presets are complete from day one.
+ * fields are read by the RenderPipeline from Milestone 2 on (AO, TRAA, bloom,
+ * FXAA, FSR1) and Milestone 7 (SSR, volumetrics, godrays, motion blur, DOF).
+ *
+ * Two kinds of flag: `screenSpaceReflections` decides the scene-pass MRT
+ * layout (a rebuild), so it is the effect's availability; `volumetrics`,
+ * `motionBlur` and `depthOfField` are only the effect's default on/off state
+ * (a scene may opt in on a lower preset via `RenderPipeline.setEffectEnabled`).
  */
 export interface QualitySettings {
   readonly preset: QualityPreset;
@@ -41,6 +46,26 @@ export interface QualitySettings {
   readonly lodBias: number;
   readonly drawDistance: number;
   readonly maxDynamicLights: number;
+
+  // ---- Milestone 7 effect quality (kickoff §41: every effect has a quality setting) ----
+  /** SSR ray-march target scale relative to the swap chain (0.5 = half resolution). */
+  readonly ssrResolutionScale: number;
+  /** SSR ray-march quality 0..1 (fraction of the screen-space ray that is stepped, texel by texel). */
+  readonly ssrQuality: number;
+  /** Farthest reflection distance in world units. */
+  readonly ssrMaxDistance: number;
+  /** Ray-march steps of the raymarched fog volume. */
+  readonly volumetricSteps: number;
+  /** Fog volume target scale relative to the swap chain. */
+  readonly volumetricResolutionScale: number;
+  /** Godrays ray-march steps. */
+  readonly godraysSteps: number;
+  /** Motion blur taps along the velocity vector. */
+  readonly motionBlurSamples: number;
+  /** Fraction of the per-frame motion applied as blur (1 = a full frame's motion). */
+  readonly motionBlurStrength: number;
+  /** Depth-of-field bokeh radius multiplier. */
+  readonly dofBokehScale: number;
 }
 
 const base: Omit<QualitySettings, 'preset'> = {
@@ -69,6 +94,15 @@ const base: Omit<QualitySettings, 'preset'> = {
   lodBias: 1,
   drawDistance: 1,
   maxDynamicLights: 64,
+  ssrResolutionScale: 0.5,
+  ssrQuality: 0.6,
+  ssrMaxDistance: 40,
+  volumetricSteps: 24,
+  volumetricResolutionScale: 0.5,
+  godraysSteps: 32,
+  motionBlurSamples: 8,
+  motionBlurStrength: 0.6,
+  dofBokehScale: 1.5,
 };
 
 export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
@@ -125,6 +159,12 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     lodBias: 1.5,
     drawDistance: 1.5,
     maxDynamicLights: 128,
+    ssrResolutionScale: 1,
+    ssrQuality: 0.8,
+    ssrMaxDistance: 48,
+    volumetricSteps: 32,
+    godraysSteps: 48,
+    motionBlurSamples: 12,
   },
   cinematic: {
     ...base,
@@ -142,6 +182,15 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     lodBias: 2,
     drawDistance: 2,
     maxDynamicLights: 256,
+    ssrResolutionScale: 1,
+    ssrQuality: 1,
+    ssrMaxDistance: 56,
+    volumetricSteps: 48,
+    volumetricResolutionScale: 0.75,
+    godraysSteps: 64,
+    motionBlurSamples: 16,
+    motionBlurStrength: 0.8,
+    dofBokehScale: 2,
   },
 };
 

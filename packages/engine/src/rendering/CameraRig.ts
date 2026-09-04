@@ -91,6 +91,30 @@ export function shakeAmount(trauma: number): number {
   return t * t;
 }
 
+/**
+ * Distance from the camera to `target` measured along the view direction:
+ * what a depth-of-field focus plane needs (DOF works in view-space Z, not
+ * radial distance). Clamped to `minimum` so a target behind the camera or on
+ * top of it never yields a degenerate focus plane.
+ */
+export function focusDistanceAlongView(
+  cameraPosition: { x: number; y: number; z: number },
+  forward: { x: number; y: number; z: number },
+  target: { x: number; y: number; z: number },
+  minimum = 0.1,
+): number {
+  const dx = target.x - cameraPosition.x;
+  const dy = target.y - cameraPosition.y;
+  const dz = target.z - cameraPosition.z;
+  const along = dx * forward.x + dy * forward.y + dz * forward.z;
+  return Math.max(minimum, along);
+}
+
+/** Anything that accepts a focus plane, i.e. the render pipeline's DOF. */
+export interface FocusSink {
+  setFocus(distance: number, range: number): void;
+}
+
 export interface CameraRigOptions {
   preset?: CameraRigPreset;
   aspect?: number;
@@ -98,12 +122,25 @@ export interface CameraRigOptions {
   far?: number;
   /** Seeded source for the shake. Same seed + same trauma → same shake. */
   random?: Random;
+  /** Damping rate (1/s) of the focus distance toward `focusTarget`. Default 6. */
+  focusRate?: number;
+  /** DOF focal range in world units handed to the sink with the distance. Default 4. */
+  focusRange?: number;
 }
 
 export class CameraRig {
   readonly camera: THREE.PerspectiveCamera;
   /** Where the rig wants to look. Set every frame for a moving hero. */
   readonly target = new THREE.Vector3();
+  /**
+   * What depth of field keeps sharp. Null (default) focuses on the follow
+   * target itself; set it to a hero's head, a sign, a cutscene subject. The
+   * rig measures its distance along the view direction every update, damps
+   * it, and hands it to the bound sink (`bindFocus`).
+   */
+  focusTarget: THREE.Vector3 | null = null;
+  /** DOF focal range in world units, passed through to the sink. */
+  focusRange: number;
 
   private preset: CameraRigPreset;
   private yaw: number;
@@ -118,6 +155,10 @@ export class CameraRig {
   private readonly shakeOffset = new THREE.Vector3();
   private shakeRoll = 0;
   private readonly tmp = new THREE.Vector3();
+  private readonly forward = new THREE.Vector3();
+  private readonly focusRate: number;
+  private focusDistanceValue: number | null = null;
+  private focusSink: FocusSink | null = null;
 
   constructor(options: CameraRigOptions = {}) {
     this.preset = options.preset ?? ISOMETRIC_PRESET;
@@ -125,7 +166,24 @@ export class CameraRig {
     this.pitch = this.preset.pitch;
     this.distance = this.preset.distance;
     this.random = options.random ?? null;
+    this.focusRate = options.focusRate ?? 6;
+    this.focusRange = options.focusRange ?? 4;
     this.camera = new THREE.PerspectiveCamera(this.preset.fov, options.aspect ?? 16 / 9, options.near ?? 0.1, options.far ?? 200);
+  }
+
+  /**
+   * Route the rig's focus distance to a DOF consumer (normally
+   * `renderer.pipeline`). Called with the damped distance after every
+   * `update()` / `snap()`. Pass null to detach.
+   */
+  bindFocus(sink: FocusSink | null): void {
+    this.focusSink = sink;
+    if (sink && this.focusDistanceValue !== null) sink.setFocus(this.focusDistanceValue, this.focusRange);
+  }
+
+  /** Damped distance along the view direction to `focusTarget` (or the follow target). Null before the first update. */
+  getFocusDistance(): number | null {
+    return this.focusDistanceValue;
   }
 
   getPreset(): CameraRigPreset {
@@ -173,6 +231,8 @@ export class CameraRig {
     this.previousTarget.copy(this.target);
     this.hasPrevious = true;
     this.apply();
+    this.focusDistanceValue = null;
+    this.updateFocus(0);
   }
 
   update(dt: number): void {
@@ -214,6 +274,16 @@ export class CameraRig {
     }
 
     this.apply();
+    this.updateFocus(dt);
+  }
+
+  /** Measure, damp and publish the focus distance. Instant when there is no history yet. */
+  private updateFocus(dt: number): void {
+    const subject = this.focusTarget ?? this.target;
+    this.camera.getWorldDirection(this.forward);
+    const measured = focusDistanceAlongView(this.camera.position, this.forward, subject, this.camera.near);
+    this.focusDistanceValue = this.focusDistanceValue === null ? measured : damp(this.focusDistanceValue, measured, this.focusRate, dt);
+    this.focusSink?.setFocus(this.focusDistanceValue, this.focusRange);
   }
 
   private apply(): void {

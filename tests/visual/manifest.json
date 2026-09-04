@@ -54,6 +54,12 @@
       "backend": "webgpu",
       "preset": "high",
       "frames": 90
+    },
+    {
+      "scene": "streaming",
+      "backend": "webgpu",
+      "preset": "high",
+      "frames": 240
     }
   ]
 }

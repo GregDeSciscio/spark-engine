@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { damp, decayTrauma, orbitOffset, shakeAmount } from '../src/rendering/CameraRig';
+import * as THREE from 'three/webgpu';
+import { CameraRig, ISOMETRIC_PRESET, damp, decayTrauma, focusDistanceAlongView, orbitOffset, shakeAmount } from '../src/rendering/CameraRig';
 
 describe('CameraRig math', () => {
   it('damp is frame-rate independent', () => {
@@ -50,5 +51,33 @@ describe('CameraRig math', () => {
     expect(shakeAmount(0.5)).toBeCloseTo(0.25, 6);
     expect(shakeAmount(1)).toBe(1);
     expect(shakeAmount(3)).toBe(1);
+  });
+});
+
+describe('CameraRig focus', () => {
+  it('focusDistanceAlongView measures along the view direction and clamps', () => {
+    const forward = { x: 0, y: 0, z: -1 };
+    expect(focusDistanceAlongView({ x: 0, y: 0, z: 10 }, forward, { x: 3, y: 4, z: 0 })).toBeCloseTo(10, 9);
+    expect(focusDistanceAlongView({ x: 0, y: 0, z: 10 }, forward, { x: 0, y: 0, z: 20 }, 0.5)).toBe(0.5);
+  });
+
+  it('follows the focus target with damping and publishes to the bound sink', () => {
+    const rig = new CameraRig({ preset: ISOMETRIC_PRESET, focusRate: 4, focusRange: 3 });
+    const calls: { distance: number; range: number }[] = [];
+    rig.bindFocus({ setFocus: (distance, range) => calls.push({ distance, range }) });
+    rig.target.set(0, 0, 0);
+    rig.snap();
+    expect(rig.getFocusDistance()).toBeCloseTo(ISOMETRIC_PRESET.distance, 5);
+    expect(calls.at(-1)?.range).toBe(3);
+    const before = rig.getFocusDistance() as number;
+    // A focus subject much nearer than the follow target: the distance must move toward it, not jump.
+    rig.focusTarget = rig.camera.position.clone().add(rig.camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(5));
+    rig.update(1 / 60);
+    const after = rig.getFocusDistance() as number;
+    expect(after).toBeLessThan(before);
+    expect(after).toBeGreaterThan(5);
+    for (let i = 0; i < 600; i++) rig.update(1 / 60);
+    expect(rig.getFocusDistance()).toBeCloseTo(5, 2);
+    expect(calls.length).toBeGreaterThan(600);
   });
 });

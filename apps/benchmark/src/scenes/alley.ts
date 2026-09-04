@@ -1,12 +1,22 @@
 import * as THREE from 'three/webgpu';
 import {
+  abs,
   color,
   float,
+  floor,
+  fract,
+  hash,
   length,
+  materialColor,
   materialOpacity,
+  max,
+  min,
   mix,
   mx_fractal_noise_float,
+  mx_noise_float,
+  normalWorld,
   positionWorld,
+  saturate,
   sin,
   smoothstep,
   time,
@@ -16,20 +26,38 @@ import {
 } from 'three/tsl';
 import {
   CameraRig,
+  Decals,
   DisposeBag,
+  Transform,
+  VolumeFogSettings,
   applySceneEnvironment,
+  createHeightFog,
+  prepareDecalMaterial,
   type CameraRigPreset,
+  type Entity,
+  type ParticleEmitterDescriptorInput,
   type Random,
   type SceneDefinition,
   type SceneInstance,
 } from '@spark/engine';
 
 /**
- * Rainy Cyberpunk Alley, first pass (kickoff §48). Everything is procedural:
- * two facades with lit windows, wet asphalt with a noise puddle mask, neon
- * signs with matching lights, steam sprites, an instanced rain field stepped
- * on the fixed clock, dense primitive props, a placeholder hero, and the
- * isometric camera rig. Post (bloom / AO / TRAA) comes from the preset.
+ * Rainy Cyberpunk Alley, second pass (kickoff §48, Milestone 7). Still fully
+ * procedural, now built on the advanced-rendering stack:
+ *
+ * - procedural TSL surfaces: brick facades with mortar recesses, wet asphalt
+ *   with a puddle mask and animated ripples, concrete kerbs; wet sheen on every
+ *   prop (upward faces and the splash zone near the ground go glossy)
+ * - projected decals: oil stains and grime on the asphalt, torn posters and
+ *   damp streaks on the walls; impact marks from the dynamic pool on each thump
+ * - GPU particles: a wrapping rain volume that follows the camera target,
+ *   steam from two vents, expanding splash rings on the ground (the CPU rain
+ *   field of v1 survives as the WebGL2 fallback)
+ * - height fog (`scene.fogNode`), a raymarched fog volume around the hero
+ *   spot, godrays from the moon, SSR in the puddles (all from the preset, the
+ *   volume opts in on `high` where it measured under budget)
+ * - composition: a slightly lower pitch, a fire escape and cables in the
+ *   foreground, a flickering neon sign, the hero pinned in the lower third
  *
  * Layout: the alley runs along Z. Inner faces of the facades are at x = ±5.5.
  * The hero stands near z = 2; the alley recedes toward -Z into the fog.
@@ -41,12 +69,14 @@ const WALL_HEIGHT = 18;
 const WALL_Z_MIN = -60;
 const WALL_Z_MAX = 30;
 const RAIN_TOP = 20;
+const RAIN_VOLUME: readonly [number, number, number] = [16, 22, 46];
+const RAIN_CAPACITY = 20_000;
 
 const ALLEY_CAMERA: CameraRigPreset = {
-  yaw: 0.22,
-  pitch: 0.46,
-  distance: 26,
-  fov: 38,
+  yaw: 0.17,
+  pitch: 0.4,
+  distance: 24,
+  fov: 39,
   followRate: 4,
   lookAheadSeconds: 0.3,
   lookAheadRate: 3,
@@ -64,6 +94,8 @@ interface NeonSpec {
   height: number;
   glyph: 'ring' | 'bars' | 'chevron';
   flicker: boolean;
+  /** Point light intensity (default 140). */
+  light?: number;
 }
 
 const NEON_SIGNS: readonly NeonSpec[] = [
@@ -75,29 +107,66 @@ const NEON_SIGNS: readonly NeonSpec[] = [
   { color: 0x3d7bff, side: 1, y: 3.0, z: -27, width: 2.8, height: 1.2, glyph: 'bars', flicker: false },
   { color: 0xffd23d, side: -1, y: 5.6, z: -33, width: 2.0, height: 2.0, glyph: 'chevron', flicker: true },
   { color: 0xb14dff, side: 1, y: 8.2, z: 2, width: 2.2, height: 1.1, glyph: 'bars', flicker: false },
+  { color: 0x22e8ff, side: 1, y: 3.4, z: 7.5, width: 1.8, height: 0.9, glyph: 'bars', flicker: true, light: 40 },
 ];
+
+/** Expanding rings where drops hit the wet ground: a mesh emitter of flat rings, alpha-blended, short-lived. */
+function splashRingDescriptor(geometry: THREE.BufferGeometry, material: THREE.NodeMaterial, capacity: number, rate: number): ParticleEmitterDescriptorInput {
+  return {
+    capacity,
+    rate,
+    lifetime: [0.3, 0.5],
+    shape: { kind: 'box', size: [11, 0.02, 34] },
+    space: 'world',
+    direction: [0, 1, 0],
+    speed: [0, 0],
+    spread: 0,
+    gravity: 0,
+    drag: 0,
+    size: [0.07, 0.14],
+    sizeOverLife: [
+      [0, 0.15],
+      [1, 1],
+    ],
+    colorOverLife: [
+      [0, 1, 1, 1, 0.4],
+      [0.5, 1, 1, 1, 0.22],
+      [1, 1, 1, 1, 0],
+    ],
+    render: { kind: 'mesh', geometry, material, align: 'none' },
+    seed: 77,
+  };
+}
 
 export const alleyScene: SceneDefinition = {
   name: 'alley',
   create(ctx): SceneInstance {
     const bag = new DisposeBag();
-    const { random, quality } = ctx;
+    const { random, quality, entities, vfx, logger } = ctx;
+    const pipeline = ctx.renderer.pipeline;
+    const gpu = ctx.renderer.capabilities.backend === 'webgpu';
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x05060a);
-    scene.fog = new THREE.FogExp2(0x0a0e1a, 0.021);
+    // Height fog: exp2 distance fog that thickens toward the asphalt (HeightFog.ts).
+    const fog = createHeightFog({ color: 0x0a0e1c, density: 0.0165, groundY: 0, falloff: 4.5, groundBoost: 1.1 });
+    scene.fogNode = fog.node;
 
     // Dynamic resolution only makes sense on a wall clock; never on the capture clock.
     ctx.renderer.setDynamicResolutionEnabled(ctx.config.fixedFrameDelta === null && quality.dynamicResolution);
     bag.add(() => ctx.renderer.setDynamicResolutionEnabled(false));
 
     // ---- camera -----------------------------------------------------------
-    const rig = new CameraRig({ preset: ALLEY_CAMERA, aspect: ctx.renderer.aspect, near: 0.5, far: 140, random: random.fork() });
+    const rig = new CameraRig({ preset: ALLEY_CAMERA, aspect: ctx.renderer.aspect, near: 0.5, far: 140, random: random.fork(), focusRange: 7 });
     const heroPosition = new THREE.Vector3(-0.8, 0, 2);
     // Frame the hero in the lower third with the alley receding above it.
-    const frameTarget = (out: THREE.Vector3): THREE.Vector3 => out.set(hero.position.x - 0.9, 1.2, hero.position.z - 6);
+    const frameTarget = (out: THREE.Vector3): THREE.Vector3 => out.set(hero.position.x - 0.9, 1.2, hero.position.z - 5.5);
     const hero = new THREE.Group();
     hero.position.copy(heroPosition);
     frameTarget(rig.target);
+    // DOF (cinematic) keeps the hero sharp, not the framing point 5 m behind it.
+    rig.focusTarget = hero.position;
+    rig.bindFocus(pipeline);
+    bag.add(() => rig.bindFocus(null));
     rig.snap();
 
     // ---- image-based lighting: a dark room with neon panels ---------------
@@ -123,8 +192,9 @@ export const alleyScene: SceneDefinition = {
 
     scene.add(new THREE.HemisphereLight(0x2a3a66, 0x0e0b08, 2.0));
 
-    const heroLight = new THREE.SpotLight(0xfff0dc, 3200, 18, 0.48, 0.65, 2);
-    heroLight.position.set(0.5, 9.5, 3.5);
+    // Hung from the left facade and aimed across the alley, so its cone crosses the frame instead of pointing at the camera.
+    const heroLight = new THREE.SpotLight(0xfff0dc, 3400, 20, 0.42, 0.6, 2);
+    heroLight.position.set(-4.6, 8.6, 6.0);
     heroLight.target.position.copy(heroPosition);
     heroLight.castShadow = quality.shadows;
     heroLight.shadow.mapSize.set(quality.shadowMapSize / 2, quality.shadowMapSize / 2);
@@ -133,6 +203,41 @@ export const alleyScene: SceneDefinition = {
     heroLight.shadow.bias = -0.0004;
     heroLight.shadow.normalBias = 0.02;
     scene.add(heroLight, heroLight.target);
+
+    // ---- volumetrics: the hero spot's cone in a fog volume, and moon shafts ----
+    if (gpu) {
+      const spotDirection = heroPosition.clone().sub(heroLight.position).normalize();
+      const volume = new VolumeFogSettings({
+        bounds: { min: new THREE.Vector3(-ALLEY_HALF_WIDTH, 0, -16), max: new THREE.Vector3(ALLEY_HALF_WIDTH, 11.5, 14) },
+        // Density is nearly uniform with height (long falloff) so the spot reads as a beam, not a pool on the asphalt.
+        density: 0.032,
+        color: 0x2c3a58,
+        ambient: 0.02,
+        heightFalloff: 16,
+        noiseScale: 0.2,
+        noiseDrift: new THREE.Vector3(0.25, 0.08, 0.12),
+        noiseStrength: 0.4,
+        anisotropy: 0.4,
+        spot: {
+          position: heroLight.position,
+          direction: spotDirection,
+          angle: heroLight.angle,
+          penumbra: 0.6,
+          color: 0xffe8d0,
+          intensity: 19,
+          range: 19,
+        },
+      });
+      pipeline.setVolumeFog(volume);
+      pipeline.setGodraysLight(moon, { color: 0x7d95d8, intensity: 0.7, density: 0.9, maxDensity: 0.4, distanceAttenuation: 1.6 });
+      bag.add(() => {
+        pipeline.setVolumeFog(null);
+        pipeline.setGodraysLight(null);
+      });
+      // The volume measured well under 1.5 ms at 1080p on the reference GPU, so
+      // the alley opts in on high (the preset default is ultra+, see effect-costs.md).
+      if (quality.preset === 'high' && quality.shadows) pipeline.setEffectEnabled('volumetrics', true);
+    }
 
     // ---- shared geometry / materials ---------------------------------------
     const geometries: THREE.BufferGeometry[] = [];
@@ -149,47 +254,39 @@ export const alleyScene: SceneDefinition = {
       for (const g of geometries) g.dispose();
       for (const m of materials) m.dispose();
     });
+    /** A lit prop material with rain sheen: glossy on upward faces and in the splash zone near the ground. */
+    const wetStandard = (hex: number, roughnessValue: number, metalnessValue: number): THREE.MeshStandardNodeMaterial => {
+      const m = mat(new THREE.MeshStandardNodeMaterial());
+      m.color.setHex(hex);
+      m.metalness = metalnessValue;
+      const wet = saturate(saturate(normalWorld.y).mul(0.8).add(smoothstep(1.3, 0.0, positionWorld.y).mul(0.35)));
+      m.roughnessNode = mix(float(roughnessValue), float(0.13), wet);
+      m.colorNode = mix(color(hex), color(hex).mul(0.6), wet.mul(0.7));
+      return m;
+    };
 
     // ---- ground: wet asphalt with puddles ---------------------------------
-    {
-      const groundGeo = geo(new THREE.PlaneGeometry(40, 100, 1, 1));
-      const groundMat = mat(new THREE.MeshStandardNodeMaterial());
-      const worldXZ = positionWorld.xz;
-      const puddle = smoothstep(0.5, 0.64, mx_fractal_noise_float(vec3(worldXZ.mul(0.22), 3.7), 3, 2.1, 0.55, 0.5).add(0.5));
-      const grime = mx_fractal_noise_float(vec3(worldXZ.mul(0.9), 11.0), 2, 2.0, 0.5, 0.5).add(0.5);
-      const asphalt = mix(color(0x1e2126), color(0x2b2e34), grime);
-      groundMat.colorNode = mix(asphalt, asphalt.mul(0.35), puddle);
-      groundMat.roughnessNode = mix(mix(float(0.55), float(0.38), grime), float(0.035), puddle);
-      groundMat.metalnessNode = float(0.0);
-      // Rain ripples: a subtle animated normal perturbation confined to puddles.
-      const ripple = sin(worldXZ.x.mul(31.0).add(time.mul(7.0))).mul(sin(worldXZ.y.mul(27.0).sub(time.mul(5.3))));
-      const rippleN = vec3(ripple.mul(0.025), 1.0, ripple.mul(0.02)).normalize();
-      groundMat.normalNode = transformNormalToView(mix(vec3(0, 1, 0), rippleN, puddle));
-      const ground = new THREE.Mesh(groundGeo, groundMat);
-      ground.rotation.x = -Math.PI / 2;
-      ground.position.set(0, 0, -15);
-      ground.receiveShadow = true;
-      scene.add(ground);
-    }
+    const groundGeo = geo(new THREE.PlaneGeometry(40, 100, 1, 1));
+    const groundMat = mat(createAsphaltMaterial());
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.set(0, 0, -15);
+    ground.receiveShadow = true;
+    ground.updateMatrixWorld();
+    scene.add(ground);
 
     // ---- facades ------------------------------------------------------------
-    const wallMat = mat(new THREE.MeshStandardNodeMaterial());
-    {
-      const grime = mx_fractal_noise_float(positionWorld.mul(0.35), 3, 2.0, 0.5, 0.5).add(0.5);
-      const streaks = mx_fractal_noise_float(vec3(positionWorld.x.mul(1.6), positionWorld.y.mul(0.12), positionWorld.z.mul(1.6)), 2, 2.0, 0.5, 0.5).add(0.5);
-      const base = mix(color(0x34363d), color(0x46464e), grime).mul(mix(float(0.7), float(1.05), streaks));
-      wallMat.colorNode = base;
-      // Wet near the ground, dry higher up.
-      wallMat.roughnessNode = mix(float(0.32), float(0.82), smoothstep(0.0, 3.5, positionWorld.y));
-      wallMat.metalnessNode = float(0.0);
-    }
+    const wallMat = mat(createBrickMaterial());
     const wallGeo = geo(new THREE.BoxGeometry(WALL_THICKNESS, WALL_HEIGHT, WALL_Z_MAX - WALL_Z_MIN));
+    const walls: THREE.Mesh[] = [];
     for (const side of [-1, 1] as const) {
       const wall = new THREE.Mesh(wallGeo, wallMat);
       wall.position.set(side * (ALLEY_HALF_WIDTH + WALL_THICKNESS / 2), WALL_HEIGHT / 2, (WALL_Z_MIN + WALL_Z_MAX) / 2);
       wall.receiveShadow = true;
       wall.castShadow = true;
+      wall.updateMatrixWorld();
       scene.add(wall);
+      walls.push(wall);
     }
     // Far end: a cross building closes the alley so the fog has something to swallow.
     {
@@ -198,11 +295,24 @@ export const alleyScene: SceneDefinition = {
       end.position.set(0, 13, WALL_Z_MIN - 3);
       scene.add(end);
     }
+    // Concrete kerbs along both walls.
+    {
+      const kerbGeo = geo(new THREE.BoxGeometry(0.55, 0.16, WALL_Z_MAX - WALL_Z_MIN));
+      const kerbMat = mat(createConcreteMaterial());
+      for (const side of [-1, 1] as const) {
+        const kerb = new THREE.Mesh(kerbGeo, kerbMat);
+        kerb.position.set(side * (ALLEY_HALF_WIDTH - 0.275), 0.08, (WALL_Z_MIN + WALL_Z_MAX) / 2);
+        kerb.receiveShadow = true;
+        kerb.castShadow = true;
+        scene.add(kerb);
+      }
+    }
 
     // Ledges and horizontal pipe runs break up the facades.
+    const pipeMat = wetStandard(0x4a4d55, 0.38, 0.85);
     {
       const ledgeGeo = geo(new THREE.BoxGeometry(0.5, 0.25, WALL_Z_MAX - WALL_Z_MIN));
-      const ledgeMat = mat(new THREE.MeshStandardMaterial({ color: 0x23252b, roughness: 0.6, metalness: 0.2 }));
+      const ledgeMat = wetStandard(0x23252b, 0.62, 0.2);
       for (const side of [-1, 1] as const) {
         for (const y of [2.6, 9.9]) {
           const ledge = new THREE.Mesh(ledgeGeo, ledgeMat);
@@ -212,7 +322,6 @@ export const alleyScene: SceneDefinition = {
           scene.add(ledge);
         }
       }
-      const pipeMat = mat(new THREE.MeshStandardMaterial({ color: 0x4a4d55, roughness: 0.35, metalness: 0.85 }));
       const pipeGeo = geo(new THREE.CylinderGeometry(0.11, 0.11, WALL_Z_MAX - WALL_Z_MIN, 10));
       for (const side of [-1, 1] as const) {
         for (const y of [1.6, 1.95]) {
@@ -240,6 +349,7 @@ export const alleyScene: SceneDefinition = {
       const windowGeo = geo(new THREE.PlaneGeometry(1.1, 1.5));
       // transparent: true opts these out of the GTAO context (unlit surfaces must not receive AO grain).
       const litMat = mat(new THREE.MeshBasicNodeMaterial({ color: new THREE.Color(2.4, 2.4, 2.4), fog: true, transparent: true }));
+      litMat.colorNode = windowInterior();
       const darkMat = mat(new THREE.MeshStandardMaterial({ color: 0x0b0d12, roughness: 0.1, metalness: 0.6 }));
       const rows = [3.8, 6.6, 9.4, 12.2, 15.0];
       const columns: number[] = [];
@@ -279,7 +389,7 @@ export const alleyScene: SceneDefinition = {
       scene.add(lit, dark);
       // Window frames for depth: one instanced box behind each window.
       const frameGeo = geo(new THREE.BoxGeometry(1.3, 1.7, 0.16));
-      const frameMat = mat(new THREE.MeshStandardMaterial({ color: 0x1a1c22, roughness: 0.7, metalness: 0.1 }));
+      const frameMat = wetStandard(0x1a1c22, 0.7, 0.1);
       const frames = new THREE.InstancedMesh(frameGeo, frameMat, total);
       let f = 0;
       for (const side of [-1, 1] as const) {
@@ -301,7 +411,7 @@ export const alleyScene: SceneDefinition = {
     // ---- neon signs + matching lights ---------------------------------------
     const flickering: { material: THREE.MeshBasicNodeMaterial; light: THREE.PointLight; base: number; phase: number; color: THREE.Color }[] = [];
     {
-      const housingMat = mat(new THREE.MeshStandardMaterial({ color: 0x121317, roughness: 0.55, metalness: 0.5 }));
+      const housingMat = wetStandard(0x121317, 0.55, 0.5);
       const bracketGeo = geo(new THREE.BoxGeometry(0.9, 0.08, 0.08));
       const tubeRadius = 0.045;
       for (const spec of NEON_SIGNS) {
@@ -363,7 +473,7 @@ export const alleyScene: SceneDefinition = {
         group.add(panel);
         scene.add(group);
 
-        const light = new THREE.PointLight(spec.color, 140, 9.5, 2);
+        const light = new THREE.PointLight(spec.color, spec.light ?? 140, 9.5, 2);
         light.position.set(x - spec.side * 0.9, spec.y - 0.4, spec.z);
         scene.add(light);
         if (spec.flicker) flickering.push({ material: neonMat, light, base: light.intensity, phase: random.range(0, 6.28), color: neon });
@@ -390,11 +500,10 @@ export const alleyScene: SceneDefinition = {
     }
 
     // ---- props ---------------------------------------------------------------
+    const acMat = wetStandard(0x8a8d92, 0.42, 0.7);
     {
       const crateGeo = geo(new THREE.BoxGeometry(1, 1, 1));
-      const crateMats = [0x5a4632, 0x3d4d5c, 0x6b6b60, 0x4a3b2a].map((c) =>
-        mat(new THREE.MeshStandardMaterial({ color: c, roughness: 0.8, metalness: 0.05 })),
-      );
+      const crateMats = [0x5a4632, 0x3d4d5c, 0x6b6b60, 0x4a3b2a].map((c) => wetStandard(c, 0.82, 0.05));
       const addCrate = (x: number, y: number, z: number, size: number, yaw: number): void => {
         const crate = new THREE.Mesh(crateGeo, random.pick(crateMats));
         crate.position.set(x, y + size / 2, z);
@@ -419,9 +528,7 @@ export const alleyScene: SceneDefinition = {
 
       // Barrels.
       const barrelGeo = geo(new THREE.CylinderGeometry(0.42, 0.42, 1.15, 18));
-      const barrelMats = [0x2f3a44, 0x54321e, 0x3b3f3a].map((c) =>
-        mat(new THREE.MeshStandardMaterial({ color: c, roughness: 0.45, metalness: 0.6 })),
-      );
+      const barrelMats = [0x2f3a44, 0x54321e, 0x3b3f3a].map((c) => wetStandard(c, 0.48, 0.6));
       for (let i = 0; i < 6; i++) {
         const side = i % 2 === 0 ? -1 : 1;
         const barrel = new THREE.Mesh(barrelGeo, random.pick(barrelMats));
@@ -432,7 +539,7 @@ export const alleyScene: SceneDefinition = {
       }
 
       // Dumpster with a propped lid.
-      const dumpsterMat = mat(new THREE.MeshStandardMaterial({ color: 0x1f3a2a, roughness: 0.5, metalness: 0.55 }));
+      const dumpsterMat = wetStandard(0x1f3a2a, 0.52, 0.55);
       const dumpster = new THREE.Group();
       const body = new THREE.Mesh(geo(new THREE.BoxGeometry(2.6, 1.4, 1.4)), dumpsterMat);
       body.position.y = 0.75;
@@ -449,7 +556,6 @@ export const alleyScene: SceneDefinition = {
 
       // Wall-mounted AC units.
       const acGeo = geo(new THREE.BoxGeometry(0.7, 0.75, 1.0));
-      const acMat = mat(new THREE.MeshStandardMaterial({ color: 0x8a8d92, roughness: 0.4, metalness: 0.7 }));
       for (let i = 0; i < 6; i++) {
         const side = i % 2 === 0 ? 1 : -1;
         const ac = new THREE.Mesh(acGeo, acMat);
@@ -459,12 +565,12 @@ export const alleyScene: SceneDefinition = {
         scene.add(ac);
       }
 
-      // Cables sagging across the alley.
-      const cableMat = mat(new THREE.MeshStandardMaterial({ color: 0x0a0a0c, roughness: 0.6, metalness: 0.3 }));
-      for (let i = 0; i < 5; i++) {
-        const z = -30 + i * 7 + random.range(-1.5, 1.5);
-        const y = random.range(8.5, 12.5);
-        const sag = random.range(0.9, 1.8);
+      // Cables sagging across the alley; two of them in the foreground, high, for depth.
+      const cableMat = wetStandard(0x0a0a0c, 0.6, 0.3);
+      const cableSpans: [number, number, number][] = [];
+      for (let i = 0; i < 5; i++) cableSpans.push([-30 + i * 7 + random.range(-1.5, 1.5), random.range(8.5, 12.5), random.range(0.9, 1.8)]);
+      cableSpans.push([9.5, 10.2, 1.6], [13, 11.4, 2.1]);
+      for (const [z, y, sag] of cableSpans) {
         const curve = new THREE.CatmullRomCurve3([
           new THREE.Vector3(-ALLEY_HALF_WIDTH, y, z),
           new THREE.Vector3(random.range(-1, 1), y - sag, z + random.range(-0.4, 0.4)),
@@ -475,74 +581,204 @@ export const alleyScene: SceneDefinition = {
         scene.add(cable);
       }
 
-      // Steam vent on the left wall.
+      // Steam vents on both walls.
       const ventGeo = geo(new THREE.BoxGeometry(0.2, 0.6, 1.0));
       const vent = new THREE.Mesh(ventGeo, acMat);
       vent.position.set(-ALLEY_HALF_WIDTH + 0.1, 0.6, -7.5);
       scene.add(vent);
+      const vent2 = new THREE.Mesh(ventGeo, acMat);
+      vent2.position.set(ALLEY_HALF_WIDTH - 0.1, 0.4, -16);
+      scene.add(vent2);
+
+      // Fire escape on the right wall, between the camera and the hero: the foreground silhouette.
+      const ironMat = wetStandard(0x0d0e12, 0.5, 0.75);
+      const escape = new THREE.Group();
+      const railGeo = geo(new THREE.BoxGeometry(0.05, 0.05, 1));
+      const postGeo = geo(new THREE.BoxGeometry(0.05, 1, 0.05));
+      const addPlatform = (y: number, z0: number, z1: number): void => {
+        const len = z1 - z0;
+        const deck = new THREE.Mesh(geo(new THREE.BoxGeometry(1.7, 0.08, len)), ironMat);
+        deck.position.set(ALLEY_HALF_WIDTH - 0.85, y, (z0 + z1) / 2);
+        deck.castShadow = true;
+        deck.receiveShadow = true;
+        escape.add(deck);
+        // Grating lines under the deck so it reads as a fire escape, not a slab.
+        for (let k = 0; k < 6; k++) {
+          const slat = new THREE.Mesh(railGeo, ironMat);
+          slat.scale.z = len;
+          slat.position.set(ALLEY_HALF_WIDTH - 1.65 + k * 0.3, y - 0.06, (z0 + z1) / 2);
+          escape.add(slat);
+        }
+        for (const h of [0.55, 1.05]) {
+          const rail = new THREE.Mesh(railGeo, ironMat);
+          rail.scale.z = len;
+          rail.position.set(ALLEY_HALF_WIDTH - 1.7, y + h, (z0 + z1) / 2);
+          rail.castShadow = true;
+          escape.add(rail);
+        }
+        for (let k = 0; k <= 5; k++) {
+          const post = new THREE.Mesh(postGeo, ironMat);
+          post.scale.y = 1.1;
+          post.position.set(ALLEY_HALF_WIDTH - 1.7, y + 0.55, z0 + (len * k) / 5);
+          post.castShadow = true;
+          escape.add(post);
+        }
+      };
+      addPlatform(4.3, 5.5, 11.5);
+      addPlatform(7.9, 5.5, 11.5);
+      // Ladder between the two platforms and a stair down to the street.
+      for (const dz of [-0.3, 0.3]) {
+        const side = new THREE.Mesh(postGeo, ironMat);
+        side.scale.y = 3.6;
+        side.position.set(ALLEY_HALF_WIDTH - 1.55, 6.1, 10.5 + dz);
+        side.castShadow = true;
+        escape.add(side);
+      }
+      for (let k = 0; k < 9; k++) {
+        const rung = new THREE.Mesh(railGeo, ironMat);
+        rung.scale.z = 0.6;
+        rung.position.set(ALLEY_HALF_WIDTH - 1.55, 4.5 + k * 0.4, 10.5);
+        escape.add(rung);
+      }
+      const stair = new THREE.Mesh(geo(new THREE.BoxGeometry(0.9, 0.08, 4.6)), ironMat);
+      stair.position.set(ALLEY_HALF_WIDTH - 1.0, 2.3, 3.4);
+      stair.rotation.x = -0.75;
+      stair.castShadow = true;
+      escape.add(stair);
+      scene.add(escape);
+
     }
 
-    // ---- steam sprites -------------------------------------------------------
-    interface Puff {
-      sprite: THREE.Sprite;
-      material: THREE.SpriteNodeMaterial;
-      age: number;
-      life: number;
-      drift: THREE.Vector3;
-      origin: THREE.Vector3;
-    }
-    const puffs: Puff[] = [];
+    // ---- decals: grime, oil, posters (Decals.ts) --------------------------------
+    const decals = new Decals(scene, { dynamicCapacity: 12 });
+    bag.add(decals);
+    const up = new THREE.Vector3(0, 1, 0);
     {
-      const radial = smoothstep(0.5, 0.08, length(uv().sub(0.5)));
-      const makePuffMaterial = (tint: THREE.Color): THREE.SpriteNodeMaterial => {
-        const m = new THREE.SpriteNodeMaterial({ transparent: true, depthWrite: false, fog: true });
-        m.colorNode = color(tint);
-        m.opacityNode = radial.mul(materialOpacity);
-        m.opacity = 0;
-        return mat(m);
-      };
-      const vents: { origin: THREE.Vector3; tint: THREE.Color; drift: THREE.Vector3 }[] = [
-        { origin: new THREE.Vector3(-4.9, 0.9, -7.5), tint: new THREE.Color(0.55, 0.62, 0.78), drift: new THREE.Vector3(0.7, 0.9, 0.1) },
-        { origin: new THREE.Vector3(4.6, 0.4, -16), tint: new THREE.Color(0.5, 0.7, 0.62), drift: new THREE.Vector3(-0.5, 0.8, 0.2) },
+      const oilMat = mat(prepareDecalMaterial(new THREE.MeshStandardNodeMaterial()));
+      oilMat.colorNode = color(0x07080b);
+      oilMat.roughnessNode = float(0.04);
+      oilMat.metalnessNode = float(0.0);
+      oilMat.opacityNode = decalBlobMask(0.55, 3.1);
+      for (const [x, z, size, rot] of [
+        [1.6, -1.5, 3.2, 0.4],
+        [-2.2, -12.5, 2.6, 2.1],
+        [2.4, -22, 3.8, 1.2],
+      ] as const) {
+        decals.addDecal({ position: new THREE.Vector3(x, 0, z), normal: up, size: new THREE.Vector3(size, size * 0.7, 0.4), rotation: rot, target: ground, material: oilMat });
+      }
+      const grimeMat = mat(prepareDecalMaterial(new THREE.MeshStandardNodeMaterial()));
+      grimeMat.colorNode = color(0x141210);
+      grimeMat.roughnessNode = float(0.95);
+      grimeMat.metalnessNode = float(0.0);
+      grimeMat.opacityNode = decalBlobMask(0.4, 5.3).mul(0.85);
+      for (let i = 0; i < 7; i++) {
+        const side = random.bool() ? -1 : 1;
+        decals.addDecal({
+          position: new THREE.Vector3(side * random.range(2.6, 4.6), 0, random.range(-34, 6)),
+          normal: up,
+          size: new THREE.Vector3(random.range(2, 3.5), random.range(1.5, 2.5), 0.4),
+          rotation: random.range(0, Math.PI),
+          target: ground,
+          material: grimeMat,
+        });
+      }
+      // Damp streaks climbing the walls from the kerb.
+      const dampMat = mat(prepareDecalMaterial(new THREE.MeshStandardNodeMaterial()));
+      dampMat.colorNode = color(0x0c0d10);
+      dampMat.roughnessNode = float(0.3);
+      dampMat.metalnessNode = float(0.0);
+      dampMat.opacityNode = decalStreakMask();
+      for (let i = 0; i < 6; i++) {
+        const side = i % 2 === 0 ? -1 : 1;
+        const wall = walls[side === -1 ? 0 : 1] as THREE.Mesh;
+        decals.addDecal({
+          position: new THREE.Vector3(side * ALLEY_HALF_WIDTH, 0.9, random.range(-30, 8)),
+          normal: new THREE.Vector3(-side, 0, 0),
+          size: new THREE.Vector3(random.range(1.6, 2.8), 1.9, 0.5),
+          target: wall,
+          material: dampMat,
+        });
+      }
+      // Torn posters at eye level.
+      const posterPalette: [number, number][] = [
+        [0xd9c7a8, 0xc8322c],
+        [0x1e2a4a, 0x22e8ff],
+        [0xefe6d0, 0x233a86],
+        [0xf2c94c, 0x1b1b1b],
+        [0x2b2b30, 0xff2bd6],
       ];
-      for (const v of vents) {
-        for (let i = 0; i < 9; i++) {
-          const material = makePuffMaterial(v.tint);
-          const sprite = new THREE.Sprite(material);
-          const life = random.range(3.5, 5.5);
-          const puff: Puff = { sprite, material, age: random.range(0, life), life, drift: v.drift, origin: v.origin };
-          puffs.push(puff);
-          scene.add(sprite);
-        }
+      for (let i = 0; i < 6; i++) {
+        const side = random.bool() ? -1 : 1;
+        const wall = walls[side === -1 ? 0 : 1] as THREE.Mesh;
+        const [paper, accent] = random.pick(posterPalette);
+        const posterMat = mat(prepareDecalMaterial(new THREE.MeshStandardNodeMaterial()));
+        posterMat.colorNode = posterColor(paper, accent, random.range(2, 6));
+        posterMat.roughnessNode = float(0.55);
+        posterMat.metalnessNode = float(0.0);
+        posterMat.opacityNode = decalTornMask(random.range(0, 100));
+        decals.addDecal({
+          position: new THREE.Vector3(side * ALLEY_HALF_WIDTH, random.range(1.6, 2.4), random.range(-28, 9)),
+          normal: new THREE.Vector3(-side, 0, 0),
+          size: new THREE.Vector3(random.range(0.7, 1.0), random.range(1.0, 1.4), 0.5),
+          rotation: random.range(-0.08, 0.08),
+          target: wall,
+          material: posterMat,
+        });
       }
     }
-    const stepPuff = (puff: Puff, dt: number): void => {
-      puff.age += dt;
-      if (puff.age >= puff.life) puff.age -= puff.life;
-      const t = puff.age / puff.life;
-      const scale = 1.0 + t * 4.0;
-      puff.sprite.scale.set(scale, scale, 1);
-      puff.sprite.position.set(
-        puff.origin.x + puff.drift.x * puff.age + Math.sin(puff.age * 1.7) * 0.25,
-        puff.origin.y + puff.drift.y * puff.age,
-        puff.origin.z + puff.drift.z * puff.age,
-      );
-      // Fade in fast, out slow.
-      puff.material.opacity = Math.min(1, t * 6) * (1 - t) * (1 - t) * 0.75;
-    };
-    for (const puff of puffs) stepPuff(puff, 0);
+    // Impact marks from the dynamic pool: one per "thump" (see update()).
+    const impactMat = mat(prepareDecalMaterial(new THREE.MeshStandardNodeMaterial()));
+    impactMat.colorNode = color(0x050505);
+    impactMat.roughnessNode = float(0.85);
+    impactMat.metalnessNode = float(0.0);
+    impactMat.opacityNode = decalBlobMask(0.7, 9.1);
+    const impactRandom = random.fork();
 
-    // ---- rain: one instanced draw, fixed-step, deterministic wrap -----------
-    const rainCount = Math.max(50, Math.round(2600 * quality.particleDensity));
-    const rain = createRain(rainCount, random.fork());
-    geometries.push(rain.geometry);
-    materials.push(rain.material);
-    scene.add(rain.mesh);
+    // ---- particles: GPU rain / steam / splashes, CPU rain as the compat fallback ----
+    const spawned: Entity[] = [];
+    let rainEid: Entity | null = null;
+    let cpuRain: RainField | null = null;
+    const splashMaterial = mat(new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, fog: true, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+    splashMaterial.colorNode = color(new THREE.Color(0.55, 0.62, 0.8));
+    const splashGeometry = geo(new THREE.RingGeometry(0.72, 1, 14).rotateX(-Math.PI / 2));
+    if (vfx.available) {
+      const emitter = (x: number, y: number, z: number, preset: Parameters<typeof vfx.spawnEmitter>[1], overrides?: Parameters<typeof vfx.spawnEmitter>[2]): Entity => {
+        const eid = entities.create([Transform, { x, y, z }]);
+        spawned.push(eid);
+        const handle = vfx.spawnEmitter(eid, preset, overrides);
+        if (handle) scene.add(handle.object);
+        return eid;
+      };
+      const rainCapacity = Math.max(2000, Math.round(RAIN_CAPACITY * quality.particleDensity));
+      rainEid = emitter(rig.target.x, 10, rig.target.z, 'rain', {
+        capacity: rainCapacity,
+        wrap: { size: RAIN_VOLUME },
+        shape: { kind: 'box', size: RAIN_VOLUME },
+        direction: [0.06, -1, 0.02],
+        speed: [13, 19],
+        size: [0.015, 0.024],
+        colorOverLife: [
+          [0, 0.7, 0.78, 1.0, 0.24],
+          [1, 0.7, 0.78, 1.0, 0.24],
+        ],
+      });
+      const steamCapacity = Math.max(48, Math.round(200 * quality.particleDensity));
+      emitter(-ALLEY_HALF_WIDTH + 0.3, 0.9, -7.5, 'steam', { capacity: steamCapacity, direction: [0.55, 0.8, 0.1], wind: [0.45, 1.0, 0.05] });
+      emitter(ALLEY_HALF_WIDTH - 0.3, 0.55, -16, 'steam', { capacity: steamCapacity, direction: [-0.5, 0.8, 0.2], wind: [-0.35, 1.0, 0.1] });
+      const splashCapacity = Math.max(100, Math.round(600 * quality.particleDensity));
+      emitter(0, 0.02, -9, splashRingDescriptor(splashGeometry, splashMaterial, splashCapacity, Math.round(800 * quality.particleDensity)));
+    } else {
+      logger.info('alley: GPU particles unavailable on this backend, using the CPU rain field');
+      cpuRain = createRain(Math.max(50, Math.round(2600 * quality.particleDensity)), random.fork());
+      geometries.push(cpuRain.geometry);
+      materials.push(cpuRain.material);
+      scene.add(cpuRain.mesh);
+    }
 
     // ---- hero placeholder ----------------------------------------------------
     {
       const bodyGeo = geo(new THREE.CapsuleGeometry(0.32, 0.85, 6, 20));
-      const bodyMat = mat(new THREE.MeshStandardMaterial({ color: 0x1d2230, roughness: 0.45, metalness: 0.35 }));
+      const bodyMat = wetStandard(0x1d2230, 0.45, 0.35);
       const body = new THREE.Mesh(bodyGeo, bodyMat);
       body.position.y = 0.85;
       body.castShadow = true;
@@ -554,7 +790,7 @@ export const alleyScene: SceneDefinition = {
       visor.position.set(0, 1.28, 0.28);
       hero.add(visor);
       const packGeo = geo(new THREE.BoxGeometry(0.4, 0.5, 0.2));
-      const packMat = mat(new THREE.MeshStandardMaterial({ color: 0x343a48, roughness: 0.6, metalness: 0.3 }));
+      const packMat = wetStandard(0x343a48, 0.6, 0.3);
       const pack = new THREE.Mesh(packGeo, packMat);
       pack.position.set(0, 0.95, -0.3);
       pack.castShadow = true;
@@ -566,13 +802,18 @@ export const alleyScene: SceneDefinition = {
 
     let elapsed = 0;
     let nextThump = 4;
+    const transforms = entities.store(Transform);
 
     return {
       scene,
       camera: rig.camera,
       fixedUpdate(fixedDt): void {
-        rain.step(fixedDt);
-        for (const puff of puffs) stepPuff(puff, fixedDt);
+        cpuRain?.step(fixedDt);
+        if (rainEid !== null) {
+          // The rain volume follows the framing target; scene hooks run before systems, so the emitter reads this pose.
+          transforms.x[rainEid] = rig.target.x;
+          transforms.z[rainEid] = rig.target.z;
+        }
       },
       update(dt): void {
         elapsed += dt;
@@ -582,11 +823,20 @@ export const alleyScene: SceneDefinition = {
         if (elapsed >= nextThump) {
           rig.addTrauma(0.35);
           nextThump += 7;
+          decals.spawn({
+            position: new THREE.Vector3(impactRandom.range(-3, 3), 0, impactRandom.range(-14, 0)),
+            normal: up,
+            size: impactRandom.range(0.6, 1.1),
+            rotation: impactRandom.range(0, Math.PI * 2),
+            target: ground,
+            material: impactMat,
+          });
         }
         rig.update(dt);
         for (const f of flickering) {
           const n = Math.sin(elapsed * 23 + f.phase) * Math.sin(elapsed * 7.3 + f.phase * 2);
-          const on = n > -0.85 ? 1 : 0.15;
+          const buzz = Math.sin(elapsed * 61 + f.phase) > 0.92 ? 0.55 : 1;
+          const on = (n > -0.85 ? 1 : 0.15) * buzz;
           f.light.intensity = f.base * on;
           f.material.color.copy(f.color).multiplyScalar(5.5 * on);
         }
@@ -595,12 +845,148 @@ export const alleyScene: SceneDefinition = {
         rig.setAspect(width / height);
       },
       dispose(): void {
+        for (const eid of spawned) entities.destroy(eid);
         bag.dispose();
         scene.clear();
       },
     };
   },
 };
+
+// ---- procedural materials --------------------------------------------------------
+
+/**
+ * Brick facade. Bricks tile along world Z (the alley axis) and Y with a
+ * half-brick offset per course; mortar lines are recessed through a
+ * world-space normal tilt; per-brick hash tint; grime and vertical streaks;
+ * wet and darker toward the ground.
+ */
+function createBrickMaterial(): THREE.MeshStandardNodeMaterial {
+  const m = new THREE.MeshStandardNodeMaterial();
+  const brickW = 0.46;
+  const brickH = 0.155;
+  const mortarW = 0.02;
+  const u = positionWorld.z;
+  const v = positionWorld.y;
+  const row = floor(v.div(brickH));
+  const offset = fract(row.mul(0.5)).mul(brickW);
+  const u2 = u.add(offset).add(200.0);
+  const col = floor(u2.div(brickW));
+  const fu = fract(u2.div(brickW)).mul(brickW);
+  const fv = fract(v.div(brickH)).mul(brickH);
+  const edgeU = min(fu, float(brickW).sub(fu));
+  const edgeV = min(fv, float(brickH).sub(fv));
+  const edge = min(edgeU, edgeV);
+  const mortar = smoothstep(mortarW * 0.6, mortarW * 1.6, edge).oneMinus();
+  const brickId = hash(col.add(row.mul(131.0)).add(7.0));
+  const brickId2 = hash(col.add(row.mul(131.0)).add(91.0));
+  const grime = mx_fractal_noise_float(positionWorld.mul(0.35), 3, 2.0, 0.5, 0.5).add(0.5);
+  const streaks = mx_fractal_noise_float(vec3(positionWorld.x.mul(1.6), positionWorld.y.mul(0.12), positionWorld.z.mul(1.6)), 2, 2.0, 0.5, 0.5).add(0.5);
+  const wet = smoothstep(3.5, 0.0, positionWorld.y);
+  const brickTint = mix(color(0x4a3a36), color(0x5e4a44), brickId).mul(brickId2.mul(0.35).add(0.8));
+  const surface = mix(brickTint, color(0x3b3a3f), smoothstep(0.35, 0.8, grime).mul(0.55)).mul(mix(float(0.7), float(1.05), streaks));
+  const base = mix(surface, color(0x2a2a2c), mortar);
+  m.colorNode = mix(base, base.mul(0.6), wet);
+  const speckle = mx_noise_float(positionWorld.mul(9.0)).mul(0.08);
+  const dryRough = mix(float(0.74).add(speckle), float(0.93), mortar);
+  // Damp, not mirror-wet: the walls stay above the SSR gloss threshold so the puddles carry the reflections.
+  m.roughnessNode = mix(dryRough, float(0.5), wet.mul(0.85));
+  m.metalnessNode = float(0.0);
+  // Mortar recess: tilt the normal toward the brick centre at each edge (walls face ±X, so the tangent plane is YZ).
+  // Kept gentle: a strong recess sparkles under the neon point lights at grazing angles (a moiré of highlights).
+  const tiltZ = fu.sub(brickW * 0.5).sign().mul(smoothstep(mortarW * 1.8, mortarW * 0.4, edgeU));
+  const tiltY = fv.sub(brickH * 0.5).sign().mul(smoothstep(mortarW * 1.8, mortarW * 0.4, edgeV));
+  const bumps = mx_noise_float(positionWorld.mul(14.0)).mul(0.06);
+  const perturbed = normalWorld.add(vec3(0.0, tiltY.mul(-0.28).add(bumps), tiltZ.mul(-0.28).add(bumps))).normalize();
+  m.normalNode = transformNormalToView(perturbed);
+  return m;
+}
+
+/** Wet asphalt: grime variation, hairline cracks, a two-scale puddle mask with animated ripples, glossy everywhere (it is raining). */
+function createAsphaltMaterial(): THREE.MeshStandardNodeMaterial {
+  const m = new THREE.MeshStandardNodeMaterial();
+  const worldXZ = positionWorld.xz;
+  const puddleNoise = mx_fractal_noise_float(vec3(worldXZ.mul(0.22), 3.7), 3, 2.1, 0.55, 0.5).add(0.5);
+  const puddleDetail = mx_noise_float(vec3(worldXZ.mul(1.1), 8.2)).mul(0.08);
+  const puddle = smoothstep(0.47, 0.58, puddleNoise.add(puddleDetail));
+  const grime = mx_fractal_noise_float(vec3(worldXZ.mul(0.9), 11.0), 2, 2.0, 0.5, 0.5).add(0.5);
+  const cracks = smoothstep(0.045, 0.0, abs(mx_noise_float(vec3(worldXZ.mul(0.55), 21.0)))).mul(smoothstep(0.3, 0.6, grime));
+  const speckle = mx_noise_float(vec3(worldXZ.mul(18.0), 2.0)).mul(0.5).add(0.5);
+  const asphalt = mix(color(0x1c1f24), color(0x2a2d33), grime).mul(speckle.mul(0.3).add(0.85));
+  const cracked = mix(asphalt, color(0x0b0c0f), cracks.mul(0.8));
+  m.colorNode = mix(cracked, cracked.mul(0.35), puddle);
+  const wetRough = mix(float(0.5), float(0.36), grime).add(cracks.mul(0.3)).sub(speckle.mul(0.05));
+  m.roughnessNode = mix(wetRough, float(0.03), puddle);
+  m.metalnessNode = float(0.0);
+  // Rain ripples: two crossed animated waves, warped by noise so they do not read as a grid; confined to puddles.
+  const warp = mx_noise_float(vec3(worldXZ.mul(0.8), 5.0)).mul(2.5);
+  const ripple = sin(worldXZ.x.mul(29.0).add(warp).add(time.mul(6.5)))
+    .mul(sin(worldXZ.y.mul(25.0).sub(warp).sub(time.mul(5.1))))
+    .add(sin(worldXZ.x.add(worldXZ.y).mul(17.0).add(time.mul(3.7))).mul(0.5));
+  const rippleN = vec3(ripple.mul(0.03), 1.0, ripple.mul(0.025)).normalize();
+  const crackN = vec3(cracks.mul(0.15), 1.0, cracks.mul(-0.1)).normalize();
+  m.normalNode = transformNormalToView(mix(crackN, rippleN, puddle));
+  return m;
+}
+
+/** Concrete kerb: light grey with aggregate speckle, chipped edges, damp at the base. */
+function createConcreteMaterial(): THREE.MeshStandardNodeMaterial {
+  const m = new THREE.MeshStandardNodeMaterial();
+  const speckle = mx_noise_float(positionWorld.mul(22.0)).mul(0.5).add(0.5);
+  const stain = mx_fractal_noise_float(positionWorld.mul(1.3), 2, 2.0, 0.5, 0.5).add(0.5);
+  const base = mix(color(0x5c5d5a), color(0x6e6f6a), speckle).mul(mix(float(0.75), float(1.0), stain));
+  const damp = smoothstep(0.12, 0.0, positionWorld.y);
+  m.colorNode = mix(base, base.mul(0.55), damp.mul(0.8));
+  m.roughnessNode = mix(float(0.86).sub(speckle.mul(0.1)), float(0.3), damp);
+  m.metalnessNode = float(0.0);
+  return m;
+}
+
+/** Lit window interior: the instance colour, dimmer toward the sill, seen through half-closed blinds and a mullion. */
+function windowInterior(): THREE.Node<'vec3'> {
+  const u = uv();
+  const glow = mix(float(1.35), float(0.55), u.y.oneMinus().pow(1.6));
+  const slats = smoothstep(0.35, 0.5, fract(u.y.mul(6.0))).mul(0.4).add(0.6);
+  const mullion = smoothstep(0.47, 0.485, u.x).mul(smoothstep(0.53, 0.515, u.x)).oneMinus();
+  // The per-instance colour is multiplied in by the material itself (InstancedMesh.instanceColor).
+  return vec3(materialColor).mul(glow.mul(slats).mul(mullion));
+}
+
+/** Soft blob mask for a decal quad: radial falloff eaten by noise so the edge is ragged. */
+function decalBlobMask(edge: number, seed: number): THREE.Node<'float'> {
+  const centred = uv().sub(0.5).mul(2.0);
+  const radial = length(centred);
+  const n = mx_fractal_noise_float(vec3(uv().mul(4.0), seed), 3, 2.0, 0.5, 0.5).mul(0.5);
+  return smoothstep(1.0, edge, radial.add(n)).mul(materialOpacity);
+}
+
+/** Vertical damp streaks rising from the bottom edge of the decal. */
+function decalStreakMask(): THREE.Node<'float'> {
+  const u = uv();
+  const columns = mx_noise_float(vec3(u.x.mul(9.0), 0.3, 1.0)).mul(0.5).add(0.5);
+  const rise = smoothstep(0.95, 0.05, u.y.add(columns.mul(0.5)));
+  const sideFade = smoothstep(0.0, 0.15, u.x).mul(smoothstep(1.0, 0.85, u.x));
+  return rise.mul(sideFade).mul(0.8).mul(materialOpacity);
+}
+
+/** Torn-paper mask: the rectangle minus a noisy bite along the edges. */
+function decalTornMask(seed: number): THREE.Node<'float'> {
+  const u = uv();
+  const edgeDist = min(min(u.x, u.x.oneMinus()), min(u.y, u.y.oneMinus()));
+  const bite = mx_fractal_noise_float(vec3(u.mul(6.0), seed), 2, 2.0, 0.5, 0.5).mul(0.14);
+  return smoothstep(0.0, 0.06, edgeDist.sub(bite).add(0.03)).mul(materialOpacity);
+}
+
+/** Poster artwork: paper with a band of accent stripes and a fake headline block. */
+function posterColor(paper: number, accent: number, stripes: number): THREE.Node<'vec3'> {
+  const u = uv();
+  const band = smoothstep(0.55, 0.57, u.y).mul(smoothstep(0.92, 0.9, u.y));
+  const stripe = fract(u.x.mul(stripes)).greaterThan(0.5).select(float(1.0), float(0.0));
+  const headline = smoothstep(0.18, 0.2, u.y).mul(smoothstep(0.32, 0.3, u.y)).mul(smoothstep(0.1, 0.12, u.x)).mul(smoothstep(0.9, 0.88, u.x));
+  const wear = mx_noise_float(vec3(u.mul(7.0), 3.0)).mul(0.5).add(0.5);
+  const art = mix(color(paper), color(accent), max(band.mul(stripe), headline));
+  return mix(art, art.mul(0.55), wear.mul(0.5)).mul(0.9);
+}
 
 // ---- helpers ------------------------------------------------------------------
 
@@ -611,6 +997,7 @@ interface RainField {
   step(dt: number): void;
 }
 
+/** The v1 CPU rain: one instanced draw stepped on the fixed clock. Kept as the WebGL2 (no compute) fallback. */
 function createRain(count: number, random: Random): RainField {
   const geometry = new THREE.BoxGeometry(0.014, 0.42, 0.014);
   const material = new THREE.MeshBasicNodeMaterial({
