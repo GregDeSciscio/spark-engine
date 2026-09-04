@@ -15,13 +15,13 @@ pnpm install
 pnpm dev
 ```
 
-Then open **http://localhost:5173/?scene=alley** — that's the showpiece. The first load of a scene spends a few seconds on "Compiling shaders"; that's expected and only happens once per scene per session.
+Then open **http://localhost:5173** and pick a scene from the menu. Start with **Rainy Alley** — that's the showpiece.
 
-If your machine struggles, add `&preset=medium` (or `low`) to the URL. If it flies, try `&preset=cinematic`.
+The first load of a scene spends a few seconds on "Compiling shaders"; that's expected and only happens once per scene per session. If your machine struggles, drop the quality preset in the menu to `medium` or `low`. If it flies, try `cinematic`.
 
 ## The scenes
 
-Pick one with `?scene=<name>`, e.g. `http://localhost:5173/?scene=physics`.
+The menu at the root URL launches any of these. You can also go straight to one with `?scene=<name>`, e.g. `http://localhost:5173/?scene=physics`.
 
 | Scene | What it is | Controls |
 |---|---|---|
@@ -43,7 +43,7 @@ Stack them with `&`, e.g. `?scene=alley&preset=cinematic&backend=webgpu`.
 
 | Parameter | Values | Notes |
 |---|---|---|
-| `scene` | any name above | Defaults to `bootstrap` |
+| `scene` | any name above | Omit it entirely to get the launcher menu |
 | `preset` | `low` `medium` `high` `ultra` `cinematic` | Defaults to `high`. `cinematic` adds depth of field |
 | `backend` | `auto` `webgpu` `webgl` | `auto` prefers WebGPU, falls back to WebGL2 |
 | `scale` | `0.5`–`1` | Internal render scale |
