@@ -29,6 +29,16 @@ export interface DynamicResolutionOptions {
   readonly raiseRatio: number;
   /** EMA weight for a new sample, 0..1. Lower = smoother, slower. */
   readonly smoothing: number;
+  /**
+   * Samples to ignore after enable/reset. The first frames of a scene are
+   * dominated by pipeline compilation and say nothing about steady-state cost.
+   */
+  readonly warmupFrames: number;
+  /**
+   * A sample above this many milliseconds is a hitch (shader compile, tab
+   * stall, GC), not load: it is dropped instead of dragging the scale down.
+   */
+  readonly hitchMs: number;
 }
 
 export const DEFAULT_DYNAMIC_RESOLUTION: DynamicResolutionOptions = {
@@ -40,6 +50,8 @@ export const DEFAULT_DYNAMIC_RESOLUTION: DynamicResolutionOptions = {
   lowerRatio: 1.0,
   raiseRatio: 0.72,
   smoothing: 0.15,
+  warmupFrames: 45,
+  hitchMs: 100,
 };
 
 export class DynamicResolutionController {
@@ -50,10 +62,18 @@ export class DynamicResolutionController {
   private smoothedMs: number | null = null;
   private sinceMove = Number.POSITIVE_INFINITY;
   private lastSource: 'gpu' | 'cpu' | null = null;
+  private warmupLeft: number;
+  private hitches = 0;
 
   constructor(options: Partial<DynamicResolutionOptions> = {}, initialScale?: number) {
     this.options = { ...DEFAULT_DYNAMIC_RESOLUTION, ...options };
     this.scale = this.clamp(initialScale ?? this.options.ceiling);
+    this.warmupLeft = this.options.warmupFrames;
+  }
+
+  /** Samples rejected as hitches so far (diagnostics). */
+  get hitchCount(): number {
+    return this.hitches;
   }
 
   get renderScale(): number {
@@ -86,6 +106,7 @@ export class DynamicResolutionController {
     this.smoothedMs = null;
     this.sinceMove = Number.POSITIVE_INFINITY;
     this.lastSource = null;
+    this.warmupLeft = this.options.warmupFrames;
   }
 
   /**
@@ -98,9 +119,17 @@ export class DynamicResolutionController {
     const sample = gpuMs !== null && Number.isFinite(gpuMs) && gpuMs > 0 ? gpuMs : cpuMs;
     this.lastSource = gpuMs !== null && Number.isFinite(gpuMs) && gpuMs > 0 ? 'gpu' : 'cpu';
     if (!Number.isFinite(sample) || sample < 0) return this.scale;
+    this.sinceMove += Math.max(0, dt);
+    if (this.warmupLeft > 0) {
+      this.warmupLeft--;
+      return this.scale;
+    }
+    if (sample > this.options.hitchMs) {
+      this.hitches++;
+      return this.scale;
+    }
 
     this.smoothedMs = this.smoothedMs === null ? sample : this.smoothedMs + (sample - this.smoothedMs) * this.options.smoothing;
-    this.sinceMove += Math.max(0, dt);
     if (this.sinceMove < this.options.settleSeconds) return this.scale;
 
     const { targetMs, lowerRatio, raiseRatio, step } = this.options;

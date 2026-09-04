@@ -26,6 +26,13 @@ export interface RendererOptions {
   quality: QualitySettings;
   /** Fixed drawing-buffer size for deterministic capture. Overrides container size. */
   fixedSize?: { width: number; height: number } | undefined;
+  /**
+   * Track GPU timestamps (WebGPU `timestamp-query`). Default true. The engine
+   * turns this off on a fixed clock: in synchronous stepped rendering the async
+   * resolve never lands before the next frame, so the query pool only grows
+   * until three warns "Maximum number of queries exceeded".
+   */
+  trackTimestamp?: boolean | undefined;
 }
 
 export interface RenderFrameStats {
@@ -93,7 +100,6 @@ export class SparkRenderer implements Disposable {
   private resizeObserver: ResizeObserver | null = null;
   private quality: QualitySettings;
   private lastGpuMs: number | null = null;
-  private gpuSampleInFlight = false;
   private disposed = false;
   private width = 1;
   private height = 1;
@@ -143,7 +149,7 @@ export class SparkRenderer implements Disposable {
         // anti-aliasing (MSAA / TRAA / FXAA) lives on the scene pass instead.
         antialias: false,
         forceWebGL,
-        trackTimestamp: true,
+        trackTimestamp: options.trackTimestamp ?? true,
         // powerPreference is deliberately not set: Chromium on Windows ignores it
         // and logs a console warning, which would fail the clean-console check.
       });
@@ -181,7 +187,7 @@ export class SparkRenderer implements Disposable {
 
     let timestampQuery = false;
     let adapter: RendererCapabilities['adapter'] = null;
-    if (backend === 'webgpu') {
+    if (backend === 'webgpu' && (options.trackTimestamp ?? true)) {
       try {
         timestampQuery = renderer.hasFeature('timestamp-query');
       } catch {
@@ -319,6 +325,10 @@ export class SparkRenderer implements Disposable {
     if (this.dynamicResolution.enabled === enabled) return;
     this.dynamicResolution.enabled = enabled;
     this.dynamicResolution.reset(enabled ? this.renderScale : this.quality.renderScale);
+    this.lastRenderTime = null;
+    // Keep the upscale stage resident while the controller may move the scale,
+    // so scale changes are target resizes, never graph rebuilds.
+    this.pipeline.setDynamicScaling(enabled);
     if (!enabled) this.setRenderScale(this.quality.renderScale);
   }
 
@@ -357,8 +367,10 @@ export class SparkRenderer implements Disposable {
 
   /** Resolve GPU timestamps in the background; result lands in `stats().gpuMs` a frame or two later. */
   private sampleGpuTime(): void {
-    if (!this.capabilities.timestampQuery || this.gpuSampleInFlight) return;
-    this.gpuSampleInFlight = true;
+    if (!this.capabilities.timestampQuery) return;
+    // Resolve every frame: three's query pool coalesces concurrent resolves,
+    // and skipping frames while one is pending lets the pool (2048 queries)
+    // overflow during compile stalls, which three reports as a console warning.
     void this.three
       .resolveTimestampsAsync(THREE.TimestampQuery.RENDER)
       .then(() => {
@@ -367,9 +379,6 @@ export class SparkRenderer implements Disposable {
       })
       .catch(() => {
         this.lastGpuMs = null;
-      })
-      .finally(() => {
-        this.gpuSampleInFlight = false;
       });
   }
 

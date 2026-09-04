@@ -224,6 +224,9 @@ export function validate(doc, { name, budget, budgetSource }) {
   for (const mesh of report.meshes.properties) {
     lines.push(`    mesh ${mesh.name || '(unnamed)'}: ${fmt(mesh.glPrimitives)} prims, ${fmt(mesh.vertices)} verts, x${mesh.instances}, ${kib(mesh.size)}, [${mesh.attributes.join(' ')}]`);
   }
+  for (const mesh of doc.getRoot().listMeshes()) {
+    for (const flipped of checkWinding(mesh)) warnings.push(flipped);
+  }
 
   // Textures.
   if (report.textures.properties.length === 0) {
@@ -270,6 +273,52 @@ export function validate(doc, { name, budget, budgetSource }) {
 
   lines.unshift(`  budget: ${budget} (${budgetSource})`);
   return { lines, warnings, triangles: sceneTriangles, name };
+}
+
+/**
+ * Winding audit: compare each triangle's geometric normal against its vertex
+ * normals. glTF is counter-clockwise; a primitive where most faces disagree was
+ * exported inside-out. WebGPU culls those as back faces (they render dark or
+ * vanish), while three's WebGL backend can mask it, so catch it here.
+ */
+function checkWinding(mesh) {
+  const warnings = [];
+  mesh.listPrimitives().forEach((prim, index) => {
+    if (prim.getMode() !== 4) return; // TRIANGLES only
+    const position = prim.getAttribute('POSITION');
+    const normal = prim.getAttribute('NORMAL');
+    const indices = prim.getIndices();
+    if (!position || !normal) return;
+    const count = indices ? indices.getCount() : position.getCount();
+    const vertex = (i) => (indices ? indices.getScalar(i) : i);
+    const a = [];
+    const b = [];
+    const c = [];
+    const n = [];
+    let agree = 0;
+    let disagree = 0;
+    for (let t = 0; t + 2 < count; t += 3) {
+      position.getElement(vertex(t), a);
+      position.getElement(vertex(t + 1), b);
+      position.getElement(vertex(t + 2), c);
+      normal.getElement(vertex(t), n);
+      const abx = b[0] - a[0], aby = b[1] - a[1], abz = b[2] - a[2];
+      const acx = c[0] - a[0], acy = c[1] - a[1], acz = c[2] - a[2];
+      const fx = aby * acz - abz * acy, fy = abz * acx - abx * acz, fz = abx * acy - aby * acx;
+      const dot = fx * n[0] + fy * n[1] + fz * n[2];
+      if (Math.abs(dot) < 1e-12) continue; // degenerate (poles, slivers)
+      if (dot > 0) agree++;
+      else disagree++;
+    }
+    const total = agree + disagree;
+    if (total === 0) return;
+    if (disagree > agree) {
+      warnings.push(`mesh ${mesh.getName() || '(unnamed)'} primitive ${index}: winding looks inverted (${disagree}/${total} faces oppose their vertex normals)`);
+    } else if (disagree > total * 0.1) {
+      warnings.push(`mesh ${mesh.getName() || '(unnamed)'} primitive ${index}: mixed winding (${disagree}/${total} faces oppose their vertex normals)`);
+    }
+  });
+  return warnings;
 }
 
 function fmt(n) {

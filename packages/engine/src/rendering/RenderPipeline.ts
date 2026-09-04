@@ -9,12 +9,14 @@ import {
   renderOutput,
   sample,
   screenUV,
+  uniform,
   unpackRGBToNormal,
   velocity,
 } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { fsr1 } from 'three/addons/tsl/display/FSR1Node.js';
+import type GTAONode from 'three/addons/tsl/display/GTAONode.js';
 import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import { traa } from 'three/addons/tsl/display/TRAANode.js';
 import type { Disposable } from '../core/Disposable';
@@ -24,14 +26,14 @@ import type { ActiveBackend } from './Renderer';
 
 /**
  * Post stages the pipeline knows about. Every one is individually toggleable
- * and reports whether the active backend can run it at all.
+ * and reports whether the active backend / layout can run it at all.
  *
- * - `ao`    GTAO from a depth/normal prepass, applied to indirect light only
- *           (`builtinAOContext`). WebGPU only (MRT + prepass).
- * - `traa`  Temporal reprojection AA from the shared velocity buffer. WebGPU only.
- * - `msaa`  Hardware MSAA on the scene pass. Used only when no effect needs to
- *           sample the depth buffer (i.e. AO and TRAA are both off).
- * - `fsr1`  FidelityFX Super Resolution 1 upscale when renderScale < 1.
+ * - `ao`    GTAO from a normal+depth prepass, applied to indirect light only
+ *           (`builtinAOContext`). WebGPU only.
+ * - `traa`  Temporal reprojection AA from the scene pass velocity MRT. WebGPU only.
+ * - `msaa`  Hardware MSAA on the scene pass. Only engaged when the preset has
+ *           neither AO nor TRAA (they cannot sample a multisampled depth buffer).
+ * - `fsr1`  FidelityFX Super Resolution 1 upscale for renderScale < 1.
  *           Off means a plain bilinear resolve.
  * - `bloom` HDR bloom before tone mapping.
  * - `fxaa`  Post-tonemap FXAA. The compat-tier AA.
@@ -44,7 +46,7 @@ export interface PostEffectState {
   readonly name: PostEffectName;
   /** Requested on (by preset or explicit toggle). */
   readonly enabled: boolean;
-  /** The active backend can run it. `enabled && available` is what actually renders. */
+  /** The active backend and scene-pass layout can run it. `enabled && available` is what renders. */
   readonly available: boolean;
 }
 
@@ -63,15 +65,64 @@ interface DisposableNode {
 }
 
 /**
+ * The expensive part of the graph: scene passes and the AO prepass. Every
+ * scene material gets one GPU pipeline per pass variant, and compiling those
+ * takes seconds on some driver stacks, so these live for the whole
+ * scene/camera/quality combination and are only rewired by toggles.
+ */
+interface SceneLayout {
+  scene: THREE.Scene;
+  camera: THREE.Camera;
+  quality: QualitySettings;
+  /** MSAA engaged on the scene pass (excludes AO and TRAA for this layout). */
+  msaa: boolean;
+  samples: number;
+  /** The one scene pass. On WebGPU it carries the velocity MRT and (if the preset has AO) the AO context permanently. */
+  scenePass: THREE.PassNode;
+  /**
+   * WebGPU only. The projection matrix the `velocity` MRT node uses, owned by
+   * the layout and shared with TRAA. `VelocityNode` builds a different shader
+   * when its override is null, so keeping one persistent override means
+   * adding or removing TRAA never recompiles a scene material.
+   */
+  velocityProjection: THREE.Matrix4 | null;
+  /**
+   * WebGPU only, presets with AO. Prepass and GTAO live for the layout's
+   * lifetime and always render (GTAO first, which renders the prepass, which
+   * renders the shadow maps under the default context), so the frame's
+   * structure and every material's builder context are identical whether AO
+   * is on or off. AO off just forces the sampled factor to 1 (`aoDisable`)
+   * and drops both passes to 1/20 resolution.
+   */
+  prePass: THREE.PassNode | null;
+  aoNode: GTAONode | null;
+  aoDisable: THREE.UniformNode<'float', number> | null;
+}
+
+/** Resolution scale of the AO prepass/GTAO while AO is switched off (kept resident, see SceneLayout). */
+const AO_IDLE_SCALE = 0.05;
+
+const _drawingSize = new THREE.Vector2();
+
+/**
  * Engine-owned wrapper around three's `RenderPipeline`. Composes the TSL
- * display nodes into one graph driven by `QualitySettings` (kickoff §7). The
- * graph is rebuilt lazily when the scene, camera, quality, toggles, or the
- * "scaled vs native" state changes; per-frame work is just `render()`.
+ * display nodes into one graph driven by `QualitySettings` (kickoff §7).
+ *
+ * Two tiers of rebuild:
+ * - **layout** (scene, camera, quality or backend change): the scene pass,
+ *   prepass and GTAO are recreated. Expensive (scene materials recompile).
+ * - **compose** (effect toggles, upscale stage appearing): only the cheap
+ *   quad-level nodes (TRAA, FSR1, bloom, FXAA, tone map) are recreated and
+ *   wired to the persistent scene pass. Scene materials keep their pipelines:
+ *   the pass always has the same MRT layout and the same AO context, and AO
+ *   on/off only swaps the texture that context samples.
+ *
+ * Render-scale changes are neither: the pass targets resize in place.
  *
  * Graph (WebGPU, everything on):
  *
- *   prepass (normal+velocity+depth) ─► GTAO ─┐
- *   scene pass (AO context) ─► TRAA ─► FSR1 ─► + bloom ─► tone map ─► [FXAA]
+ *   prepass (normal, depth) ─► GTAO ─► (AO texture, sampled by the scene pass context)
+ *   scene pass (MRT output+velocity) ─► TRAA ─► FSR1 ─► + bloom ─► tone map ─► [FXAA]
  *
  * Compat tier (WebGL2 backend): scene pass [MSAA] ─► + bloom ─► tone map ─► FXAA.
  */
@@ -84,14 +135,20 @@ export class RenderPipeline implements Disposable {
   private quality: QualitySettings;
   private readonly enabled: Record<PostEffectName, boolean>;
   private renderScale = 1;
-  private scene: THREE.Scene | null = null;
-  private camera: THREE.Camera | null = null;
-  private dirty = true;
+  /**
+   * True while a controller may move the render scale every few hundred ms.
+   * Keeps the upscale stage resident so scale changes never touch the graph.
+   */
+  private dynamicScaling = false;
+  private layout: SceneLayout | null = null;
+  private composeDirty = true;
   private disposed = false;
+  /** Cheap per-composition nodes. */
   private nodes: DisposableNode[] = [];
-  private scenePass: THREE.PassNode | null = null;
-  private prePass: THREE.PassNode | null = null;
+  private activePass: THREE.PassNode | null = null;
   private activeEffects: PostEffectName[] = [];
+  private aoActive = false;
+  private traaActive = false;
   private toneMapping: THREE.ToneMapping = THREE.ACESFilmicToneMapping;
   private outputColorSpace: string = THREE.SRGBColorSpace;
 
@@ -113,13 +170,15 @@ export class RenderPipeline implements Disposable {
     this.renderScale = quality.renderScale;
   }
 
-  /** Whether the active backend can run an effect at all. */
+  /** Whether the active backend and scene-pass layout can run an effect at all. */
   isAvailable(name: PostEffectName): boolean {
     switch (name) {
       case 'ao':
+        return this.layout ? this.layout.aoNode !== null : this.backend === 'webgpu' && !this.layoutUsesMSAA() && this.quality.ambientOcclusion !== 'off';
       case 'traa':
-        return this.backend === 'webgpu';
+        return this.backend === 'webgpu' && !this.layoutUsesMSAA();
       case 'msaa':
+        return this.layoutUsesMSAA();
       case 'fsr1':
       case 'bloom':
       case 'fxaa':
@@ -139,7 +198,7 @@ export class RenderPipeline implements Disposable {
   setEffectEnabled(name: PostEffectName, enabled: boolean): void {
     if (this.enabled[name] === enabled) return;
     this.enabled[name] = enabled;
-    this.dirty = true;
+    this.composeDirty = true;
   }
 
   setQuality(quality: QualitySettings): void {
@@ -150,7 +209,8 @@ export class RenderPipeline implements Disposable {
     this.enabled.fsr1 = quality.upscaler === 'fsr1';
     this.enabled.bloom = quality.bloom;
     this.enabled.fxaa = quality.fxaa;
-    this.dirty = true;
+    // Layout depends on quality (MSAA, AO resolution); it is rebuilt on next render.
+    this.composeDirty = true;
   }
 
   getQuality(): QualitySettings {
@@ -161,7 +221,7 @@ export class RenderPipeline implements Disposable {
     if (toneMapping === this.toneMapping && outputColorSpace === this.outputColorSpace) return;
     this.toneMapping = toneMapping;
     this.outputColorSpace = outputColorSpace;
-    this.dirty = true;
+    this.composeDirty = true;
   }
 
   getRenderScale(): number {
@@ -169,33 +229,47 @@ export class RenderPipeline implements Disposable {
   }
 
   /**
-   * Internal resolution relative to the swap chain. Scene passes resize on the
-   * fly; only crossing the 1.0 boundary rebuilds the graph (the upscale stage
-   * comes and goes).
+   * Internal resolution relative to the swap chain. Pass targets are resized
+   * and re-initialised immediately so consumers (TRAA sizes its history from
+   * the beauty texture) never see a stale size. No nodes are created unless
+   * the upscale stage has to appear or disappear, which cannot happen while
+   * dynamic scaling is active.
    */
   setRenderScale(scale: number): void {
     const clamped = Math.min(1, Math.max(0.25, scale));
     if (clamped === this.renderScale) return;
-    const crossed = (clamped < 1) !== (this.renderScale < 1);
+    const before = this.wantsUpscaleStage();
     this.renderScale = clamped;
-    if (crossed) {
-      this.dirty = true;
-    } else {
-      this.scenePass?.setResolutionScale(clamped);
-      this.prePass?.setResolutionScale(clamped);
-    }
+    if (this.wantsUpscaleStage() !== before) this.composeDirty = true;
+    this.sizePasses();
   }
 
-  /** The swap chain changed size. Pass nodes track the drawing buffer themselves; nothing to rebuild. */
+  /**
+   * Tell the pipeline that a controller will move the render scale at runtime.
+   * While active, the FSR1 stage stays in the graph even at scale 1 (where it
+   * degenerates to a mild RCAS sharpen), so scale changes never rebuild.
+   */
+  setDynamicScaling(active: boolean): void {
+    if (this.dynamicScaling === active) return;
+    const before = this.wantsUpscaleStage();
+    this.dynamicScaling = active;
+    if (this.wantsUpscaleStage() !== before) this.composeDirty = true;
+  }
+
+  isDynamicScaling(): boolean {
+    return this.dynamicScaling;
+  }
+
+  /** The swap chain changed size. Resize the pass targets now rather than one consumer at a time. */
   resize(): void {
-    // Intentionally empty: PassNode, GTAONode, TRAANode, BloomNode, FSR1Node and
-    // FXAANode all read renderer.getDrawingBufferSize() in updateBefore().
+    this.sizePasses();
   }
 
   stats(): RenderPipelineStats {
-    const rt = this.scenePass?.renderTarget;
+    const rt = this.activePass?.renderTarget;
+    const scenePasses = this.activePass ? (this.activeEffects.includes('ao') ? 2 : 1) : 0;
     return {
-      scenePasses: (this.scenePass ? 1 : 0) + (this.prePass ? 1 : 0),
+      scenePasses,
       active: [...this.activeEffects],
       sceneWidth: rt?.width ?? 0,
       sceneHeight: rt?.height ?? 0,
@@ -204,76 +278,171 @@ export class RenderPipeline implements Disposable {
 
   render(scene: THREE.Scene, camera: THREE.Camera): void {
     if (this.disposed) return;
-    if (scene !== this.scene || camera !== this.camera) {
-      this.scene = scene;
-      this.camera = camera;
-      this.dirty = true;
+    const layout = this.ensureLayout(scene, camera);
+    if (this.composeDirty) this.compose(layout);
+    if (layout.velocityProjection && !this.traaActive) {
+      // TRAA does this itself (with its jitter-free matrix) while it is in the
+      // graph; without it the override must still be set, see SceneLayout.
+      layout.velocityProjection.copy(camera.projectionMatrix);
+      velocity.setProjectionMatrix(layout.velocityProjection);
     }
-    if (this.dirty) this.rebuild(scene, camera);
     this.three.render();
   }
 
-  private rebuild(scene: THREE.Scene, camera: THREE.Camera): void {
-    this.releaseNodes();
-    this.dirty = false;
+  // ---- layout (expensive, persistent) ---------------------------------------
+
+  private layoutUsesMSAA(): boolean {
+    if (this.layout) return this.layout.msaa;
+    return this.quality.msaaSamples > 0 && this.quality.ambientOcclusion === 'off' && !this.quality.temporalAA;
+  }
+
+  private wantsUpscaleStage(): boolean {
+    return this.enabled.fsr1 && this.isAvailable('fsr1') && (this.dynamicScaling || this.renderScale < 1);
+  }
+
+  private ensureLayout(scene: THREE.Scene, camera: THREE.Camera): SceneLayout {
+    const current = this.layout;
+    if (current && current.scene === scene && current.camera === camera && current.quality === this.quality) return current;
+    this.releaseLayout();
 
     const q = this.quality;
+    // Depth-sampling effects cannot read a multisampled depth attachment, so
+    // MSAA only exists in layouts whose preset asks for neither.
+    const msaa = q.msaaSamples > 0 && q.ambientOcclusion === 'off' && !q.temporalAA;
+    const samples = msaa ? q.msaaSamples : 0;
+
+    const scenePass = pass(scene, camera, { samples });
+    scenePass.name = 'Scene';
+    scenePass.setResolutionScale(this.renderScale);
+
+    let velocityProjection: THREE.Matrix4 | null = null;
+    let prePass: THREE.PassNode | null = null;
+    let aoNode: GTAONode | null = null;
+    let aoDisable: THREE.UniformNode<'float', number> | null = null;
+    if (this.backend === 'webgpu' && !msaa) {
+      // Fixed layout for the WebGPU scene pass: velocity MRT (cheap) with a
+      // persistent projection override, and, when the preset has AO, an AO
+      // context that always samples the GTAO target. Toggling TRAA or AO then
+      // never changes a scene material's shader or bindings.
+      scenePass.setMRT(mrt({ output, velocity }));
+      velocityProjection = new THREE.Matrix4().copy(camera.projectionMatrix);
+      velocity.setProjectionMatrix(velocityProjection);
+    }
+    if (this.backend === 'webgpu' && !msaa && q.ambientOcclusion !== 'off') {
+      prePass = pass(scene, camera);
+      prePass.name = 'Prepass';
+      prePass.transparent = false;
+      prePass.setResolutionScale(this.renderScale);
+      prePass.setMRT(mrt({ output: packNormalToRGB(normalView) }));
+      const prePassNormal = sample((uv) => unpackRGBToNormal(prePass!.getTextureNode().sample(uv)));
+      const prePassDepth = prePass.getTextureNode('depth');
+
+      aoNode = ao(prePassDepth, prePassNormal, camera);
+      aoNode.resolutionScale = q.aoResolutionScale;
+      aoNode.useTemporalFiltering = q.temporalAA;
+      aoNode.radius.value = q.ambientOcclusion === 'gtao' ? 0.5 : 0.35;
+      aoNode.samples.value = q.ambientOcclusion === 'gtao' ? 16 : 8;
+      aoDisable = uniform(0);
+      scenePass.contextNode = builtinAOContext(aoNode.getTextureNode().sample(screenUV).r.max(aoDisable));
+    }
+
+    const layout: SceneLayout = {
+      scene,
+      camera,
+      quality: q,
+      msaa,
+      samples,
+      scenePass,
+      velocityProjection,
+      prePass,
+      aoNode,
+      aoDisable,
+    };
+    this.layout = layout;
+    this.composeDirty = true;
+    this.sizePasses();
+    this.log.debug(`layout built: backend=${this.backend} msaa=${samples} scale=${this.renderScale.toFixed(2)}`);
+    return layout;
+  }
+
+  /** Size and initialise every pass target for the current drawing buffer and render scale. */
+  private sizePasses(): void {
+    const layout = this.layout;
+    if (!layout) return;
+    this.renderer.getDrawingBufferSize(_drawingSize);
+    for (const p of [layout.scenePass, layout.prePass]) {
+      if (!p) continue;
+      p.setResolutionScale(p === layout.prePass && !this.aoActive ? AO_IDLE_SCALE : this.renderScale);
+      p.setSize(_drawingSize.x, _drawingSize.y);
+      // three sizes pass targets lazily from inside whichever node samples them
+      // first. TRAANode reads the beauty size before that happens and would
+      // build its history at the stale size, then copy a depth texture of the
+      // wrong size (GPUValidationError, and on rebuild an uncaught TypeError).
+      this.renderer.initRenderTarget(p.renderTarget);
+    }
+  }
+
+  private releaseLayout(): void {
+    const layout = this.layout;
+    if (!layout) return;
+    this.releaseNodes();
+    for (const node of [layout.aoNode, layout.prePass, layout.scenePass]) {
+      try {
+        (node as DisposableNode | null)?.dispose?.();
+      } catch (error) {
+        this.log.warn('layout node dispose failed', error);
+      }
+    }
+
+    if (layout.velocityProjection) velocity.setProjectionMatrix(null);
+    this.layout = null;
+    this.activePass = null;
+    this.aoActive = false;
+    this.traaActive = false;
+  }
+
+  // ---- composition (cheap, per toggle) ---------------------------------------
+
+  private compose(layout: SceneLayout): void {
+    this.releaseNodes();
+    this.composeDirty = false;
+
+    const q = layout.quality;
     const on = (name: PostEffectName): boolean => this.enabled[name] && this.isAvailable(name);
     const useAO = on('ao');
     const useTRAA = on('traa');
-    // Depth-sampling effects cannot read a multisampled depth attachment.
-    const useMSAA = on('msaa') && !useAO && !useTRAA;
-    const scaled = this.renderScale < 1;
-    const useFSR = scaled && on('fsr1');
+    const useFSR = this.wantsUpscaleStage();
     const useBloom = on('bloom');
     const useFXAA = on('fxaa');
     const active: PostEffectName[] = [];
 
-    // Scene pass (beauty). HDR half-float target by default.
-    const scenePass = pass(scene, camera, { samples: useMSAA ? q.msaaSamples : 0 });
-    scenePass.name = 'Scene';
-    scenePass.setResolutionScale(this.renderScale);
-    this.scenePass = scenePass;
-    this.nodes.push(scenePass);
-    if (useMSAA) active.push('msaa');
+    const scenePass = layout.scenePass;
+    this.activePass = scenePass;
+    if (layout.msaa) active.push('msaa');
 
-    let depthNode: THREE.TextureNode | null = null;
-    let velocityNode: THREE.TextureNode | null = null;
-
-    if (useAO) {
-      // Shared prepass: view-space normals in the colour slot, velocity in MRT,
-      // depth from the attachment. AO reads depth+normal; TRAA reads depth+velocity.
-      const prePass = pass(scene, camera);
-      prePass.name = 'Prepass';
-      prePass.transparent = false;
-      prePass.setResolutionScale(this.renderScale);
-      prePass.setMRT(mrt({ output: packNormalToRGB(normalView), velocity }));
-      this.prePass = prePass;
-      this.nodes.push(prePass);
-
-      const prePassNormal = sample((uv) => unpackRGBToNormal(prePass.getTextureNode().sample(uv)));
-      depthNode = prePass.getTextureNode('depth');
-      velocityNode = prePass.getTextureNode('velocity');
-
-      const aoNode = ao(depthNode, prePassNormal, camera);
-      aoNode.resolutionScale = q.aoResolutionScale;
-      aoNode.useTemporalFiltering = useTRAA;
-      aoNode.radius.value = q.ambientOcclusion === 'gtao' ? 0.5 : 0.35;
-      aoNode.samples.value = q.ambientOcclusion === 'gtao' ? 16 : 8;
-      this.nodes.push(aoNode);
-      scenePass.contextNode = builtinAOContext(aoNode.getTextureNode().sample(screenUV).r);
-      active.push('ao');
-    } else if (useTRAA) {
-      scenePass.setMRT(mrt({ output, velocity }));
-      depthNode = scenePass.getTextureNode('depth');
-      velocityNode = scenePass.getTextureNode('velocity');
+    // GTAO (and through it the prepass) always render when the layout has
+    // them, kept in the graph by referencing the GTAO texture below. AO off
+    // only neutralises the sampled factor and shrinks both passes.
+    let aoTrigger: THREE.TextureNode | null = null;
+    this.aoActive = useAO && layout.aoNode !== null;
+    if (layout.aoNode && layout.aoDisable) {
+      aoTrigger = layout.aoNode.getTextureNode();
+      layout.aoDisable.value = this.aoActive ? 0 : 1;
+      layout.aoNode.resolutionScale = this.aoActive ? q.aoResolutionScale : AO_IDLE_SCALE;
+      this.sizePasses();
+      if (this.aoActive) active.push('ao');
     }
 
     let colorTexture: THREE.TextureNode = scenePass.getTextureNode('output');
     let color: THREE.Node = colorTexture;
 
-    if (useTRAA && depthNode && velocityNode) {
-      const traaNode = traa(colorTexture, depthNode, velocityNode, camera);
+    this.traaActive = useTRAA && layout.velocityProjection !== null;
+    if (this.traaActive && layout.velocityProjection) {
+      const traaNode = traa(colorTexture, scenePass.getTextureNode('depth'), scenePass.getTextureNode('velocity'), layout.camera);
+      // TRAA writes the jitter-free projection into its own matrix and hands
+      // that to `velocity`; point it at the layout's persistent one instead so
+      // the scene materials' velocity uniform is always this object (r185).
+      (traaNode as unknown as { _originalProjectionMatrix: THREE.Matrix4 })._originalProjectionMatrix = layout.velocityProjection;
       this.nodes.push(traaNode);
       // TRAANode exposes its resolve target as a texture node (not in the typings).
       colorTexture = (traaNode as unknown as { getTextureNode(): THREE.TextureNode }).getTextureNode();
@@ -297,6 +466,13 @@ export class RenderPipeline implements Disposable {
       active.push('bloom');
     }
 
+    if (aoTrigger) {
+      // A zero-weighted sample keeps the GTAO texture (and so GTAO and the
+      // prepass) in the quad graph; as the left operand it is built first, so
+      // GTAO updates before the scene pass that samples it through the context.
+      color = aoTrigger.sample(screenUV).r.mul(0.0).add(color as THREE.Node<'vec4'>);
+    }
+
     let final: THREE.Node = renderOutput(color, this.toneMapping, this.outputColorSpace);
     if (useFXAA) {
       const fxaaNode = fxaa(final);
@@ -308,10 +484,13 @@ export class RenderPipeline implements Disposable {
     this.three.outputNode = final;
     this.three.needsUpdate = true;
     this.activeEffects = active;
-    this.log.debug(`graph rebuilt: backend=${this.backend} scale=${this.renderScale.toFixed(2)} active=[${active.join(' ')}]`);
+    this.log.debug(`graph composed: backend=${this.backend} scale=${this.renderScale.toFixed(2)} active=[${active.join(' ')}]`);
   }
 
   private releaseNodes(): void {
+    // A removed TRAA leaves its last jitter offset on the camera.
+    const cam = this.layout?.camera as (THREE.Camera & { clearViewOffset?: () => void }) | undefined;
+    cam?.clearViewOffset?.();
     for (const node of this.nodes) {
       try {
         node.dispose?.();
@@ -320,17 +499,13 @@ export class RenderPipeline implements Disposable {
       }
     }
     this.nodes = [];
-    this.scenePass = null;
-    this.prePass = null;
     this.activeEffects = [];
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.releaseNodes();
+    this.releaseLayout();
     this.three.dispose();
-    this.scene = null;
-    this.camera = null;
   }
 }

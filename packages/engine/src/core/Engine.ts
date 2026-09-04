@@ -53,7 +53,11 @@ export class Engine implements Disposable {
   private statsInstance: DebugStats | null = null;
   private quality: QualitySettings;
   private stateValue: EngineState = 'created';
+  /** Whole-frame main-thread time (input → render), the number that matters against the 16.67 ms budget. */
   private cpuMs = 0;
+  /** The render call alone, so simulation cost is visible as the difference. */
+  private renderMs = 0;
+  private frameStart = 0;
   private lastSize = { width: 0, height: 0 };
 
   constructor(partial: PartialEngineConfig) {
@@ -70,7 +74,10 @@ export class Engine implements Disposable {
     });
     // Scene hooks run before systems in each stage: gameplay decides, systems apply.
     this.loop.setCallbacks({
-      input: () => this.inputInstance?.update(),
+      input: () => {
+        this.frameStart = performance.now();
+        this.inputInstance?.update();
+      },
       fixedUpdate: (dt) => {
         this.world.fixedUpdate(dt);
         this.entities.runStage('fixed', dt);
@@ -140,12 +147,16 @@ export class Engine implements Disposable {
         renderScale: this.quality.renderScale * this.config.renderScale,
         quality: this.quality,
         fixedSize: options.fixedSize,
+        trackTimestamp: this.config.fixedFrameDelta === null,
       });
     } catch (error) {
       this.stateValue = 'created';
       this.events.emit('error', { error, phase: 'renderer-init' });
       throw error;
     }
+    // Dynamic resolution paces against measured frame time, which is meaningless
+    // on a fixed clock (capture, tests), so it is real-time only.
+    this.rendererInstance.setDynamicResolutionEnabled(this.config.fixedFrameDelta === null && this.quality.dynamicResolution);
 
     this.assetsInstance = new AssetManager({ renderer: this.rendererInstance });
     this.inputInstance = new Input(this.rendererInstance.canvas);
@@ -171,6 +182,11 @@ export class Engine implements Disposable {
       random: this.random.fork(),
       logger: new Logger(`scene:${definition.name}`),
     });
+    // Warm-up frame: the first render of a scene compiles every material and
+    // pass pipeline (several seconds on a dense scene, during which rAF stalls).
+    // Taking that hit here, before the caller starts the loop, keeps the stall
+    // out of frame pacing and out of the dynamic-resolution controller's view.
+    if (this.stateValue === 'ready') this.step();
     this.events.emit('sceneLoaded', { name: definition.name });
     return instance;
   }
@@ -215,13 +231,16 @@ export class Engine implements Disposable {
       }
     }
     const end = performance.now();
-    this.cpuMs = end - start;
+    this.renderMs = end - start;
+    this.cpuMs = end - (this.frameStart || start);
     this.statsInstance?.update(end, {
       backend: renderer.capabilities.backend,
       preset: this.quality.preset,
       frame: this.clock.frame,
       elapsed: this.clock.elapsed,
       cpuMs: this.cpuMs,
+      renderMs: this.renderMs,
+      systemMs: this.entities.systems.lastTimings(),
       fixedSteps: this.loop.lastFixedSteps,
       render: renderer.stats(),
     });

@@ -196,8 +196,9 @@ function cylinder(radius, height, segments) {
     }
   }
   for (let i = 0; i < segments; i++) {
+    // Counter-clockwise seen from outside: bottom_i, top_i, bottom_i+1 / top_i, top_i+1, bottom_i+1.
     const b = i * 2;
-    indices.push(b, b + 2, b + 1, b + 1, b + 2, b + 3);
+    indices.push(b, b + 1, b + 2, b + 1, b + 3, b + 2);
   }
   // caps
   for (const [y, ny] of [
@@ -286,7 +287,7 @@ function makeCrate() {
   const doc = new Document();
   doc.createBuffer('crate');
   const buffer = doc.getRoot().listBuffers()[0];
-  const scene = doc.createScene('crate');
+  const scene = doc.createScene('Scene');
   const size = 256;
   const baseColor = doc.createTexture('crate_basecolor').setImage(crateBaseColor(size)).setMimeType('image/png');
   const normal = doc.createTexture('crate_normal').setImage(crateNormalMap(size)).setMimeType('image/png');
@@ -307,7 +308,7 @@ function makePipes() {
   const doc = new Document();
   doc.createBuffer('pipes');
   const buffer = doc.getRoot().listBuffers()[0];
-  const scene = doc.createScene('prop-pipe');
+  const scene = doc.createScene('Scene');
   const material = doc.createMaterial('pipe_steel').setBaseColorFactor([0.55, 0.57, 0.6, 1]).setMetallicFactor(1).setRoughnessFactor(0.35);
   const mesh = addPrimitive(doc, buffer, cylinder(0.12, 2.4, 12), material, 'pipe');
   const root = doc.createNode('prop-pipe').setExtras({ 'spark.type': 'prop', 'spark.prop': 'pipe-cluster' });
@@ -331,7 +332,7 @@ function makeHero() {
   const doc = new Document();
   doc.createBuffer('hero');
   const buffer = doc.getRoot().listBuffers()[0];
-  const scene = doc.createScene('hero-placeholder');
+  const scene = doc.createScene('Scene');
   const skin = doc.createMaterial('hero_placeholder').setBaseColorFactor([0.85, 0.3, 0.25, 1]).setMetallicFactor(0.1).setRoughnessFactor(0.5);
   // ~20k triangles: enough to exercise meshopt, deliberately under the 60k hero floor
   // so the validator's "LOW" note has something to say.

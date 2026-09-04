@@ -1,0 +1,43 @@
+{
+  "machineId": "desktop-pn02eil-win32-nvidia-lovelace",
+  "recordedAt": "2026-09-04T05:14:18.373Z",
+  "cpu": "AMD Ryzen 7 3700X 8-Core Processor             ",
+  "results": {
+    "bootstrap-webgpu-high": {
+      "fps": 126.34238786161643,
+      "frameMs": 7.915000000596047,
+      "cpuMs": 1.683333326379458,
+      "renderMs": 1.6399999986092249,
+      "gpuMs": 1.6097279999999998,
+      "drawCalls": 61,
+      "triangles": 145593
+    },
+    "entities-webgpu-high": {
+      "fps": 126.15643398761924,
+      "frameMs": 7.92666666607062,
+      "cpuMs": 1.9766666650772096,
+      "renderMs": 1.5783333361148835,
+      "gpuMs": 1.038336,
+      "drawCalls": 31,
+      "triangles": 88165
+    },
+    "physics-webgpu-high": {
+      "fps": 127.091717849968,
+      "frameMs": 7.868333333730698,
+      "cpuMs": 2.5933333367109297,
+      "renderMs": 1.6833333333333333,
+      "gpuMs": 1.5288319999999993,
+      "drawCalls": 42,
+      "triangles": 240857
+    },
+    "alley-webgpu-high": {
+      "fps": 126.05042016806722,
+      "frameMs": 7.933333333333334,
+      "cpuMs": 4.153333330154419,
+      "renderMs": 3.999999995032946,
+      "gpuMs": 1.64352,
+      "drawCalls": 330,
+      "triangles": 59135
+    }
+  }
+}

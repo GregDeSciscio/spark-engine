@@ -23,7 +23,7 @@ const repoRoot = path.resolve(here, '..', '..');
 const perfDir = path.join(repoRoot, 'tests', 'perf');
 const baselineDir = path.join(perfDir, 'baselines');
 
-const THRESHOLDS = { cpuMs: 0.1, gpuMs: 0.1, frameMs: 0.1, drawCalls: 0.05, triangles: 0.05 };
+const THRESHOLDS = { cpuMs: 0.1, renderMs: 0.1, gpuMs: 0.1, frameMs: 0.1, drawCalls: 0.05, triangles: 0.05 };
 
 function slug(s) {
   return String(s)
@@ -59,6 +59,7 @@ async function runScene(browser, baseUrl, entry, seconds) {
     samples.push(await page.evaluate(() => window.__spark.snapshot()));
   }
   const backend = await page.evaluate(() => window.__spark.backend);
+  const capabilities = await page.evaluate(() => window.__spark.capabilities());
   await context.close();
   const median = (key) => {
     const vals = samples.map((s) => s[key]).filter((v) => typeof v === 'number' && Number.isFinite(v)).sort((a, b) => a - b);
@@ -67,10 +68,12 @@ async function runScene(browser, baseUrl, entry, seconds) {
   return {
     entry,
     backend,
+    capabilities,
     metrics: {
       fps: median('fps'),
       frameMs: median('fps') ? 1000 / median('fps') : null,
       cpuMs: median('cpuMs'),
+      renderMs: median('renderMs'),
       gpuMs: median('gpuMs'),
       drawCalls: median('drawCalls'),
       triangles: median('triangles'),
@@ -116,8 +119,10 @@ async function main() {
       }
       results[name] = r.metrics;
       const m = r.metrics;
+      const adapter = r.capabilities?.adapter;
+      if (adapter) adapterDescription = `${adapter.vendor}-${adapter.architecture}`;
       console.log(
-        `${name} [${r.backend}]: ${m.fps?.toFixed(0)} fps, cpu ${m.cpuMs?.toFixed(2)} ms, gpu ${m.gpuMs === null ? 'n/a' : m.gpuMs.toFixed(2) + ' ms'}, draws ${m.drawCalls}, tris ${m.triangles}`,
+        `${name} [${r.backend}]: ${m.fps?.toFixed(0)} fps, cpu ${m.cpuMs?.toFixed(2)} ms (render ${m.renderMs?.toFixed(2) ?? '?'} ms), gpu ${m.gpuMs === null ? 'n/a' : m.gpuMs.toFixed(2) + ' ms'}, draws ${m.drawCalls}, tris ${m.triangles}`,
       );
     }
   } finally {

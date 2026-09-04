@@ -89,12 +89,6 @@ export const assetsScene: SceneDefinition = {
         progressEl.textContent = `loading ${s.itemsLoaded}/${s.itemsTotal} (${Math.round(s.ratio * 100)}%)${bytes}`;
       }),
     );
-    bag.add(
-      assets.progress.events.on('complete', (s) => {
-        const stats = assets.stats();
-        progressEl.textContent = `loaded ${s.itemsLoaded}/${s.itemsTotal} assets (${(s.bytesTotal / 1024).toFixed(0)} KiB) · cache ${stats.items} items, geo ${(stats.geometryBytes / 1024).toFixed(0)} KiB, tex ${(stats.textureBytes / 1024).toFixed(0)} KiB`;
-      }),
-    );
 
     // Every load takes one reference; give them all back on dispose.
     const held: string[] = [];
@@ -146,6 +140,11 @@ export const assetsScene: SceneDefinition = {
     } else {
       logger.error(`cache MISS for ${CRATE_URL}: same=${crateAgain === crate} hits ${before.hits}->${after.hits} misses ${before.misses}->${after.misses}`);
     }
+
+    // Final line once every asset is resident (the `complete` event fires before
+    // the last ModelAsset is stored, so cache stats are read here instead).
+    const done = assets.stats();
+    progressEl.textContent = `loaded ${done.progress.itemsLoaded}/${done.progress.itemsTotal} assets (${(done.progress.bytesTotal / 1024).toFixed(0)} KiB) · cache ${done.items} items, refs ${done.refs}, geo ${(done.geometryBytes / 1024).toFixed(0)} KiB, tex ${(done.textureBytes / 1024).toFixed(0)} KiB · ${hit ? 'cache hit OK' : 'CACHE MISS'}`;
 
     logger.info(
       `crate: ${crate.info.triangles} tris x${crate.instanceCount} instances, ${crate.info.textures} textures (${(crate.textureBytes / 1024).toFixed(0)} KiB); pipes: ${pipes.info.triangles} tris; hero: ${hero.info.triangles} tris, ${hero.animations.length} clip(s), spark nodes [${hero.sparkNodes.map((n) => `${n.name}:${String(n.spark.type ?? '-')}`).join(', ')}], collision [${hero.collisionNodes.map((n) => n.name).join(', ')}]`,

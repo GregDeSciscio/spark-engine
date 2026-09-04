@@ -5,7 +5,12 @@ export interface DebugSnapshot {
   backend: string;
   preset: string;
   fps: number;
+  /** Whole-frame main-thread time (input → render), averaged. */
   cpuMs: number;
+  /** The render call alone, averaged. */
+  renderMs: number;
+  /** Simulation (fixed + update + late systems) wall time this frame, ms, per system. */
+  systems: Record<string, number>;
   gpuMs: number | null;
   width: number;
   height: number;
@@ -29,6 +34,8 @@ export interface DebugStatsSource {
   frame: number;
   elapsed: number;
   cpuMs: number;
+  renderMs: number;
+  systemMs: ReadonlyMap<string, number>;
   fixedSteps: number;
   render: RenderFrameStats;
 }
@@ -43,6 +50,7 @@ export class DebugStats implements Disposable {
   private readonly lines = new Map<string, HTMLElement>();
   private frameTimes: number[] = [];
   private cpuTimes: number[] = [];
+  private renderTimes: number[] = [];
   private lastPaint = 0;
   private lastFrameTime: number | null = null;
   private latest: DebugSnapshot | null = null;
@@ -72,6 +80,8 @@ export class DebugStats implements Disposable {
       'FPS',
       'Frame',
       'CPU',
+      'Render',
+      'Systems',
       'GPU',
       'Resolution',
       'Pixel Ratio',
@@ -102,6 +112,10 @@ export class DebugStats implements Disposable {
     this.lastFrameTime = nowMs;
     this.cpuTimes.push(source.cpuMs);
     if (this.cpuTimes.length > 60) this.cpuTimes.shift();
+    this.renderTimes.push(source.renderMs);
+    if (this.renderTimes.length > 60) this.renderTimes.shift();
+    const systems: Record<string, number> = {};
+    for (const [name, ms] of source.systemMs) systems[name] = ms;
 
     const avgFrame = average(this.frameTimes);
     this.latest = {
@@ -109,6 +123,8 @@ export class DebugStats implements Disposable {
       preset: source.preset,
       fps: avgFrame > 0 ? 1000 / avgFrame : 0,
       cpuMs: average(this.cpuTimes),
+      renderMs: average(this.renderTimes),
+      systems,
       gpuMs: source.render.gpuMs,
       width: source.render.width,
       height: source.render.height,
@@ -139,6 +155,10 @@ export class DebugStats implements Disposable {
     this.set('FPS', s.fps.toFixed(0));
     this.set('Frame', `${avgFrameMs.toFixed(2)} ms`);
     this.set('CPU', `${s.cpuMs.toFixed(2)} ms`);
+    this.set('Render', `${s.renderMs.toFixed(2)} ms`);
+    let systemsTotal = 0;
+    for (const ms of Object.values(s.systems)) systemsTotal += ms;
+    this.set('Systems', `${systemsTotal.toFixed(2)} ms`);
     this.set('GPU', s.gpuMs === null ? 'n/a' : `${s.gpuMs.toFixed(2)} ms`);
     this.set('Resolution', s.sceneWidth && s.sceneWidth !== s.width ? `${s.width}×${s.height} (${s.sceneWidth}×${s.sceneHeight})` : `${s.width}×${s.height}`);
     this.set('Pixel Ratio', s.pixelRatio.toFixed(2));

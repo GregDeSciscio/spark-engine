@@ -94,7 +94,7 @@ export const alleyScene: SceneDefinition = {
     const rig = new CameraRig({ preset: ALLEY_CAMERA, aspect: ctx.renderer.aspect, near: 0.5, far: 140, random: random.fork() });
     const heroPosition = new THREE.Vector3(-0.8, 0, 2);
     // Frame the hero in the lower third with the alley receding above it.
-    const frameTarget = (out: THREE.Vector3): THREE.Vector3 => out.set(hero.position.x + 0.6, 1.2, hero.position.z - 6);
+    const frameTarget = (out: THREE.Vector3): THREE.Vector3 => out.set(hero.position.x - 0.9, 1.2, hero.position.z - 6);
     const hero = new THREE.Group();
     hero.position.copy(heroPosition);
     frameTarget(rig.target);
@@ -102,11 +102,11 @@ export const alleyScene: SceneDefinition = {
 
     // ---- image-based lighting: a dark room with neon panels ---------------
     const envScene = buildEnvironmentScene();
-    bag.add(applySceneEnvironment(ctx.renderer, scene, envScene, 1.4));
+    bag.add(applySceneEnvironment(ctx.renderer, scene, envScene, 1.0));
     bag.add(() => disposeHierarchy(envScene));
 
     // ---- lights -------------------------------------------------------------
-    const moon = new THREE.DirectionalLight(0x5c78c8, 2.2);
+    const moon = new THREE.DirectionalLight(0x6f88d0, 3.0);
     moon.position.set(-9, 22, -4);
     moon.target.position.set(0, 0, -8);
     moon.castShadow = quality.shadows;
@@ -121,7 +121,7 @@ export const alleyScene: SceneDefinition = {
     moon.shadow.normalBias = 0.03;
     scene.add(moon, moon.target);
 
-    scene.add(new THREE.HemisphereLight(0x223058, 0x0c0906, 1.4));
+    scene.add(new THREE.HemisphereLight(0x2a3a66, 0x0e0b08, 2.0));
 
     const heroLight = new THREE.SpotLight(0xfff0dc, 3200, 18, 0.48, 0.65, 2);
     heroLight.position.set(0.5, 9.5, 3.5);
@@ -177,7 +177,7 @@ export const alleyScene: SceneDefinition = {
     {
       const grime = mx_fractal_noise_float(positionWorld.mul(0.35), 3, 2.0, 0.5, 0.5).add(0.5);
       const streaks = mx_fractal_noise_float(vec3(positionWorld.x.mul(1.6), positionWorld.y.mul(0.12), positionWorld.z.mul(1.6)), 2, 2.0, 0.5, 0.5).add(0.5);
-      const base = mix(color(0x2a2c33), color(0x3a3a42), grime).mul(mix(float(0.7), float(1.05), streaks));
+      const base = mix(color(0x34363d), color(0x46464e), grime).mul(mix(float(0.7), float(1.05), streaks));
       wallMat.colorNode = base;
       // Wet near the ground, dry higher up.
       wallMat.roughnessNode = mix(float(0.32), float(0.82), smoothstep(0.0, 3.5, positionWorld.y));
@@ -259,7 +259,7 @@ export const alleyScene: SceneDefinition = {
         q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), side === -1 ? Math.PI / 2 : -Math.PI / 2);
         for (const y of rows) {
           for (const z of columns) {
-            p.set(side * (ALLEY_HALF_WIDTH - 0.02), y, z);
+            p.set(side * (ALLEY_HALF_WIDTH - 0.1), y, z);
             m.compose(p, q, s);
             if (random.next() < 0.42) {
               lit.setMatrixAt(litCount, m);
@@ -286,7 +286,7 @@ export const alleyScene: SceneDefinition = {
         q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), side === -1 ? Math.PI / 2 : -Math.PI / 2);
         for (const y of rows) {
           for (const z of columns) {
-            p.set(side * (ALLEY_HALF_WIDTH + 0.06), y, z);
+            p.set(side * (ALLEY_HALF_WIDTH + 0.04), y, z);
             m.compose(p, q, s);
             frames.setMatrixAt(f++, m);
           }
@@ -363,7 +363,7 @@ export const alleyScene: SceneDefinition = {
         group.add(panel);
         scene.add(group);
 
-        const light = new THREE.PointLight(spec.color, 380, 16, 2);
+        const light = new THREE.PointLight(spec.color, 140, 9.5, 2);
         light.position.set(x - spec.side * 0.9, spec.y - 0.4, spec.z);
         scene.add(light);
         if (spec.flicker) flickering.push({ material: neonMat, light, base: light.intensity, phase: random.range(0, 6.28), color: neon });
@@ -379,7 +379,7 @@ export const alleyScene: SceneDefinition = {
         [1, -20],
       ] as const) {
         const door = new THREE.Mesh(doorGeo, doorMat);
-        door.position.set(side * (ALLEY_HALF_WIDTH - 0.03), 1.2, z);
+        door.position.set(side * (ALLEY_HALF_WIDTH - 0.08), 1.2, z);
         door.rotation.y = side === -1 ? Math.PI / 2 : -Math.PI / 2;
         scene.add(door);
         const spill = new THREE.SpotLight(0xffc27a, 900, 13, 0.9, 0.7, 2);
@@ -520,7 +520,7 @@ export const alleyScene: SceneDefinition = {
       puff.age += dt;
       if (puff.age >= puff.life) puff.age -= puff.life;
       const t = puff.age / puff.life;
-      const scale = 0.8 + t * 3.2;
+      const scale = 1.0 + t * 4.0;
       puff.sprite.scale.set(scale, scale, 1);
       puff.sprite.position.set(
         puff.origin.x + puff.drift.x * puff.age + Math.sin(puff.age * 1.7) * 0.25,
@@ -528,7 +528,7 @@ export const alleyScene: SceneDefinition = {
         puff.origin.z + puff.drift.z * puff.age,
       );
       // Fade in fast, out slow.
-      puff.material.opacity = Math.min(1, t * 6) * (1 - t) * (1 - t) * 0.42;
+      puff.material.opacity = Math.min(1, t * 6) * (1 - t) * (1 - t) * 0.75;
     };
     for (const puff of puffs) stepPuff(puff, 0);
 
@@ -673,12 +673,12 @@ function buildEnvironmentScene(): THREE.Scene {
   const room = new THREE.Mesh(new THREE.BoxGeometry(20, 12, 40), new THREE.MeshBasicMaterial({ color: 0x06070c, side: THREE.BackSide }));
   env.add(room);
   const panels: [number, THREE.Vector3, THREE.Euler, number][] = [
-    [0xff2bd6, new THREE.Vector3(-9.9, 2, -6), new THREE.Euler(0, Math.PI / 2, 0), 2.2],
-    [0x22e8ff, new THREE.Vector3(9.9, 3, -12), new THREE.Euler(0, -Math.PI / 2, 0), 2.6],
-    [0xff7a1a, new THREE.Vector3(-9.9, 1, -16), new THREE.Euler(0, Math.PI / 2, 0), 1.8],
-    [0x3d7bff, new THREE.Vector3(9.9, 1.5, 4), new THREE.Euler(0, -Math.PI / 2, 0), 1.6],
-    [0xffe0b0, new THREE.Vector3(0, 5.9, -8), new THREE.Euler(Math.PI / 2, 0, 0), 0.5],
-    [0x8090c0, new THREE.Vector3(0, 5.9, 8), new THREE.Euler(Math.PI / 2, 0, 0), 0.25],
+    [0xff2bd6, new THREE.Vector3(-9.9, 2, -6), new THREE.Euler(0, Math.PI / 2, 0), 0.9],
+    [0x22e8ff, new THREE.Vector3(9.9, 3, -12), new THREE.Euler(0, -Math.PI / 2, 0), 1.1],
+    [0xff7a1a, new THREE.Vector3(-9.9, 1, -16), new THREE.Euler(0, Math.PI / 2, 0), 0.8],
+    [0x3d7bff, new THREE.Vector3(9.9, 1.5, 4), new THREE.Euler(0, -Math.PI / 2, 0), 0.7],
+    [0x4a5a78, new THREE.Vector3(0, 5.9, -8), new THREE.Euler(Math.PI / 2, 0, 0), 0.9],
+    [0x3a4460, new THREE.Vector3(0, 5.9, 8), new THREE.Euler(Math.PI / 2, 0, 0), 0.7],
   ];
   for (const [hex, position, rotation, intensity] of panels) {
     const panel = new THREE.Mesh(

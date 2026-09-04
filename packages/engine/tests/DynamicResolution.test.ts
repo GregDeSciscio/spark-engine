@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { DynamicResolutionController } from '../src/rendering/DynamicResolution';
 
+const NO_WARMUP = { warmupFrames: 0 };
+
 function run(ctrl: DynamicResolutionController, frames: number, gpuMs: number | null, cpuMs = 5, dt = 1 / 60): number {
   let scale = ctrl.renderScale;
   for (let i = 0; i < frames; i++) scale = ctrl.update(dt, gpuMs, cpuMs);
@@ -9,20 +11,20 @@ function run(ctrl: DynamicResolutionController, frames: number, gpuMs: number | 
 
 describe('DynamicResolutionController', () => {
   it('starts at the ceiling and holds when under budget', () => {
-    const ctrl = new DynamicResolutionController({ targetMs: 16.67, floor: 0.6 });
+    const ctrl = new DynamicResolutionController({ ...NO_WARMUP, targetMs: 16.67, floor: 0.6 });
     expect(ctrl.renderScale).toBe(1);
     expect(run(ctrl, 120, 10)).toBe(1);
   });
 
   it('steps down when over budget and never below the floor', () => {
-    const ctrl = new DynamicResolutionController({ targetMs: 16.67, floor: 0.6, step: 0.05, settleSeconds: 0.25 });
+    const ctrl = new DynamicResolutionController({ ...NO_WARMUP, targetMs: 16.67, floor: 0.6, step: 0.05, settleSeconds: 0.25 });
     const scale = run(ctrl, 600, 30);
     expect(scale).toBeCloseTo(0.6, 5);
     expect(scale).toBeGreaterThanOrEqual(0.6);
   });
 
   it('respects the settle time between moves', () => {
-    const ctrl = new DynamicResolutionController({ targetMs: 16.67, step: 0.1, settleSeconds: 0.5, smoothing: 1 });
+    const ctrl = new DynamicResolutionController({ ...NO_WARMUP, targetMs: 16.67, step: 0.1, settleSeconds: 0.5, smoothing: 1 });
     // First move is allowed immediately (no prior move).
     expect(ctrl.update(1 / 60, 40, 5)).toBeCloseTo(0.9, 5);
     // Within the settle window nothing changes even though still over budget.
@@ -34,7 +36,7 @@ describe('DynamicResolutionController', () => {
   });
 
   it('does not oscillate at the boundary (hysteresis)', () => {
-    const ctrl = new DynamicResolutionController({ targetMs: 16.67, step: 0.05, settleSeconds: 0.2, smoothing: 1 });
+    const ctrl = new DynamicResolutionController({ ...NO_WARMUP, targetMs: 16.67, step: 0.05, settleSeconds: 0.2, smoothing: 1 });
     run(ctrl, 60, 20); // drop a notch or two
     const afterDrop = ctrl.renderScale;
     expect(afterDrop).toBeLessThan(1);
@@ -44,7 +46,7 @@ describe('DynamicResolutionController', () => {
   });
 
   it('raises again when there is headroom', () => {
-    const ctrl = new DynamicResolutionController({ targetMs: 16.67, step: 0.05, settleSeconds: 0.1, smoothing: 1 });
+    const ctrl = new DynamicResolutionController({ ...NO_WARMUP, targetMs: 16.67, step: 0.05, settleSeconds: 0.1, smoothing: 1 });
     run(ctrl, 120, 30);
     expect(ctrl.renderScale).toBeLessThan(1);
     const scale = run(ctrl, 600, 6);
@@ -52,10 +54,28 @@ describe('DynamicResolutionController', () => {
   });
 
   it('falls back to CPU time when GPU time is unavailable', () => {
-    const ctrl = new DynamicResolutionController({ targetMs: 16.67, settleSeconds: 0.1, smoothing: 1 });
+    const ctrl = new DynamicResolutionController({ ...NO_WARMUP, targetMs: 16.67, settleSeconds: 0.1, smoothing: 1 });
     run(ctrl, 60, null, 30);
     expect(ctrl.source).toBe('cpu');
     expect(ctrl.renderScale).toBeLessThan(1);
+  });
+
+  it('ignores warm-up frames after enable and after reset', () => {
+    const ctrl = new DynamicResolutionController({ targetMs: 16.67, warmupFrames: 30, settleSeconds: 0, smoothing: 1 });
+    expect(run(ctrl, 30, 50)).toBe(1); // compile-heavy first frames: no reaction
+    expect(run(ctrl, 1, 50)).toBeLessThan(1); // first real sample counts
+    ctrl.reset();
+    expect(run(ctrl, 30, 50)).toBe(1);
+  });
+
+  it('drops hitch samples instead of scaling down', () => {
+    const ctrl = new DynamicResolutionController({ ...NO_WARMUP, targetMs: 16.67, hitchMs: 100, settleSeconds: 0, smoothing: 1 });
+    // Steady 10 ms frames with occasional 600 ms stalls (shader compiles).
+    for (let i = 0; i < 120; i++) ctrl.update(1 / 60, i % 20 === 0 ? 600 : 10, 5);
+    expect(ctrl.renderScale).toBe(1);
+    expect(ctrl.hitchCount).toBe(6);
+    // A genuinely over-budget frame below the hitch threshold still counts.
+    expect(run(ctrl, 5, 40)).toBeLessThan(1);
   });
 
   it('does nothing when disabled', () => {
