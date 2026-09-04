@@ -1,0 +1,209 @@
+import * as THREE from 'three/webgpu';
+import {
+  CharacterController,
+  Character,
+  Transform,
+  type AnimationGraphDef,
+  type AnimationWorld,
+  type Entity,
+  type EntityWorld,
+  type Input,
+  type ModelAsset,
+  type PhysicsWorld,
+  type RenderSync,
+  type ShoulderCamera,
+} from '@spark/engine';
+
+/**
+ * The player character: a kinematic capsule on the engine's character
+ * controller, a skinned visual, three stances, sprint and jump. Movement is
+ * camera-relative and the body always faces where the camera looks, the way an
+ * over-the-shoulder shooter does. Tuning numbers are Task Unit's
+ * (`docs/design/task-unit-reference.md`): 5 u/s, sprint 1.6x, 0.4 by 1.8
+ * capsule, gravity -20, jump 8.
+ *
+ * Frame input is read in `update()`; motion is applied in `fixedUpdate()` so
+ * the simulation stays deterministic under the fixed step.
+ */
+
+export type Stance = 'stand' | 'crouch' | 'prone';
+
+export const OPERATOR = {
+  radius: 0.4,
+  height: 1.8,
+  moveSpeed: 5,
+  sprintMultiplier: 1.6,
+  crouchMultiplier: 0.5,
+  proneMultiplier: 0.22,
+  aimMultiplier: 0.6,
+  jumpSpeed: 8,
+  gravity: -20,
+  accel: 30,
+  stanceHeight: { stand: 1.8, crouch: 1.25, prone: 0.6 } as const satisfies Record<Stance, number>,
+} as const;
+
+const WALK_ANIM = 1.2;
+const RUN_ANIM = 4.0;
+
+/** idle/walk/run on horizontal speed; hit/death by trigger. Root motion off: the controller owns the transform. */
+const OPERATOR_GRAPH: AnimationGraphDef = {
+  params: { speed: 0, dead: 0 },
+  layers: [
+    {
+      name: 'base',
+      entry: 'locomotion',
+      states: [
+        {
+          name: 'locomotion',
+          blend: {
+            param: 'speed',
+            points: [
+              { clip: 'idle', threshold: 0 },
+              { clip: 'walk', threshold: WALK_ANIM },
+              { clip: 'run', threshold: RUN_ANIM },
+            ],
+          },
+        },
+        { name: 'hit', clip: 'hit', transitions: [{ to: 'locomotion', exitTime: 1, duration: 0.15 }] },
+        { name: 'death', clip: 'death', transitions: [{ to: 'locomotion', conditions: [{ trigger: 'respawn' }], duration: 0.3 }] },
+      ],
+      anyState: [
+        { to: 'death', conditions: [{ trigger: 'die' }], duration: 0.1 },
+        { to: 'hit', conditions: [{ trigger: 'hit' }, { param: 'dead', op: '==', value: 0 }], duration: 0.08, allowSelf: true },
+      ],
+    },
+  ],
+};
+
+export interface OperatorDeps {
+  readonly entities: EntityWorld;
+  readonly physics: PhysicsWorld;
+  readonly animation: AnimationWorld;
+  readonly renderSync: RenderSync;
+  readonly scene: THREE.Scene;
+  readonly model: ModelAsset;
+}
+
+export class Operator {
+  readonly eid: Entity;
+  stance: Stance = 'stand';
+  aiming = false;
+  sprinting = false;
+
+  private readonly deps: OperatorDeps;
+  private readonly controller: CharacterController;
+  private readonly root: THREE.Group;
+  private readonly wish = new THREE.Vector3();
+  private readonly velocity = new THREE.Vector3();
+  private readonly step = { x: 0, y: 0, z: 0 };
+  private readonly tmpF = new THREE.Vector3();
+  private readonly tmpR = new THREE.Vector3();
+  private facing = 0;
+  private jumpQueued = false;
+
+  constructor(deps: OperatorDeps, spawn: THREE.Vector3, yaw: number) {
+    this.deps = deps;
+    const { entities, physics, animation, renderSync, scene, model } = deps;
+    const halfHeight = OPERATOR.height / 2 - OPERATOR.radius;
+    const centerY = spawn.y + OPERATOR.height / 2;
+    this.facing = yaw + Math.PI;
+    this.eid = entities.create([Transform, { x: spawn.x, y: centerY, z: spawn.z, qy: Math.sin(this.facing / 2), qw: Math.cos(this.facing / 2) }], Character);
+    physics.addBody(this.eid, {
+      type: 'kinematicPosition',
+      shape: { kind: 'capsule', halfHeight, radius: OPERATOR.radius },
+      layer: 'player',
+      collidesWith: ['world'],
+    });
+    this.controller = new CharacterController(physics, { stepHeight: 0.4, snapToGround: 0.3, characterMass: 80, gravity: OPERATOR.gravity });
+    this.controller.attach(this.eid);
+
+    // The entity transform is the capsule centre; the skinned mesh stands on its feet below it.
+    this.root = new THREE.Group();
+    const visual = model.instantiate({ castShadow: true, receiveShadow: true });
+    visual.position.y = -OPERATOR.height / 2;
+    this.root.add(visual);
+    scene.add(this.root);
+    renderSync.attach(entities, this.eid, this.root);
+    animation.attach(this.eid, visual, model.animations, OPERATOR_GRAPH, { rootMotion: { mode: 'none' } });
+  }
+
+  /** Current stance height, for the camera pivot. */
+  get height(): number {
+    return OPERATOR.stanceHeight[this.stance];
+  }
+
+  /** Feet position in world space. */
+  feet(out: THREE.Vector3): THREE.Vector3 {
+    const t = this.deps.entities.store(Transform);
+    return out.set(t.x[this.eid] ?? 0, (t.y[this.eid] ?? 0) - OPERATOR.height / 2, t.z[this.eid] ?? 0);
+  }
+
+  get grounded(): boolean {
+    return this.controller.isGrounded(this.eid);
+  }
+
+  /** Horizontal speed this tick. */
+  get speed(): number {
+    return Math.hypot(this.velocity.x, this.velocity.z);
+  }
+
+  /** Read this frame's input. Pressed-edge queries are per frame, so this must not run inside the fixed step. */
+  update(input: Input, camera: ShoulderCamera): void {
+    if (input.wasPressed('KeyC')) this.stance = this.stance === 'crouch' ? 'stand' : 'crouch';
+    if (input.wasPressed('KeyX')) this.stance = this.stance === 'prone' ? 'stand' : 'prone';
+    if (input.wasPressed('Space') && this.stance === 'stand') this.jumpQueued = true;
+    this.aiming = input.isButtonDown(2);
+    const forward = input.axis('KeyS', 'KeyW');
+    const strafe = input.axis('KeyA', 'KeyD');
+    this.sprinting = input.isDown('ShiftLeft') && forward > 0 && this.stance === 'stand' && !this.aiming;
+
+    camera.groundForward(this.tmpF);
+    camera.groundRight(this.tmpR);
+    this.wish.set(0, 0, 0).addScaledVector(this.tmpF, forward).addScaledVector(this.tmpR, strafe);
+    if (this.wish.lengthSq() > 1) this.wish.normalize();
+    // Face where the camera looks. The mannequin's forward is +Z at yaw 0, the camera's is -Z.
+    this.facing = camera.getYaw() + Math.PI;
+  }
+
+  fixedUpdate(dt: number): void {
+    const { entities, animation } = this.deps;
+    let speed = OPERATOR.moveSpeed;
+    if (this.stance === 'crouch') speed *= OPERATOR.crouchMultiplier;
+    else if (this.stance === 'prone') speed *= OPERATOR.proneMultiplier;
+    else if (this.sprinting) speed *= OPERATOR.sprintMultiplier;
+    if (this.aiming) speed *= OPERATOR.aimMultiplier;
+
+    // Accelerate toward the wish velocity so starts and stops read as weight, not a switch.
+    const targetX = this.wish.x * speed;
+    const targetZ = this.wish.z * speed;
+    const k = Math.min(1, OPERATOR.accel * dt);
+    this.velocity.x += (targetX - this.velocity.x) * k;
+    this.velocity.z += (targetZ - this.velocity.z) * k;
+
+    if (this.jumpQueued) {
+      this.controller.jump(this.eid, OPERATOR.jumpSpeed);
+      this.jumpQueued = false;
+    }
+    this.step.x = this.velocity.x * dt;
+    this.step.y = 0;
+    this.step.z = this.velocity.z * dt;
+    this.controller.move(this.eid, this.step, dt);
+
+    const t = entities.store(Transform);
+    t.qx[this.eid] = 0;
+    t.qz[this.eid] = 0;
+    t.qy[this.eid] = Math.sin(this.facing / 2);
+    t.qw[this.eid] = Math.cos(this.facing / 2);
+
+    animation.setParam(this.eid, 'speed', this.speed);
+  }
+
+  dispose(): void {
+    const { entities, animation, scene } = this.deps;
+    animation.detach(this.eid);
+    this.controller.detach(this.eid);
+    this.controller.dispose();
+    scene.remove(this.root);
+    entities.destroy(this.eid);
+  }
+}

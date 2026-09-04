@@ -129,6 +129,15 @@ export {
   type CameraRigPreset,
   type FocusSink,
 } from './rendering/CameraRig';
+export {
+  ShoulderCamera,
+  SHOULDER_PRESET,
+  clampPitch,
+  shoulderFrame,
+  type CameraOccluder,
+  type ShoulderCameraOptions,
+  type ShoulderCameraPreset,
+} from './rendering/ShoulderCamera';
 export { applyRoomEnvironment, applySceneEnvironment, loadHDREnvironment } from './rendering/Environment';
 // ---- rendering (Milestone 7) ----
 export {

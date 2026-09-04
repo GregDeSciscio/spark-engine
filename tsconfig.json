@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "packages/engine" },
-    { "path": "apps/benchmark" }
+    { "path": "apps/benchmark" },
+    { "path": "apps/showcase" }
   ]
 }

@@ -1,0 +1,183 @@
+import * as THREE from 'three/webgpu';
+import {
+  DisposeBag,
+  Transform,
+  createHeightFog,
+  type Entity,
+  type EntityWorld,
+  type PhysicsWorld,
+  type QualitySettings,
+  type Random,
+} from '@spark/engine';
+
+/**
+ * A grey-box night street: the first stand-in level for the mission scene
+ * until a Blender-authored level arrives through the ADR-008 pipeline. Two rows
+ * of building slabs, crates and low walls for cover, neon on the facades, a
+ * moon for the one shadowed directional, and height fog that closes the street
+ * off around the ADR-004 sightline limit. Everything is seeded so the same
+ * seed gives the same street.
+ */
+
+const STREET_HALF_WIDTH = 9;
+const STREET_Z_MIN = -70;
+const STREET_Z_MAX = 40;
+const SIDEWALK = 2.5;
+const NEON_COLORS = [0xff2bd6, 0x22e8ff, 0xff7a1a, 0x4dff6a, 0xff3d5a, 0x3d7bff, 0xffd23d, 0xb14dff] as const;
+
+export interface Blockout {
+  /** Where the operator starts, feet on the ground. */
+  readonly spawn: THREE.Vector3;
+  /** Facing at spawn (camera yaw). 0 looks down -Z, up the street. */
+  readonly spawnYaw: number;
+  dispose(): void;
+}
+
+interface Box {
+  x: number;
+  y: number;
+  z: number;
+  hx: number;
+  hy: number;
+  hz: number;
+}
+
+export function buildBlockout(
+  scene: THREE.Scene,
+  entities: EntityWorld,
+  physics: PhysicsWorld,
+  quality: QualitySettings,
+  random: Random,
+): Blockout {
+  const bag = new DisposeBag();
+  const spawned: Entity[] = [];
+  bag.add(() => {
+    for (const eid of spawned) entities.destroy(eid);
+  });
+
+  // ---- atmosphere ---------------------------------------------------------
+  scene.background = new THREE.Color(0x05060a);
+  // Fog reaches full opacity around 120 m: the level's own sightline limit (ADR-004).
+  const fog = createHeightFog({ color: 0x0a0e1c, density: 0.014, groundY: 0, falloff: 5, groundBoost: 1.0 });
+  scene.fogNode = fog.node;
+
+  const moon = new THREE.DirectionalLight(0x6f88d0, 2.2);
+  moon.position.set(-18, 40, -10);
+  moon.target.position.set(0, 0, -20);
+  moon.castShadow = quality.shadows;
+  moon.shadow.mapSize.set(quality.shadowMapSize, quality.shadowMapSize);
+  moon.shadow.camera.near = 5;
+  moon.shadow.camera.far = 120;
+  moon.shadow.camera.left = -40;
+  moon.shadow.camera.right = 40;
+  moon.shadow.camera.top = 60;
+  moon.shadow.camera.bottom = -60;
+  moon.shadow.bias = -0.0006;
+  moon.shadow.normalBias = 0.04;
+  scene.add(moon, moon.target);
+  scene.add(new THREE.HemisphereLight(0x2a3a66, 0x0e0b08, 1.4));
+
+  // ---- shared geometry and materials ----------------------------------------
+  const unitBox = new THREE.BoxGeometry(1, 1, 1);
+  const asphalt = new THREE.MeshStandardMaterial({ color: 0x14161c, roughness: 0.32, metalness: 0.05 });
+  const sidewalk = new THREE.MeshStandardMaterial({ color: 0x232630, roughness: 0.6, metalness: 0.02 });
+  const facade = new THREE.MeshStandardMaterial({ color: 0x191c26, roughness: 0.72, metalness: 0.08 });
+  const crate = new THREE.MeshStandardMaterial({ color: 0x3a3f4a, roughness: 0.65, metalness: 0.1 });
+  const barrier = new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 0.7, metalness: 0.05 });
+  bag.add(() => {
+    unitBox.dispose();
+    asphalt.dispose();
+    sidewalk.dispose();
+    facade.dispose();
+    crate.dispose();
+    barrier.dispose();
+  });
+
+  physics.layers.define('world', 'player');
+
+  const addBox = (box: Box, material: THREE.Material, options: { shadow?: boolean; body?: boolean } = {}): THREE.Mesh => {
+    const mesh = new THREE.Mesh(unitBox, material);
+    mesh.position.set(box.x, box.y, box.z);
+    mesh.scale.set(box.hx * 2, box.hy * 2, box.hz * 2);
+    mesh.castShadow = options.shadow ?? true;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+    if (options.body ?? true) {
+      const eid = entities.create([Transform, { x: box.x, y: box.y, z: box.z }]);
+      physics.addBody(eid, { type: 'fixed', shape: { kind: 'box', hx: box.hx, hy: box.hy, hz: box.hz }, layer: 'world', friction: 0.8, events: false });
+      spawned.push(eid);
+    }
+    return mesh;
+  };
+
+  // ---- ground: street and raised sidewalks -------------------------------------
+  const length = STREET_Z_MAX - STREET_Z_MIN;
+  const zMid = (STREET_Z_MAX + STREET_Z_MIN) / 2;
+  addBox({ x: 0, y: -0.5, z: zMid, hx: 80, hy: 0.5, hz: 100 }, asphalt, { shadow: false });
+  for (const side of [-1, 1] as const) {
+    const x = side * (STREET_HALF_WIDTH + SIDEWALK / 2);
+    addBox({ x, y: 0.075, z: zMid, hx: SIDEWALK / 2, hy: 0.075, hz: length / 2 }, sidewalk, { shadow: false });
+  }
+
+  // ---- buildings: slabs along both sides, gaps for alleys ------------------------
+  const neonLights: THREE.PointLight[] = [];
+  let neonIndex = 0;
+  for (const side of [-1, 1] as const) {
+    let z = STREET_Z_MIN;
+    while (z < STREET_Z_MAX) {
+      const depth = random.range(8, 16);
+      const height = random.range(9, 24);
+      const setback = random.range(0, 1.5);
+      const x = side * (STREET_HALF_WIDTH + SIDEWALK + depth / 2 + setback);
+      addBox({ x, y: height / 2, z: z + depth / 2, hx: depth / 2, hy: height / 2, hz: depth / 2 }, facade);
+      // A neon sign on the street face of most buildings.
+      if (random.next() < 0.55) {
+        const color = NEON_COLORS[neonIndex++ % NEON_COLORS.length] as number;
+        const signY = random.range(3, Math.min(height - 1, 9));
+        const sign = new THREE.Mesh(unitBox, new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 2.5, roughness: 0.4 }));
+        const faceX = side * (STREET_HALF_WIDTH + SIDEWALK + setback);
+        sign.position.set(faceX - side * 0.12, signY, z + depth / 2);
+        sign.scale.set(0.2, random.range(0.6, 1.4), random.range(1.6, 3.2));
+        scene.add(sign);
+        bag.add(() => (sign.material as THREE.Material).dispose());
+        const light = new THREE.PointLight(color, 22, 8, 2);
+        light.position.set(faceX - side * 0.6, signY, z + depth / 2);
+        scene.add(light);
+        neonLights.push(light);
+      }
+      z += depth + random.range(1.5, 4);
+    }
+  }
+
+  // ---- cover: crates and low barriers in the street ------------------------------
+  for (let i = 0; i < 22; i++) {
+    const big = random.next() < 0.4;
+    const hx = big ? 1 : 0.5;
+    const hy = 0.5;
+    const hz = big ? 0.5 : 0.5;
+    const x = random.range(-STREET_HALF_WIDTH + 1.5, STREET_HALF_WIDTH - 1.5);
+    const z = random.range(STREET_Z_MIN + 6, STREET_Z_MAX - 12);
+    addBox({ x, y: hy, z, hx, hy, hz }, crate);
+    if (big && random.next() < 0.5) addBox({ x, y: 2 * hy + hy, z, hx: 0.5, hy, hz: 0.5 }, crate);
+  }
+  for (let i = 0; i < 6; i++) {
+    const x = random.range(-STREET_HALF_WIDTH + 2, STREET_HALF_WIDTH - 2);
+    const z = random.range(STREET_Z_MIN + 10, STREET_Z_MAX - 16);
+    addBox({ x, y: 0.4, z, hx: 1.6, hy: 0.4, hz: 0.18 }, barrier);
+  }
+
+  // ---- far end: a wall so the street reads as enclosed ------------------------
+  addBox({ x: 0, y: 6, z: STREET_Z_MIN - 1, hx: STREET_HALF_WIDTH + SIDEWALK + 2, hy: 6, hz: 1 }, facade);
+  addBox({ x: 0, y: 6, z: STREET_Z_MAX + 1, hx: STREET_HALF_WIDTH + SIDEWALK + 2, hy: 6, hz: 1 }, facade);
+
+  bag.add(() => {
+    for (const light of neonLights) light.dispose();
+    moon.dispose();
+  });
+
+  return {
+    spawn: new THREE.Vector3(0, 0, STREET_Z_MAX - 6),
+    spawnYaw: 0,
+    dispose: () => bag.dispose(),
+  };
+}

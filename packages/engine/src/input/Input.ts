@@ -32,6 +32,7 @@ export class Input implements Disposable {
   private pendingWheel = 0;
   private wheel = 0;
   private pointerInside = false;
+  private pointerLocked = false;
   private captured = false;
   private readonly passthrough = new Set<string>(['Escape']);
   private disposed = false;
@@ -48,6 +49,26 @@ export class Input implements Disposable {
     target.addEventListener('pointerleave', this.onPointerLeave);
     target.addEventListener('wheel', this.onWheel, { passive: true });
     target.addEventListener('contextmenu', this.onContextMenu);
+    document.addEventListener('pointerlockchange', this.onPointerLockChange);
+  }
+
+  /**
+   * Lock the pointer to the target so mouse motion arrives as deltas with no
+   * cursor. Browsers only honour this inside a user gesture (a click handler).
+   * `isPointerLocked` flips when the browser confirms; Escape releases it.
+   */
+  requestPointerLock(): void {
+    if (this.disposed || this.pointerLocked) return;
+    const result = this.target.requestPointerLock() as unknown;
+    if (result instanceof Promise) result.catch(() => {});
+  }
+
+  exitPointerLock(): void {
+    if (document.pointerLockElement === this.target) document.exitPointerLock();
+  }
+
+  get isPointerLocked(): boolean {
+    return this.pointerLocked;
   }
 
   /** Commit pending events for this frame. Called by the engine loop's input phase. */
@@ -190,6 +211,10 @@ export class Input implements Disposable {
     e.preventDefault();
   };
 
+  private readonly onPointerLockChange = (): void => {
+    this.pointerLocked = document.pointerLockElement === this.target;
+  };
+
   private updatePointer(e: PointerEvent): void {
     const rect = this.target.getBoundingClientRect();
     this.pointerX = e.clientX - rect.left;
@@ -198,6 +223,7 @@ export class Input implements Disposable {
 
   dispose(): void {
     if (this.disposed) return;
+    document.removeEventListener('pointerlockchange', this.onPointerLockChange);
     this.disposed = true;
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);

@@ -1,0 +1,20 @@
+{
+  "name": "@spark/showcase",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "The customer game's vertical slice: the Task Unit sequel (ADR-005)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@spark/engine": "workspace:*",
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "@types/three": "0.185.0",
+    "@webgpu/types": "0.1.72"
+  }
+}

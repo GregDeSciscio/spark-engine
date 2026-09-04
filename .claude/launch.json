@@ -4,14 +4,44 @@
     {
       "name": "benchmark",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--filter", "@spark/benchmark", "dev", "--", "--port", "5173", "--strictPort"],
+      "runtimeArgs": [
+        "--filter",
+        "@spark/benchmark",
+        "dev",
+        "--",
+        "--port",
+        "5173",
+        "--strictPort"
+      ],
       "port": 5173
     },
     {
       "name": "benchmark-preview",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--filter", "@spark/benchmark", "preview", "--", "--port", "4173", "--strictPort"],
+      "runtimeArgs": [
+        "--filter",
+        "@spark/benchmark",
+        "preview",
+        "--",
+        "--port",
+        "4173",
+        "--strictPort"
+      ],
       "port": 4173
+    },
+    {
+      "name": "showcase",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "@spark/showcase",
+        "dev",
+        "--",
+        "--port",
+        "5174",
+        "--strictPort"
+      ],
+      "port": 5174
     }
   ]
 }

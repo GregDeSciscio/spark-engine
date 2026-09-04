@@ -70,6 +70,22 @@ importers:
         specifier: 0.1.72
         version: 0.1.72
 
+  apps/showcase:
+    dependencies:
+      '@spark/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+      three:
+        specifier: 0.185.1
+        version: 0.185.1
+    devDependencies:
+      '@types/three':
+        specifier: 0.185.0
+        version: 0.185.0
+      '@webgpu/types':
+        specifier: 0.1.72
+        version: 0.1.72
+
   packages/engine:
     dependencies:
       '@dimforge/rapier3d-compat':
