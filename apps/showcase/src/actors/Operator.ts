@@ -86,6 +86,8 @@ export interface OperatorDeps {
 
 export class Operator {
   readonly eid: Entity;
+  /** Where shots leave the barrel, in world space via `getWorldPosition`. */
+  readonly muzzle: THREE.Object3D;
   stance: Stance = 'stand';
   aiming = false;
   sprinting = false;
@@ -100,6 +102,7 @@ export class Operator {
   private readonly tmpR = new THREE.Vector3();
   private facing = 0;
   private jumpQueued = false;
+  private readonly rifleParts: readonly { dispose(): void }[];
 
   constructor(deps: OperatorDeps, spawn: THREE.Vector3, yaw: number) {
     this.deps = deps;
@@ -125,6 +128,23 @@ export class Operator {
     scene.add(this.root);
     renderSync.attach(entities, this.eid, this.root);
     animation.attach(this.eid, visual, model.animations, OPERATOR_GRAPH, { rootMotion: { mode: 'none' } });
+
+    // A placeholder rifle on the right forearm, until a real weapon model and aim pose exist.
+    const rifle = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.62, 0.06), new THREE.MeshStandardMaterial({ color: 0x1a1c22, roughness: 0.5, metalness: 0.6 }));
+    body.position.y = 0.42;
+    body.castShadow = true;
+    rifle.add(body);
+    this.rifleParts = [body.geometry, body.material as THREE.Material];
+    this.muzzle = new THREE.Object3D();
+    this.muzzle.position.y = 0.76;
+    rifle.add(this.muzzle);
+    const hand = visual.getObjectByName('lowerArm_R');
+    if (hand) hand.add(rifle);
+    else {
+      rifle.position.set(0.3, 1.3, 0.4);
+      this.root.add(rifle);
+    }
   }
 
   /** Current stance height, for the camera pivot. */
@@ -203,6 +223,7 @@ export class Operator {
     animation.detach(this.eid);
     this.controller.detach(this.eid);
     this.controller.dispose();
+    for (const part of this.rifleParts) part.dispose();
     scene.remove(this.root);
     entities.destroy(this.eid);
   }

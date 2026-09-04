@@ -30,6 +30,10 @@ export interface Blockout {
   readonly spawn: THREE.Vector3;
   /** Facing at spawn (camera yaw). 0 looks down -Z, up the street. */
   readonly spawnYaw: number;
+  /** Level meshes by physics entity, so hits can clip decals to what they struck. */
+  readonly meshes: ReadonlyMap<Entity, THREE.Mesh>;
+  /** Where the target dummies stand (feet), facing the spawn. */
+  readonly targetSpots: readonly { readonly position: THREE.Vector3; readonly yaw: number }[];
   dispose(): void;
 }
 
@@ -51,6 +55,7 @@ export function buildBlockout(
 ): Blockout {
   const bag = new DisposeBag();
   const spawned: Entity[] = [];
+  const meshes = new Map<Entity, THREE.Mesh>();
   bag.add(() => {
     for (const eid of spawned) entities.destroy(eid);
   });
@@ -93,7 +98,7 @@ export function buildBlockout(
     barrier.dispose();
   });
 
-  physics.layers.define('world', 'player');
+  physics.layers.define('world', 'player', 'target');
 
   const addBox = (box: Box, material: THREE.Material, options: { shadow?: boolean; body?: boolean } = {}): THREE.Mesh => {
     const mesh = new THREE.Mesh(unitBox, material);
@@ -106,6 +111,7 @@ export function buildBlockout(
       const eid = entities.create([Transform, { x: box.x, y: box.y, z: box.z }]);
       physics.addBody(eid, { type: 'fixed', shape: { kind: 'box', hx: box.hx, hy: box.hy, hz: box.hz }, layer: 'world', friction: 0.8, events: false });
       spawned.push(eid);
+      meshes.set(eid, mesh);
     }
     return mesh;
   };
@@ -175,9 +181,19 @@ export function buildBlockout(
     moon.dispose();
   });
 
+  // Range targets down the street, facing back toward the spawn.
+  const targetSpots = [
+    { position: new THREE.Vector3(0.5, 0, 20), yaw: 0 },
+    { position: new THREE.Vector3(3.5, 0, 6), yaw: 0 },
+    { position: new THREE.Vector3(-5, 0, -10), yaw: 0 },
+    { position: new THREE.Vector3(1, 0, -26), yaw: 0 },
+  ];
+
   return {
     spawn: new THREE.Vector3(0, 0, STREET_Z_MAX - 6),
     spawnYaw: 0,
+    meshes,
+    targetSpots,
     dispose: () => bag.dispose(),
   };
 }

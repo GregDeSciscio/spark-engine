@@ -1,22 +1,29 @@
 import * as THREE from 'three/webgpu';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { DisposeBag, RenderSync, ShoulderCamera, type SceneDefinition, type SceneInstance } from '@spark/engine';
+import { DisposeBag, RenderSync, ShoulderCamera, renderAllPlaceholders, type SceneDefinition, type SceneInstance } from '@spark/engine';
 import { Operator } from '../actors/Operator';
+import { TargetDummy } from '../actors/TargetDummy';
+import { Gunplay } from '../combat/Gunplay';
+import { RIFLE_BASELINE } from '../combat/weapons';
 import { buildBlockout } from '../levels/blockout';
 import { createOperatorHud } from '../ui/hud';
 
 const MANNEQUIN_URL = '/models/mannequin.glb';
+/** `?freelook=1`: treat the pointer as locked without asking the browser. For headless capture and probes, where pointer lock cannot be granted. */
+const FREELOOK = new URLSearchParams(location.search).get('freelook') === '1';
+const SOUND_SHOT = 'rifle-shot';
+const SOUND_HIT = 'impact';
 
 /**
- * Milestone 5 scaffold: the operator in a grey-box night street under the
- * over-the-shoulder camera. No weapon, no enemy, no objective yet; those land
- * in this order on top of this scene (`docs/design/mission-shape.md`).
+ * Milestone 5, second step: the operator with the baseline rifle in a
+ * grey-box night street, shooting range dummies. No enemy AI or objective
+ * yet; those land next (`docs/design/mission-shape.md`).
  */
 export const missionScene: SceneDefinition = {
   name: 'mission',
   async create(ctx): Promise<SceneInstance> {
     const bag = new DisposeBag();
-    const { entities, physics, animation, assets, audio, ui, input, random, quality, logger } = ctx;
+    const { entities, physics, animation, assets, audio, ui, input, random, quality, vfx, logger } = ctx;
     const scene = new THREE.Scene();
 
     // Dynamic resolution only makes sense on a wall clock; never on the capture clock.
@@ -39,11 +46,16 @@ export const missionScene: SceneDefinition = {
     const level = buildBlockout(scene, entities, physics, quality, random.fork());
     bag.add(level);
 
-    // ---- operator ------------------------------------------------------------
+    // ---- actors ----------------------------------------------------------------
     const model = await assets.loadModel(MANNEQUIN_URL);
     bag.add(() => assets.release(MANNEQUIN_URL));
     const operator = new Operator({ entities, physics, animation, renderSync, scene, model }, level.spawn, level.spawnYaw);
     bag.add(operator);
+    const dummies = level.targetSpots.map((spot, i) => {
+      const dummy = new TargetDummy({ entities, physics, animation, renderSync, scene, model, labels: ui.labels }, `Target ${i + 1}`, spot.position, spot.yaw);
+      bag.add(dummy);
+      return dummy;
+    });
 
     // ---- camera --------------------------------------------------------------
     const camera = new ShoulderCamera({ aspect: ctx.renderer.aspect, near: 0.05, far: 200 });
@@ -67,32 +79,62 @@ export const missionScene: SceneDefinition = {
     syncCamera();
     camera.snap(occluder);
 
+    // ---- audio: placeholder cues until real samples land ------------------------
+    const placeholders = await renderAllPlaceholders();
+    const impact = placeholders.get('placeholder-impact');
+    const sounds = impact ? { shot: SOUND_SHOT, hit: SOUND_HIT } : null;
+    if (impact) {
+      audio.defineSound({ name: SOUND_SHOT, bus: 'sfx', buffer: impact, volume: 0.9, pitchVariance: 2, cooldownMs: 30, maxInstances: 6 });
+      audio.defineSound({ name: SOUND_HIT, bus: 'sfx', buffer: impact, volume: 0.5, pitchVariance: 5, cooldownMs: 40, maxInstances: 6 });
+      bag.add(() => {
+        audio.undefineSound(SOUND_SHOT);
+        audio.undefineSound(SOUND_HIT);
+        audio.stopAll(0.1);
+      });
+    }
+
+    // ---- gunplay ---------------------------------------------------------------
+    const gunplay = new Gunplay(
+      { entities, physics, vfx, audio, labels: ui.labels, scene, random: random.fork(), camera, operator, dummies, worldMeshes: level.meshes, sounds },
+      RIFLE_BASELINE,
+      operator.muzzle,
+    );
+    bag.add(gunplay);
+
     // ---- HUD and pointer lock ------------------------------------------------
     const hud = createOperatorHud(ui);
     bag.add(hud);
     const onPointerDown = (): void => {
-      if (!input.isPointerLocked && !input.isCaptured) input.requestPointerLock();
+      if (!FREELOOK && !input.isPointerLocked && !input.isCaptured) input.requestPointerLock();
     };
     ctx.config.container.addEventListener('pointerdown', onPointerDown);
     bag.add(() => ctx.config.container.removeEventListener('pointerdown', onPointerDown));
 
-    logger.info(`mission: operator at (${level.spawn.x.toFixed(1)}, ${level.spawn.z.toFixed(1)}), ${ctx.lighting.budget} local lights in budget`);
+    logger.info(`mission: operator at (${level.spawn.x.toFixed(1)}, ${level.spawn.z.toFixed(1)}), ${dummies.length} targets, ${ctx.lighting.budget} local lights in budget`);
 
     return {
       scene,
       camera: camera.camera,
       update(_dt) {
-        if (input.isPointerLocked) {
+        const locked = FREELOOK || input.isPointerLocked;
+        if (locked) {
           const d = input.pointerDelta;
           camera.look(d.x, d.y);
         }
         operator.update(input, camera);
-        hud.setLocked(input.isPointerLocked);
+        // The click that takes control must not also fire.
+        gunplay.update(locked && input.isButtonDown(0), locked && input.wasButtonPressed(0), input.wasPressed('KeyR'));
+        const weapon = gunplay.weapon;
+        hud.setLocked(locked);
         hud.setAiming(operator.aiming);
+        hud.setSpread(gunplay.spreadNow());
+        hud.setAmmo(weapon.ammo, weapon.reserve, weapon.reloading, weapon.reloadProgress);
         hud.setStatus(operator.stance, operator.speed, operator.grounded);
+        hud.setScore(gunplay.stats.hits, gunplay.stats.kills);
       },
       fixedUpdate(fixedDt) {
         operator.fixedUpdate(fixedDt);
+        gunplay.fixedUpdate(fixedDt);
       },
       lateUpdate(dt) {
         syncCamera();

@@ -59,6 +59,27 @@ describe('ShoulderCamera', () => {
     expect(cam.camera.position.distanceTo(cam.pivot)).toBeCloseTo(SHOULDER_PRESET.aimDistance, 1);
   });
 
+  it('recoil offsets the view without moving the look', () => {
+    const cam = new ShoulderCamera();
+    cam.snap();
+    const f0 = new THREE.Vector3();
+    cam.viewForward(f0);
+    cam.recoilPitch = -0.2;
+    cam.recoilYaw = 0.1;
+    cam.snap();
+    const f1 = new THREE.Vector3();
+    cam.viewForward(f1);
+    expect(f1.y).toBeGreaterThan(f0.y);
+    expect(cam.getPitch()).toBe(0);
+    expect(cam.getYaw()).toBe(0);
+    expect(cam.effectiveYaw()).toBeCloseTo(0.1);
+    cam.recoilPitch = 0;
+    cam.recoilYaw = 0;
+    cam.snap();
+    cam.viewForward(f1);
+    expect(f1.distanceTo(f0)).toBeCloseTo(0);
+  });
+
   it('look() turns left for rightward pointer motion and clamps pitch', () => {
     const cam = new ShoulderCamera();
     cam.look(100, 0);

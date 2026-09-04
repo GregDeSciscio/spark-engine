@@ -94,6 +94,14 @@ export class ShoulderCamera {
   aiming = false;
   /** Where aim rays start: the shoulder pivot after the last `update()`. */
   readonly pivot = new THREE.Vector3();
+  /**
+   * Recoil offsets added on top of the player's look, radians. The game sets
+   * them every tick from its weapon state; they do not accumulate into
+   * `yaw`/`pitch`, so when the kick returns to zero the view returns with it.
+   * Negative pitch is upward.
+   */
+  recoilPitch = 0;
+  recoilYaw = 0;
 
   private readonly preset: ShoulderCameraPreset;
   private yaw = 0;
@@ -145,9 +153,19 @@ export class ShoulderCamera {
     return out.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
   }
 
-  /** Full view direction including pitch (for aim rays). */
+  /** Full view direction including pitch and recoil (for aim rays). Valid after `update()` / `snap()`. */
   viewForward(out: THREE.Vector3): THREE.Vector3 {
     return out.copy(this.forward);
+  }
+
+  /** Effective yaw this frame: look plus recoil. */
+  effectiveYaw(): number {
+    return this.yaw + this.recoilYaw;
+  }
+
+  /** Effective pitch this frame: look plus recoil, clamped. */
+  effectivePitch(): number {
+    return clampPitch(this.pitch + this.recoilPitch, this.preset);
   }
 
   /** Jump straight to the resolved pose (no aim damping this frame). */
@@ -168,7 +186,9 @@ export class ShoulderCamera {
     const side = THREE.MathUtils.lerp(p.sideOffset, p.aimSideOffset, b);
     const fov = THREE.MathUtils.lerp(p.fov, p.aimFov, b);
 
-    shoulderFrame(this.yaw, this.pitch, this.forward, this.right);
+    const yaw = this.effectiveYaw();
+    const pitch = this.effectivePitch();
+    shoulderFrame(yaw, pitch, this.forward, this.right);
     this.pivot.copy(this.target);
     this.pivot.y += this.height * p.shoulderRatio;
     this.pivot.addScaledVector(this.right, side);
@@ -183,7 +203,7 @@ export class ShoulderCamera {
     this.desired.copy(this.pivot).addScaledVector(this.toCamera, reach);
 
     this.camera.position.copy(this.desired);
-    this.camera.rotation.set(-this.pitch, this.yaw, 0, 'YXZ');
+    this.camera.rotation.set(-pitch, yaw, 0, 'YXZ');
     if (this.camera.fov !== fov) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();
