@@ -6,6 +6,12 @@
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--filter", "@spark/benchmark", "dev", "--", "--port", "5173", "--strictPort"],
       "port": 5173
+    },
+    {
+      "name": "benchmark-preview",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@spark/benchmark", "preview", "--", "--port", "4173", "--strictPort"],
+      "port": 4173
     }
   ]
 }
