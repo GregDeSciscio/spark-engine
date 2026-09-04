@@ -48,6 +48,13 @@ export interface SpriteRenderDescriptor {
    * for large slow sprites (smoke), never for 100k streaks.
    */
   readonly softness: number;
+  /**
+   * Near-camera fall-off distance in world units (0 = off). Sprites closer
+   * than this to the camera shrink and fade toward zero at the lens, so a
+   * rain streak passing the camera does not become a thick smear across the
+   * frame. Free: one view-space distance per vertex.
+   */
+  readonly nearFade: number;
   readonly texture: THREE.Texture | null;
   readonly fog: boolean;
   readonly depthWrite: boolean;
@@ -126,6 +133,7 @@ const DEFAULT_SPRITE: SpriteRenderDescriptor = {
   shape: 'disc',
   stretch: 0,
   softness: 0,
+  nearFade: 0,
   texture: null,
   fog: true,
   depthWrite: false,
@@ -254,6 +262,8 @@ export function resolveEmitterDescriptor(input: ParticleEmitterDescriptorInput =
     assertFinite('render.stretch', render.stretch);
     assertFinite('render.softness', render.softness);
     if (render.softness < 0) throw new Error('ParticleEmitter: render.softness must be >= 0');
+    assertFinite('render.nearFade', render.nearFade);
+    if (render.nearFade < 0) throw new Error('ParticleEmitter: render.nearFade must be >= 0');
   } else if (render.kind === 'mesh') {
     if (!render.geometry) throw new Error('ParticleEmitter: mesh render needs a geometry');
     if (!render.material) throw new Error('ParticleEmitter: mesh render needs a node material');

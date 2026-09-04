@@ -42,16 +42,48 @@ export * from './vfx/index';
 // ---- animation (Milestone 6) ----
 export * from './animation/index';
 
+// ---- audio ----
+export * from './audio/index';
+
+// ---- ui ----
+export * from './ui/index';
+
 export { Input, type PointerButton } from './input/Input';
 export { World } from './world/World';
 export type { SceneContext, SceneDefinition, SceneInstance } from './world/Scene';
 export { DebugStats, type DebugSnapshot } from './debug/DebugStats';
 export { exposeForCapture, type CaptureAPI } from './debug/CaptureHook';
 
+// ---- debug ----
+export { SparkInspector } from './debug/Inspector';
+export { BoundsDebugRenderer } from './debug/DebugViews';
+export {
+  InspectorState,
+  countScene,
+  debugViewOptions,
+  engineRows,
+  formatCount,
+  formatMs,
+  postRows,
+  sortComponentCounts,
+  sphereOutline,
+  sphereOutlineFloats,
+  topSystems,
+  type ComponentCount,
+  type CountableObject,
+  type EngineRowsInput,
+  type LabelValue,
+  type PostRow,
+  type SceneCounts,
+  type SystemTiming,
+} from './debug/InspectorModel';
+
 // ---- rendering (Milestone 2) ----
 export {
   RenderPipeline,
   POST_EFFECT_NAMES,
+  DEBUG_VIEW_NAMES,
+  type DebugViewName,
   type GodraysOptions,
   type PostEffectName,
   type PostEffectState,

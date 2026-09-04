@@ -23,6 +23,12 @@ export interface EngineConfig {
   renderScale: number;
   /** Show the DebugStats overlay. */
   debugOverlay: boolean;
+  /**
+   * Open the engine inspector (three's Inspector addon plus engine panels) at
+   * start. Off by default; F2 toggles it at runtime either way. Ignored when
+   * `debugOverlay` is false so captures never show it.
+   */
+  inspector: boolean;
   /** Maximum simultaneous entities; component arrays are sized to this. */
   entityCapacity: number;
   /** Seed for every engine-owned RNG. Same seed + same inputs = same simulation. */
@@ -45,6 +51,7 @@ export const DEFAULT_CONFIG: Omit<EngineConfig, 'container'> = {
   maxPixelRatio: 2,
   renderScale: 1,
   debugOverlay: true,
+  inspector: false,
   entityCapacity: 10_000,
   seed: 1,
   fixedFrameDelta: null,
@@ -53,7 +60,7 @@ export const DEFAULT_CONFIG: Omit<EngineConfig, 'container'> = {
 
 /**
  * Parse the subset of config that may be overridden from the URL.
- * Recognised: `backend`, `preset`, `scale`, `dpr`, `seed`, `overlay`, `fixedclock`, `log`.
+ * Recognised: `backend`, `preset`, `scale`, `dpr`, `seed`, `overlay`, `inspector`, `fixedclock`, `log`.
  * Unknown or malformed values are ignored, never thrown on.
  */
 export function configFromSearch(search: string): Partial<Omit<EngineConfig, 'container'>> {
@@ -78,6 +85,10 @@ export function configFromSearch(search: string): Partial<Omit<EngineConfig, 'co
   const overlay = params.get('overlay');
   if (overlay === '0' || overlay === 'false') out.debugOverlay = false;
   if (overlay === '1' || overlay === 'true') out.debugOverlay = true;
+
+  const inspector = params.get('inspector');
+  if (inspector === '1' || inspector === 'true') out.inspector = true;
+  if (inspector === '0' || inspector === 'false') out.inspector = false;
 
   const fixed = params.get('fixedclock');
   if (fixed !== null) {

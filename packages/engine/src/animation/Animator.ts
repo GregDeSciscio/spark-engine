@@ -228,6 +228,11 @@ export class AnimationWorld {
     return this.table.get(eid)?.lastEvent ?? null;
   }
 
+  /** The graph an entity was attached with (inspector: parameter and layer names). */
+  graphOf(eid: Entity): AnimationGraphDef | undefined {
+    return this.table.get(eid)?.playback.graph;
+  }
+
   /** Listen for one named event on one entity. Returns the unsubscribe function. */
   on(eid: Entity, eventName: string, listener: (event: AnimationEvent) => void): () => void {
     const inst = this.table.require(eid);

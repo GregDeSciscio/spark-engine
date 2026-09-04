@@ -1,6 +1,7 @@
 import type * as THREE from 'three/webgpu';
 import type { AnimationWorld } from '../animation/Animator';
 import type { AssetManager } from '../assets/AssetManager';
+import type { AudioSystem } from '../audio/AudioSystem';
 import type { ParticleSystem } from '../vfx/ParticleSystem';
 import type { Disposable } from '../core/Disposable';
 import type { EngineConfig } from '../core/Config';
@@ -10,6 +11,7 @@ import type { EntityWorld } from '../ecs/EntityWorld';
 import type { Input } from '../input/Input';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
 import type { SparkRenderer } from '../rendering/Renderer';
+import type { UIHost } from '../ui/UIHost';
 import type { QualitySettings } from '../rendering/QualityPresets';
 
 /** Everything a scene needs from the engine, handed over at creation. */
@@ -28,6 +30,10 @@ export interface SceneContext {
   readonly vfx: ParticleSystem;
   /** Engine-owned asset cache. Scenes `release()` what they `load*()` in `dispose()`. */
   readonly assets: AssetManager;
+  /** Engine audio (Milestone 10). Scenes stop what they start in `dispose()`; the context unlocks on the first gesture. */
+  readonly audio: AudioSystem;
+  /** DOM overlay host (Milestone 10). Scenes `unmount()` what they `mount()` and `labels.detach()` what they attach. */
+  readonly ui: UIHost;
   /** A fresh, seeded stream for this scene. Same seed → same scene. */
   readonly random: Random;
   readonly logger: Logger;

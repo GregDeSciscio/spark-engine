@@ -607,8 +607,15 @@ export class ParticleSystem implements System {
     const lifetime = life.y;
     const lifeT = saturate(age.div(max(lifetime, 1e-6)));
     const aliveF = select(age.lessThan(lifetime), float(1), float(0));
-    const size = attr.x.mul(sampleLut(sizeLut, lifeT).x).mul(aliveF);
-    const lifeColor = varying(sampleLut(colorLut, lifeT), 'v_particleColor');
+    let size = attr.x.mul(sampleLut(sizeLut, lifeT).x).mul(aliveF);
+    let lifeColor = varying(sampleLut(colorLut, lifeT), 'v_particleColor');
+    if (desc.render.kind === 'sprite' && desc.render.nearFade > 0) {
+      // Near-camera fall-off: shrink and fade sprites inside `nearFade` metres of the lens.
+      const viewDistance = length(modelViewMatrix.mul(vec4(center, 1)).xyz);
+      const near = smoothstep(0, desc.render.nearFade, viewDistance);
+      size = size.mul(near);
+      lifeColor = varying(vec4(lifeColor.xyz, lifeColor.w.mul(near)), 'v_particleColorNear');
+    }
 
     let material: THREE.NodeMaterial;
     let ownedMaterial: THREE.Material | null = null;

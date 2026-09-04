@@ -129,6 +129,11 @@ export class EntityWorld implements Disposable {
     return this.disposed ? 0 : getAllEntities(this.world).length;
   }
 
+  /** Every component type that has a store in this world, in registration order. Debug/inspector use. */
+  componentTypes(): readonly ComponentType[] {
+    return this.disposed ? [] : [...this.types.values()];
+  }
+
   all(): readonly Entity[] {
     return this.disposed ? [] : getAllEntities(this.world);
   }

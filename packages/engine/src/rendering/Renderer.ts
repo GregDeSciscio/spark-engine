@@ -336,7 +336,17 @@ export class SparkRenderer implements Disposable {
     if (this.disposed) return;
     const start = performance.now();
     this.beginFrame();
-    this.pipeline.render(scene, camera);
+    // Frame scope for `renderer.inspector` (a no-op on the default
+    // InspectorBase). three's own loop brackets the animation callback with
+    // these; the engine drives frames itself, so it brackets the render here,
+    // after the node frame id has advanced (the inspector keys frames on it).
+    const inspector = this.three.inspector;
+    inspector.begin();
+    try {
+      this.pipeline.render(scene, camera);
+    } finally {
+      inspector.finish();
+    }
     this.sampleGpuTime();
     if (this.dynamicResolution.enabled) {
       const end = performance.now();

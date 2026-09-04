@@ -80,6 +80,22 @@ export const POST_EFFECT_NAMES: readonly PostEffectName[] = [
   'fxaa',
 ];
 
+/**
+ * Debug views (kickoff §24). `wireframe` is a scene override material swapped
+ * in around the frame's renders; every other view replaces the quad graph's
+ * output with one of the scene pass attachments, so switching views is a
+ * compose (cheap) and never a layout rebuild: no scene material recompiles.
+ *
+ * - `normals`   view-space normals from the SSR MRT (presets with SSR) or the AO prepass
+ * - `depth`     linear depth of the scene pass
+ * - `velocity`  the TRAA / motion-blur velocity MRT (WebGPU layouts)
+ * - `ao`        the GTAO term (presets with AO; at idle resolution while AO is switched off)
+ * - `material`  metalness (red) and roughness (green) from the SSR MRT
+ */
+export type DebugViewName = 'wireframe' | 'normals' | 'depth' | 'velocity' | 'ao' | 'material';
+
+export const DEBUG_VIEW_NAMES: readonly DebugViewName[] = ['wireframe', 'normals', 'depth', 'velocity', 'ao', 'material'];
+
 export interface PostEffectState {
   readonly name: PostEffectName;
   /** Requested on (by preset or explicit toggle). */
@@ -227,6 +243,10 @@ export class RenderPipeline implements Disposable {
   private readonly godraysIntensity = uniform(0.6);
   private godraysOptions: GodraysOptions = {};
   private godraysRetry = 0;
+
+  // ---- debug views (never part of a capture; the inspector drives them) ----
+  private debugView: DebugViewName | null = null;
+  private wireframeMaterial: THREE.MeshBasicNodeMaterial | null = null;
 
   constructor(renderer: THREE.WebGPURenderer, backend: ActiveBackend, quality: QualitySettings) {
     this.renderer = renderer;
@@ -380,6 +400,82 @@ export class RenderPipeline implements Disposable {
     }
   }
 
+  // ---- debug views ------------------------------------------------------------------
+
+  /**
+   * Show one of the debug views, or null for the normal image. Buffer views
+   * recompose the quad graph (cheap); `wireframe` only swaps the scene's
+   * override material around each frame. Neither rebuilds the layout.
+   */
+  setDebugView(name: DebugViewName | null): void {
+    if (name === this.debugView) return;
+    this.debugView = name;
+    this.composeDirty = true;
+  }
+
+  getDebugView(): DebugViewName | null {
+    return this.debugView;
+  }
+
+  /** Views the current backend and layout can show. Before the first render this is the best guess for the preset. */
+  getAvailableDebugViews(): DebugViewName[] {
+    const layout = this.layout;
+    const gpuLayout = this.backend === 'webgpu' && !this.layoutUsesMSAA();
+    const ssr = layout ? layout.ssr : gpuLayout && this.quality.screenSpaceReflections;
+    const aoLayout = layout ? layout.aoNode !== null : gpuLayout && this.quality.ambientOcclusion !== 'off';
+    const velocity = layout ? layout.velocityProjection !== null : gpuLayout;
+    return DEBUG_VIEW_NAMES.filter((name) => {
+      switch (name) {
+        case 'wireframe':
+        case 'depth':
+          return true;
+        case 'normals':
+          return ssr || aoLayout;
+        case 'velocity':
+          return velocity;
+        case 'ao':
+          return aoLayout;
+        case 'material':
+          return ssr;
+      }
+    });
+  }
+
+  /** The node that visualises a buffer view for this layout, or null when the layout lacks the buffer. */
+  private debugViewNode(layout: SceneLayout, view: DebugViewName): THREE.Node | null {
+    const scenePass = layout.scenePass;
+    switch (view) {
+      case 'wireframe':
+        return null;
+      case 'depth': {
+        const depth = scenePass.getLinearDepthNode() as unknown as THREE.Node<'float'>;
+        return vec4(vec3(depth.oneMinus()), 1.0);
+      }
+      case 'normals': {
+        const packed = layout.ssr ? scenePass.getTextureNode('normal') : layout.prePass ? layout.prePass.getTextureNode() : null;
+        if (!packed) return null;
+        // `.rgb` first: unpackRGBToNormal keeps its input width, and a vec4 here would overflow the vec4() below.
+        const n = unpackRGBToNormal(packed.sample(screenUV).rgb) as unknown as THREE.Node<'vec3'>;
+        return vec4(n.mul(0.5).add(0.5), 1.0);
+      }
+      case 'velocity': {
+        if (!layout.velocityProjection) return null;
+        const v = scenePass.getTextureNode('velocity').sample(screenUV) as unknown as THREE.Node<'vec4'>;
+        return vec4(v.xy.mul(8.0).add(0.5), 0.5, 1.0);
+      }
+      case 'ao': {
+        if (!layout.aoNode) return null;
+        const term = layout.aoNode.getTextureNode().sample(screenUV) as unknown as THREE.Node<'vec4'>;
+        return vec4(vec3(term.r), 1.0);
+      }
+      case 'material': {
+        if (!layout.ssr) return null;
+        const m = scenePass.getTextureNode('material').sample(screenUV) as unknown as THREE.Node<'vec4'>;
+        return vec4(m.r, m.g, 0.0, 1.0);
+      }
+    }
+  }
+
   // ---- scale / size ---------------------------------------------------------------
 
   getRenderScale(): number {
@@ -443,6 +539,19 @@ export class RenderPipeline implements Disposable {
       // graph; without it the override must still be set, see SceneLayout.
       layout.velocityProjection.copy(camera.projectionMatrix);
       velocity.setProjectionMatrix(layout.velocityProjection);
+    }
+    if (this.debugView === 'wireframe') {
+      // One override material for every scene render this frame (prepass, shadow-map
+      // casters keep their depth materials). Restored before the call returns.
+      this.wireframeMaterial ??= new THREE.MeshBasicNodeMaterial({ color: 0x8fd0ff, wireframe: true, fog: false });
+      const previous = scene.overrideMaterial;
+      scene.overrideMaterial = this.wireframeMaterial;
+      try {
+        this.three.render();
+      } finally {
+        scene.overrideMaterial = previous;
+      }
+      return;
     }
     this.three.render();
   }
@@ -619,6 +728,19 @@ export class RenderPipeline implements Disposable {
     let colorTexture: THREE.TextureNode = scenePass.getTextureNode('output');
     let color: THREE.Node = colorTexture;
 
+    // Buffer debug view: the quad shows one scene-pass attachment instead of
+    // the effect chain. The AO trigger stays so the frame structure (and every
+    // material's builder context) is identical to the normal graph.
+    const debugNode = this.debugView && this.debugView !== 'wireframe' ? this.debugViewNode(layout, this.debugView) : null;
+    if (debugNode) {
+      this.traaActive = false;
+      this.three.outputNode = aoTrigger ? aoTrigger.sample(screenUV).r.mul(0.0).add(debugNode as THREE.Node<'vec4'>) : debugNode;
+      this.three.needsUpdate = true;
+      this.activeEffects = active;
+      this.log.debug(`graph composed: debug view "${this.debugView}"`);
+      return;
+    }
+
     this.traaActive = useTRAA && layout.velocityProjection !== null;
     if (this.traaActive && layout.velocityProjection) {
       const traaNode = traa(colorTexture, depthTexture, scenePass.getTextureNode('velocity'), camera);
@@ -779,6 +901,8 @@ export class RenderPipeline implements Disposable {
     if (this.disposed) return;
     this.disposed = true;
     this.releaseLayout();
+    this.wireframeMaterial?.dispose();
+    this.wireframeMaterial = null;
     this.three.dispose();
   }
 }

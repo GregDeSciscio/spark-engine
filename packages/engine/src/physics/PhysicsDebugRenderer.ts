@@ -38,7 +38,7 @@ export class PhysicsDebugRenderer implements System {
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
-    this.object.visible = enabled;
+    this.object.visible = false;
     if (enabled) this.update();
   }
 
@@ -54,8 +54,9 @@ export class PhysicsDebugRenderer implements System {
     const vertices = buffers.vertices;
     const vertexCount = vertices.length / 3;
 
-    if (vertexCount > this.capacity) {
-      this.capacity = Math.max(vertexCount, Math.ceil(this.capacity * 1.5));
+    // Allocate on first use even with nothing to draw: an empty world (no colliders yet) must not throw.
+    if (vertexCount > this.capacity || !this.geometry.getAttribute('position')) {
+      this.capacity = Math.max(vertexCount, Math.ceil(this.capacity * 1.5), 64);
       const position = new THREE.BufferAttribute(new Float32Array(this.capacity * 3), 3);
       const color = new THREE.BufferAttribute(new Float32Array(this.capacity * 3), 3);
       position.setUsage(THREE.DynamicDrawUsage);
@@ -79,6 +80,8 @@ export class PhysicsDebugRenderer implements System {
     color.needsUpdate = true;
     this.geometry.setDrawRange(0, vertexCount);
     this.geometry.computeBoundingSphere();
+    // A zero-vertex draw is a WebGPU validation warning; skip the object instead.
+    this.object.visible = vertexCount > 0;
   }
 
   run(_world: EntityWorld): void {

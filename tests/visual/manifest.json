@@ -60,6 +60,12 @@
       "backend": "webgpu",
       "preset": "high",
       "frames": 240
+    },
+    {
+      "scene": "hud",
+      "backend": "webgpu",
+      "preset": "high",
+      "frames": 90
     }
   ]
 }

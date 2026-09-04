@@ -52,3 +52,13 @@ describe('resolveConfig', () => {
     expect(() => resolveConfig({ container, renderScale: 1.5 })).toThrow();
   });
 });
+
+describe('inspector option', () => {
+  it('is off by default and parsed from ?inspector=1', () => {
+    expect(DEFAULT_CONFIG.inspector).toBe(false);
+    expect(configFromSearch('?inspector=1').inspector).toBe(true);
+    expect(configFromSearch('?inspector=true').inspector).toBe(true);
+    expect(configFromSearch('?inspector=0').inspector).toBe(false);
+    expect(configFromSearch('?scene=alley').inspector).toBeUndefined();
+  });
+});

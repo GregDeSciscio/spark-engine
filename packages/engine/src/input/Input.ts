@@ -32,6 +32,8 @@ export class Input implements Disposable {
   private pendingWheel = 0;
   private wheel = 0;
   private pointerInside = false;
+  private captured = false;
+  private readonly passthrough = new Set<string>(['Escape']);
   private disposed = false;
 
   constructor(target: HTMLElement) {
@@ -72,33 +74,53 @@ export class Input implements Disposable {
     this.pendingWheel = 0;
   }
 
+  /**
+   * While captured (a UI layer owns the pointer, see `UIHost`), every query
+   * reports "nothing" except the passthrough codes (default `Escape`, so a
+   * menu can be closed from gameplay code). Raw state keeps tracking, so a key
+   * still held when capture ends reads as down again.
+   */
+  setCaptured(captured: boolean, passthrough: readonly string[] = ['Escape']): void {
+    this.captured = captured;
+    this.passthrough.clear();
+    for (const code of passthrough) this.passthrough.add(code);
+  }
+
+  get isCaptured(): boolean {
+    return this.captured;
+  }
+
+  private blocked(code: string): boolean {
+    return this.captured && !this.passthrough.has(code);
+  }
+
   isDown(code: string): boolean {
-    return this.down.has(code);
+    return !this.blocked(code) && this.down.has(code);
   }
 
   wasPressed(code: string): boolean {
-    return this.pressed.has(code);
+    return !this.blocked(code) && this.pressed.has(code);
   }
 
   wasReleased(code: string): boolean {
-    return this.released.has(code);
+    return !this.blocked(code) && this.released.has(code);
   }
 
   /** -1, 0 or 1 from a negative/positive key pair, e.g. `axis('KeyA', 'KeyD')`. */
   axis(negative: string, positive: string): number {
-    return (this.down.has(positive) ? 1 : 0) - (this.down.has(negative) ? 1 : 0);
+    return (this.isDown(positive) ? 1 : 0) - (this.isDown(negative) ? 1 : 0);
   }
 
   isButtonDown(button: PointerButton): boolean {
-    return this.buttonsDown.has(button);
+    return !this.captured && this.buttonsDown.has(button);
   }
 
   wasButtonPressed(button: PointerButton): boolean {
-    return this.buttonsPressed.has(button);
+    return !this.captured && this.buttonsPressed.has(button);
   }
 
   wasButtonReleased(button: PointerButton): boolean {
-    return this.buttonsReleased.has(button);
+    return !this.captured && this.buttonsReleased.has(button);
   }
 
   /** Pointer position in CSS pixels relative to the target's top-left. */

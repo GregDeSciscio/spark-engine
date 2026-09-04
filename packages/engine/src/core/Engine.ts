@@ -1,3 +1,4 @@
+import type * as THREE from 'three/webgpu';
 import { Clock } from './Clock';
 import { resolveConfig, type EngineConfig, type PartialEngineConfig } from './Config';
 import type { Disposable } from './Disposable';
@@ -8,7 +9,9 @@ import { Random } from './Random';
 import { AnimationWorld } from '../animation/Animator';
 import { createAnimationSystems } from '../animation/systems';
 import { AssetManager } from '../assets/AssetManager';
+import { AudioSystem } from '../audio/AudioSystem';
 import { DebugStats } from '../debug/DebugStats';
+import { SparkInspector } from '../debug/Inspector';
 import { EntityWorld } from '../ecs/EntityWorld';
 import { Input } from '../input/Input';
 import { PhysicsWorld } from '../physics/PhysicsWorld';
@@ -16,6 +19,7 @@ import { createPhysicsSystems } from '../physics/systems';
 import { ParticleSystem } from '../vfx/ParticleSystem';
 import { getQualitySettings, type QualitySettings } from '../rendering/QualityPresets';
 import { SparkRenderer } from '../rendering/Renderer';
+import { UIHost } from '../ui/UIHost';
 import type { SceneDefinition, SceneInstance } from '../world/Scene';
 import { World } from '../world/World';
 
@@ -55,7 +59,11 @@ export class Engine implements Disposable {
   private physicsInstance: PhysicsWorld | null = null;
   private animationInstance: AnimationWorld | null = null;
   private vfxInstance: ParticleSystem | null = null;
+  private audioInstance: AudioSystem | null = null;
+  private uiInstance: UIHost | null = null;
   private statsInstance: DebugStats | null = null;
+  private inspectorInstance: SparkInspector | null = null;
+  private inspectorLoading: Promise<void> | null = null;
   private quality: QualitySettings;
   private stateValue: EngineState = 'created';
   /** Whole-frame main-thread time (input → render), the number that matters against the 16.67 ms budget. */
@@ -82,6 +90,8 @@ export class Engine implements Disposable {
       input: () => {
         this.frameStart = performance.now();
         this.inputInstance?.update();
+        // Engine-level hotkey: F2 opens/closes the inspector (kickoff §25).
+        if (this.inputInstance?.wasPressed('F2')) void this.toggleInspector();
       },
       fixedUpdate: (dt) => {
         this.world.fixedUpdate(dt);
@@ -137,8 +147,52 @@ export class Engine implements Disposable {
     return this.assetsInstance;
   }
 
+  /** WebAudio buses, voices, spatial sound, music (Milestone 10). Unlocks on the first user gesture. */
+  get audio(): AudioSystem {
+    if (!this.audioInstance) throw new Error('Engine: audio is not available before initialize()');
+    return this.audioInstance;
+  }
+
+  /** DOM overlay host: layers, pointer capture, projection, world-space labels (Milestone 10). */
+  get ui(): UIHost {
+    if (!this.uiInstance) throw new Error('Engine: ui is not available before initialize()');
+    return this.uiInstance;
+  }
+
   get stats(): DebugStats | null {
     return this.statsInstance;
+  }
+
+  /** The engine inspector once it has been opened (`?inspector=1` or F2); null while it has never been requested. */
+  get inspector(): SparkInspector | null {
+    return this.inspectorInstance;
+  }
+
+  /**
+   * Open (loading three's Inspector addon and the engine panels on first use)
+   * or close the inspector. Nothing is created until the first open; closing
+   * detaches it from the renderer so it costs no per-frame work.
+   */
+  async setInspectorVisible(visible: boolean): Promise<void> {
+    if (this.stateValue !== 'ready' && this.stateValue !== 'running') return;
+    if (!this.inspectorInstance) {
+      if (!visible) return;
+      this.inspectorLoading ??= SparkInspector.create(this)
+        .then((inspector) => {
+          if (this.stateValue === 'disposed') inspector.dispose();
+          else this.inspectorInstance = inspector;
+        })
+        .catch((error: unknown) => this.logger.warn('inspector failed to load', error))
+        .finally(() => {
+          this.inspectorLoading = null;
+        });
+      await this.inspectorLoading;
+    }
+    this.inspectorInstance?.setVisible(visible);
+  }
+
+  toggleInspector(): Promise<void> {
+    return this.setInspectorVisible(!(this.inspectorInstance?.visible ?? false));
   }
 
   getQuality(): QualitySettings {
@@ -184,9 +238,19 @@ export class Engine implements Disposable {
     // GPU particles (Milestone 8): fixed stage after physics; off on WebGL2 (ADR-001).
     this.vfxInstance = new ParticleSystem(this.entities, this.rendererInstance, { seed: this.config.seed });
     this.entities.addSystem(this.vfxInstance);
+    // Audio + UI (Milestone 10). Both follow the live scene camera unless a scene overrides it.
+    // The audio seed derives from the config, not `this.random`, so scene streams are unchanged.
+    const liveCamera = (): THREE.Camera | null => this.world.scene?.camera ?? null;
+    this.audioInstance = new AudioSystem({ entities: this.entities, seed: (this.config.seed ^ 0x0a5d10) >>> 0, camera: liveCamera });
+    for (const system of this.audioInstance.createSystems()) this.entities.addSystem(system);
+    this.audioInstance.installGestureUnlock(window);
+    this.uiInstance = new UIHost({ container, renderer: this.rendererInstance, entities: this.entities, input: this.inputInstance, camera: liveCamera });
+    for (const system of this.uiInstance.createSystems()) this.entities.addSystem(system);
     this.statsInstance = new DebugStats(container, this.config.debugOverlay);
     this.lastSize = { ...this.rendererInstance.size };
     this.stateValue = 'ready';
+    // `overlay=0` (every capture) also suppresses the inspector, so goldens never see it.
+    if (this.config.inspector && this.config.debugOverlay) await this.setInspectorVisible(true);
     this.logger.info(`initialized (backend=${this.rendererInstance.capabilities.backend}, preset=${this.config.preset})`);
     this.events.emit('initialized', { backend: this.rendererInstance.capabilities.backend });
   }
@@ -203,6 +267,8 @@ export class Engine implements Disposable {
       animation: this.animation,
       vfx: this.vfx,
       assets: this.assets,
+      audio: this.audio,
+      ui: this.ui,
       random: this.random.fork(),
       logger: new Logger(`scene:${definition.name}`),
     });
@@ -268,12 +334,16 @@ export class Engine implements Disposable {
       fixedSteps: this.loop.lastFixedSteps,
       render: renderer.stats(),
     });
+    this.inspectorInstance?.update(this.statsInstance?.snapshot() ?? null);
     this.events.emit('frame', { frame: this.clock.frame, dt });
   }
 
   dispose(): void {
     if (this.stateValue === 'disposed') return;
     this.loop.stop();
+    // Before the world and entities: the inspector's overlays are systems and scene objects.
+    this.inspectorInstance?.dispose();
+    this.inspectorInstance = null;
     this.world.dispose();
     this.entities.dispose();
     // After entities: destroying them releases their bodies from the live world.
@@ -283,6 +353,11 @@ export class Engine implements Disposable {
     this.animationInstance = null;
     this.statsInstance?.dispose();
     this.statsInstance = null;
+    // After the world: scenes unmount their UI and stop their voices in dispose().
+    this.uiInstance?.dispose();
+    this.uiInstance = null;
+    this.audioInstance?.dispose();
+    this.audioInstance = null;
     this.inputInstance?.dispose();
     this.inputInstance = null;
     // After the world: the scene has released its references, so the cache empties here.

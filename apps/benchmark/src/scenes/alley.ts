@@ -14,7 +14,9 @@ import {
   mix,
   mx_fractal_noise_float,
   mx_noise_float,
+  normalView,
   normalWorld,
+  positionGeometry,
   positionWorld,
   saturate,
   sin,
@@ -27,12 +29,16 @@ import {
 import {
   CameraRig,
   Decals,
+  PARTICLE_PRESETS,
   DisposeBag,
+  RenderSync,
   Transform,
   VolumeFogSettings,
   applySceneEnvironment,
   createHeightFog,
+  damp,
   prepareDecalMaterial,
+  type AnimationGraphDef,
   type CameraRigPreset,
   type Entity,
   type ParticleEmitterDescriptorInput,
@@ -71,6 +77,68 @@ const WALL_Z_MAX = 30;
 const RAIN_TOP = 20;
 const RAIN_VOLUME: readonly [number, number, number] = [16, 22, 46];
 const RAIN_CAPACITY = 20_000;
+/** Rain streaks inside this distance of the lens shrink and fade (no thick near-camera smears). */
+const RAIN_NEAR_FADE = 7;
+
+// ---- hero -----------------------------------------------------------------------
+const MANNEQUIN_URL = '/models/mannequin.glb';
+const HERO_WALK = 1.2;
+const HERO_RUN = 4.0;
+const HERO_TURN_RATE = 10;
+const HERO_SPEED_RATE = 8;
+/** Seconds an idle leg of the autopilot spends turning toward the next heading. */
+const HERO_TURN_TIME = 0.7;
+/** Where the hero key light and fog-volume spot aim; the autopilot loop stays inside that pool. */
+const HERO_SPOT = new THREE.Vector3(-0.8, 0, 2);
+const HERO_START = new THREE.Vector3(-0.8, 0, -0.4);
+/** Facing when walking toward the camera: three-quarter, so the face and the wet shoulders both read. */
+const HERO_APPROACH_YAW = 0.35;
+const HERO_X_LIMIT = ALLEY_HALF_WIDTH - 1.1;
+const HERO_Z_MIN = -34;
+const HERO_Z_MAX = 9;
+
+/** idle/walk/run on `speed` with root motion; an additive attack on the upper body (Space). */
+const HERO_GRAPH: AnimationGraphDef = {
+  params: { speed: 0 },
+  layers: [
+    {
+      name: 'base',
+      entry: 'locomotion',
+      states: [
+        {
+          name: 'locomotion',
+          blend: {
+            param: 'speed',
+            points: [
+              { clip: 'idle', threshold: 0 },
+              { clip: 'walk', threshold: HERO_WALK },
+              { clip: 'run', threshold: HERO_RUN },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      name: 'upper',
+      entry: 'none',
+      mask: ['spine', 'chest', 'head', 'upperArm_R', 'lowerArm_R'],
+      states: [
+        { name: 'none' },
+        { name: 'attack', clip: 'attack', transitions: [{ to: 'none', exitTime: 1, duration: 0.15 }] },
+      ],
+      anyState: [{ to: 'attack', conditions: [{ trigger: 'attack' }], duration: 0.05 }],
+    },
+  ],
+};
+
+interface AutopilotLeg {
+  duration: number;
+  walk: boolean;
+  yaw: number;
+}
+
+const wrapAngle = (a: number): number => Math.atan2(Math.sin(a), Math.cos(a));
+const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
 const ALLEY_CAMERA: CameraRigPreset = {
   yaw: 0.17,
@@ -140,9 +208,9 @@ function splashRingDescriptor(geometry: THREE.BufferGeometry, material: THREE.No
 
 export const alleyScene: SceneDefinition = {
   name: 'alley',
-  create(ctx): SceneInstance {
+  async create(ctx): Promise<SceneInstance> {
     const bag = new DisposeBag();
-    const { random, quality, entities, vfx, logger } = ctx;
+    const { random, quality, entities, vfx, logger, animation, assets, input } = ctx;
     const pipeline = ctx.renderer.pipeline;
     const gpu = ctx.renderer.capabilities.backend === 'webgpu';
     const scene = new THREE.Scene();
@@ -157,14 +225,14 @@ export const alleyScene: SceneDefinition = {
 
     // ---- camera -----------------------------------------------------------
     const rig = new CameraRig({ preset: ALLEY_CAMERA, aspect: ctx.renderer.aspect, near: 0.5, far: 140, random: random.fork(), focusRange: 7 });
-    const heroPosition = new THREE.Vector3(-0.8, 0, 2);
+    const heroPosition = HERO_SPOT;
+    /** The hero's world position this frame (read back from its Transform after root motion). */
+    const heroPose = HERO_START.clone();
     // Frame the hero in the lower third with the alley receding above it.
-    const frameTarget = (out: THREE.Vector3): THREE.Vector3 => out.set(hero.position.x - 0.9, 1.2, hero.position.z - 5.5);
-    const hero = new THREE.Group();
-    hero.position.copy(heroPosition);
+    const frameTarget = (out: THREE.Vector3): THREE.Vector3 => out.set(heroPose.x - 0.9, 1.2, heroPose.z - 5.5);
     frameTarget(rig.target);
     // DOF (cinematic) keeps the hero sharp, not the framing point 5 m behind it.
-    rig.focusTarget = hero.position;
+    rig.focusTarget = heroPose;
     rig.bindFocus(pipeline);
     bag.add(() => rig.bindFocus(null));
     rig.snap();
@@ -262,6 +330,33 @@ export const alleyScene: SceneDefinition = {
       const wet = saturate(saturate(normalWorld.y).mul(0.8).add(smoothstep(1.3, 0.0, positionWorld.y).mul(0.35)));
       m.roughnessNode = mix(float(roughnessValue), float(0.13), wet);
       m.colorNode = mix(color(hex), color(hex).mul(0.6), wet.mul(0.7));
+      return m;
+    };
+    /**
+     * The hero's rain-wet skin: the mannequin's base colour and roughness, darkened
+     * and glossed where water sits (upward faces, drip streaks down the body, the
+     * splash zone at the ankles) so the neon and the key light land as tight
+     * highlights, plus a cool sky rim so the silhouette
+     * separates from the wet asphalt. `positionGeometry` (bind pose) keeps the
+     * streaks fixed to the surface while the skin animates. Standard, not
+     * physical: the clear-coat variant compiled for ~18 s on D3D11 and stalled
+     * the first frames; standard with a low wet roughness reads the same here.
+     */
+    const wetSkin = (source: THREE.MeshStandardMaterial, height: number): THREE.MeshStandardNodeMaterial => {
+      const m = mat(new THREE.MeshStandardNodeMaterial());
+      m.name = `${source.name}_wet`;
+      // The asset ships a light showroom grey; under the 3400 cd key spot that clips to white, so the hero wears the alley palette: dark slate with near-black trim.
+      const base = source.name.includes('accent') ? 0x0c0d12 : 0x232838;
+      const up = saturate(normalWorld.y);
+      const streakNoise = mx_noise_float(vec3(positionGeometry.x.mul(14 / height), positionGeometry.y.mul(2.4 / height), positionGeometry.z.mul(14 / height)));
+      const drips = smoothstep(0.25, 0.8, streakNoise.mul(0.5).add(0.5));
+      const splash = smoothstep(0.5, 0.0, positionWorld.y);
+      const wet = saturate(up.mul(0.7).add(drips.mul(0.5)).add(splash.mul(0.45)));
+      m.colorNode = mix(color(base), color(base).mul(0.5), wet.mul(0.8));
+      m.roughnessNode = mix(float(source.roughness), float(0.1), wet);
+      m.metalnessNode = float(source.metalness);
+      const rim = saturate(normalView.z).oneMinus().pow(3.0);
+      m.emissiveNode = color(0x4a5f9e).mul(rim).mul(0.3);
       return m;
     };
 
@@ -569,7 +664,7 @@ export const alleyScene: SceneDefinition = {
       const cableMat = wetStandard(0x0a0a0c, 0.6, 0.3);
       const cableSpans: [number, number, number][] = [];
       for (let i = 0; i < 5; i++) cableSpans.push([-30 + i * 7 + random.range(-1.5, 1.5), random.range(8.5, 12.5), random.range(0.9, 1.8)]);
-      cableSpans.push([9.5, 10.2, 1.6], [13, 11.4, 2.1]);
+      cableSpans.push([9.5, 11.6, 1.4], [13, 12.6, 1.9]);
       for (const [z, y, sag] of cableSpans) {
         const curve = new THREE.CatmullRomCurve3([
           new THREE.Vector3(-ALLEY_HALF_WIDTH, y, z),
@@ -757,6 +852,8 @@ export const alleyScene: SceneDefinition = {
         direction: [0.06, -1, 0.02],
         speed: [13, 19],
         size: [0.015, 0.024],
+        // A render override replaces the preset block (merged over the sprite defaults), so restate the streak look.
+        render: { ...PARTICLE_PRESETS.rain.render, nearFade: RAIN_NEAR_FADE },
         colorOverLife: [
           [0, 0.7, 0.78, 1.0, 0.24],
           [1, 0.7, 0.78, 1.0, 0.24],
@@ -775,40 +872,110 @@ export const alleyScene: SceneDefinition = {
       scene.add(cpuRain.mesh);
     }
 
-    // ---- hero placeholder ----------------------------------------------------
-    {
-      const bodyGeo = geo(new THREE.CapsuleGeometry(0.32, 0.85, 6, 20));
-      const bodyMat = wetStandard(0x1d2230, 0.45, 0.35);
-      const body = new THREE.Mesh(bodyGeo, bodyMat);
-      body.position.y = 0.85;
-      body.castShadow = true;
-      body.receiveShadow = true;
-      hero.add(body);
-      const visorGeo = geo(new THREE.BoxGeometry(0.34, 0.08, 0.12));
-      const visorMat = mat(new THREE.MeshBasicNodeMaterial({ color: new THREE.Color(0.3, 4.5, 5.0), fog: true, transparent: true }));
-      const visor = new THREE.Mesh(visorGeo, visorMat);
-      visor.position.set(0, 1.28, 0.28);
-      hero.add(visor);
-      const packGeo = geo(new THREE.BoxGeometry(0.4, 0.5, 0.2));
-      const packMat = wetStandard(0x343a48, 0.6, 0.3);
-      const pack = new THREE.Mesh(packGeo, packMat);
-      pack.position.set(0, 0.95, -0.3);
-      pack.castShadow = true;
-      hero.add(pack);
-      hero.position.copy(heroPosition);
-      hero.rotation.y = -0.4;
-      scene.add(hero);
-    }
+    // ---- hero: the skinned mannequin, rain-wet ----------------------------------------
+    // One entity: Transform (moved by root motion), RenderSync (object follows it),
+    // Animator (idle/walk/run blend + additive attack). Real time: WASD relative to
+    // the camera, Shift walks, Space attacks. Until the first key press (and always
+    // on the capture clock) a seeded autopilot walks an idle/walk loop inside the
+    // key light's pool, so goldens show a mid-stride hero and stay deterministic.
+    const renderSync = new RenderSync(entities);
+    bag.add(entities.addSystem(renderSync));
+    const mannequin = await assets.loadModel(MANNEQUIN_URL);
+    bag.add(() => assets.release(MANNEQUIN_URL));
+    const heroObject = mannequin.instantiate({ castShadow: true, receiveShadow: true, name: 'Hero' });
+    heroObject.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.geometry.computeBoundingBox();
+      const box = mesh.geometry.boundingBox;
+      const height = box ? Math.max(1e-3, box.max.y - box.min.y) : 1.8;
+      mesh.material = wetSkin(mesh.material as THREE.MeshStandardMaterial, height);
+    });
+    scene.add(heroObject);
+    let heroYaw = HERO_APPROACH_YAW;
+    const heroEid = entities.create([Transform, { x: HERO_START.x, y: 0, z: HERO_START.z, qy: Math.sin(heroYaw / 2), qw: Math.cos(heroYaw / 2) }]);
+    spawned.push(heroEid);
+    renderSync.attach(entities, heroEid, heroObject);
+    animation.attach(heroEid, heroObject, mannequin.animations, HERO_GRAPH, { rootMotion: { mode: 'transform' } });
+    // Start mid-stride so the first frames (and the 30-frame golden) are a walk, not a blend-in.
+    let heroSpeed = HERO_WALK;
+    animation.setParam(heroEid, 'speed', heroSpeed);
+    animation.advance(heroEid, 0.45);
+    logger.info(`hero: mannequin ${mannequin.info.triangles} tris, ${mannequin.clips.length} clips, root motion on`);
+
+    // Seeded autopilot: approach the camera at three-quarter, pause and turn, walk back the same line.
+    const walkLeg = random.range(2.8, 3.3);
+    const legs: AutopilotLeg[] = [
+      { duration: walkLeg, walk: true, yaw: HERO_APPROACH_YAW },
+      { duration: random.range(1.3, 1.8), walk: false, yaw: HERO_APPROACH_YAW },
+      { duration: walkLeg, walk: true, yaw: HERO_APPROACH_YAW + Math.PI },
+      { duration: random.range(1.3, 1.8), walk: false, yaw: HERO_APPROACH_YAW + Math.PI },
+    ];
+    const loopDuration = legs.reduce((sum, leg) => sum + leg.duration, 0);
+    const autopilotPose = (t: number): { walk: boolean; yaw: number } => {
+      let local = t % loopDuration;
+      for (let i = 0; i < legs.length; i++) {
+        const leg = legs[i] as AutopilotLeg;
+        if (local < leg.duration) {
+          if (leg.walk) return { walk: true, yaw: leg.yaw };
+          const next = legs[(i + 1) % legs.length] as AutopilotLeg;
+          const k = clamp((local - (leg.duration - HERO_TURN_TIME)) / HERO_TURN_TIME, 0, 1);
+          const smooth = k * k * (3 - 2 * k);
+          return { walk: false, yaw: leg.yaw + wrapAngle(next.yaw - leg.yaw) * smooth };
+        }
+        local -= leg.duration;
+      }
+      return { walk: false, yaw: heroYaw };
+    };
+    let autopilot = true;
+    let heroTime = 0;
+    const forward = new THREE.Vector3();
+    const MOVE_KEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
 
     let elapsed = 0;
     let nextThump = 4;
     const transforms = entities.store(Transform);
+    const readHeroPose = (): void => {
+      heroPose.set(transforms.x[heroEid] ?? 0, 0, transforms.z[heroEid] ?? 0);
+    };
 
     return {
       scene,
       camera: rig.camera,
       fixedUpdate(fixedDt): void {
         cpuRain?.step(fixedDt);
+        // Hero heading + speed parameter; the animation root motion moves the entity after this hook.
+        heroTime += fixedDt;
+        let targetSpeed = 0;
+        if (autopilot) {
+          const pose = autopilotPose(heroTime);
+          heroYaw = pose.yaw;
+          targetSpeed = pose.walk ? HERO_WALK : 0;
+        } else {
+          rig.camera.getWorldDirection(forward);
+          forward.y = 0;
+          forward.normalize();
+          const strafe = clamp(input.axis('KeyA', 'KeyD') + input.axis('ArrowLeft', 'ArrowRight'), -1, 1);
+          const advance = clamp(input.axis('KeyS', 'KeyW') + input.axis('ArrowDown', 'ArrowUp'), -1, 1);
+          const mx = forward.x * advance + -forward.z * strafe;
+          const mz = forward.z * advance + forward.x * strafe;
+          const len = Math.hypot(mx, mz);
+          if (len > 0.01) {
+            targetSpeed = input.isDown('ShiftLeft') || input.isDown('ShiftRight') ? HERO_WALK : HERO_RUN;
+            heroYaw += wrapAngle(Math.atan2(mx / len, mz / len) - heroYaw) * (1 - Math.exp(-HERO_TURN_RATE * fixedDt));
+          }
+        }
+        heroSpeed = damp(heroSpeed, targetSpeed, HERO_SPEED_RATE, fixedDt);
+        if (heroSpeed < 0.02) heroSpeed = 0;
+        animation.setParam(heroEid, 'speed', heroSpeed);
+        transforms.qx[heroEid] = 0;
+        transforms.qz[heroEid] = 0;
+        transforms.qy[heroEid] = Math.sin(heroYaw / 2);
+        transforms.qw[heroEid] = Math.cos(heroYaw / 2);
+        // Keep the hero on the asphalt between the kerbs (root motion has no collision here).
+        transforms.x[heroEid] = clamp(transforms.x[heroEid] ?? 0, -HERO_X_LIMIT, HERO_X_LIMIT);
+        transforms.z[heroEid] = clamp(transforms.z[heroEid] ?? 0, HERO_Z_MIN, HERO_Z_MAX);
+        readHeroPose();
         if (rainEid !== null) {
           // The rain volume follows the framing target; scene hooks run before systems, so the emitter reads this pose.
           transforms.x[rainEid] = rig.target.x;
@@ -817,8 +984,9 @@ export const alleyScene: SceneDefinition = {
       },
       update(dt): void {
         elapsed += dt;
-        hero.position.y = heroPosition.y + Math.sin(elapsed * 2.1) * 0.06;
-        hero.rotation.y = -0.4 + Math.sin(elapsed * 0.7) * 0.15;
+        if (autopilot && MOVE_KEYS.some((code) => input.isDown(code))) autopilot = false;
+        if (input.wasPressed('Space')) animation.setTrigger(heroEid, 'attack');
+        readHeroPose();
         frameTarget(rig.target);
         if (elapsed >= nextThump) {
           rig.addTrauma(0.35);

@@ -7,6 +7,7 @@ import { assetsScene } from './assets';
 import { animationScene } from './animation';
 import { vfxScene } from './vfx';
 import { STREAMING_ENTITY_CAPACITY, streamingScene } from './streaming';
+import { hudScene } from './hud';
 
 const scenes: Record<string, SceneDefinition> = {
   [bootstrapScene.name]: bootstrapScene,
@@ -17,6 +18,7 @@ const scenes: Record<string, SceneDefinition> = {
   [animationScene.name]: animationScene,
   [vfxScene.name]: vfxScene,
   [streamingScene.name]: streamingScene,
+  [hudScene.name]: hudScene,
 };
 
 /** Per-scene engine config a scene needs before the engine exists (URL params still win). */

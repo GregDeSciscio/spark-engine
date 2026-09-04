@@ -6,6 +6,7 @@ import type { Entity, EntityWorld } from '../ecs/EntityWorld';
 import { SideTable } from '../ecs/SideTable';
 import { BODY_TYPE, RigidBody, type BodyType } from './components';
 import { Layers, type LayerSpec } from './Layers';
+import { PhysicsDebugRenderer } from './PhysicsDebugRenderer';
 
 // ---- public types ----------------------------------------------------------
 
@@ -184,6 +185,7 @@ export class PhysicsWorld implements Disposable {
   private readonly pendingStop: Array<[number, number]> = [];
   private stepCount = 0;
   private disposed = false;
+  private debugRendererInstance: PhysicsDebugRenderer | null = null;
 
   private constructor(options: PhysicsWorldOptions) {
     this.entities = options.entities;
@@ -225,6 +227,17 @@ export class PhysicsWorld implements Disposable {
 
   get bodyCount(): number {
     return this.bodies.size;
+  }
+
+  /**
+   * Collider wireframe renderer, created on first access (nothing is
+   * allocated until a tool asks for it). The caller adds `object` to its scene
+   * and registers it as a system or calls `update()`; the inspector does both.
+   */
+  get debugRenderer(): PhysicsDebugRenderer {
+    this.assertLive();
+    if (!this.debugRendererInstance) this.debugRendererInstance = new PhysicsDebugRenderer(this);
+    return this.debugRendererInstance;
   }
 
   /**
@@ -557,6 +570,8 @@ export class PhysicsWorld implements Disposable {
     // the bodies are freed with the world.
     this.activePairs.clear();
     this.events.clear();
+    this.debugRendererInstance?.dispose();
+    this.debugRendererInstance = null;
     this.bodies.dispose();
     this.colliders.dispose();
     this.colliderToEid.clear();
