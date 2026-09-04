@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu';
 import {
   DisposeBag,
   Transform,
+  TriangleSoup,
   createHeightFog,
   type Entity,
   type EntityWorld,
@@ -34,6 +35,8 @@ export interface Blockout {
   readonly meshes: ReadonlyMap<Entity, THREE.Mesh>;
   /** Where the target dummies stand (feet), facing the spawn. */
   readonly targetSpots: readonly { readonly position: THREE.Vector3; readonly yaw: number }[];
+  /** Collision geometry as triangle soup, for the navmesh bake (ADR-009). */
+  readonly navSoup: TriangleSoup;
   dispose(): void;
 }
 
@@ -56,6 +59,7 @@ export function buildBlockout(
   const bag = new DisposeBag();
   const spawned: Entity[] = [];
   const meshes = new Map<Entity, THREE.Mesh>();
+  const navSoup = new TriangleSoup();
   bag.add(() => {
     for (const eid of spawned) entities.destroy(eid);
   });
@@ -112,6 +116,7 @@ export function buildBlockout(
       physics.addBody(eid, { type: 'fixed', shape: { kind: 'box', hx: box.hx, hy: box.hy, hz: box.hz }, layer: 'world', friction: 0.8, events: false });
       spawned.push(eid);
       meshes.set(eid, mesh);
+      navSoup.addBox(box.x, box.y, box.z, box.hx, box.hy, box.hz);
     }
     return mesh;
   };
@@ -194,6 +199,7 @@ export function buildBlockout(
     spawnYaw: 0,
     meshes,
     targetSpots,
+    navSoup,
     dispose: () => bag.dispose(),
   };
 }

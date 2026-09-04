@@ -67,6 +67,9 @@ export * from './animation/index';
 // ---- audio ----
 export * from './audio/index';
 
+// ---- ai (ADR-009) ----
+export * from './ai/index';
+
 // ---- ui ----
 export * from './ui/index';
 

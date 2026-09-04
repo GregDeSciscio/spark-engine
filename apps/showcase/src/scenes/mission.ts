@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { DisposeBag, RenderSync, ShoulderCamera, renderAllPlaceholders, type SceneDefinition, type SceneInstance } from '@spark/engine';
+import { DisposeBag, Navigation, RenderSync, ShoulderCamera, initNavigation, renderAllPlaceholders, type SceneDefinition, type SceneInstance } from '@spark/engine';
 import { Operator } from '../actors/Operator';
 import { TargetDummy } from '../actors/TargetDummy';
 import { Gunplay } from '../combat/Gunplay';
@@ -11,6 +11,8 @@ import { createOperatorHud } from '../ui/hud';
 const MANNEQUIN_URL = '/models/mannequin.glb';
 /** `?freelook=1`: treat the pointer as locked without asking the browser. For headless capture and probes, where pointer lock cannot be granted. */
 const FREELOOK = new URLSearchParams(location.search).get('freelook') === '1';
+/** `?nav=1`: start with the navmesh overlay on (F4 toggles it either way). */
+const NAV_OVERLAY = new URLSearchParams(location.search).get('nav') === '1';
 const SOUND_SHOT = 'rifle-shot';
 const SOUND_HIT = 'impact';
 
@@ -45,6 +47,27 @@ export const missionScene: SceneDefinition = {
     bag.add(entities.addSystem(renderSync));
     const level = buildBlockout(scene, entities, physics, quality, random.fork());
     bag.add(level);
+
+    // ---- navigation: baked at load for the blockout; shipped levels bake offline (ADR-009) ----
+    await initNavigation();
+    const navStart = performance.now();
+    const navigation = Navigation.bake(level.navSoup.positions, level.navSoup.indices);
+    bag.add(navigation);
+    const navStats = navigation.stats();
+    logger.info(`mission: navmesh ${navStats.polys} polys / ${navStats.vertices} verts from ${level.navSoup.triangleCount} tris in ${(performance.now() - navStart).toFixed(0)} ms`);
+    const navLines = new THREE.LineSegments(
+      new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(navigation.debugLines(), 3)),
+      new THREE.LineBasicMaterial({ color: 0x4dff9a, transparent: true, opacity: 0.6, depthTest: false }),
+    );
+    navLines.position.y = 0.06;
+    navLines.renderOrder = 10;
+    navLines.visible = NAV_OVERLAY;
+    scene.add(navLines);
+    bag.add(() => {
+      scene.remove(navLines);
+      navLines.geometry.dispose();
+      (navLines.material as THREE.Material).dispose();
+    });
 
     // ---- actors ----------------------------------------------------------------
     const model = await assets.loadModel(MANNEQUIN_URL);
@@ -122,6 +145,7 @@ export const missionScene: SceneDefinition = {
           camera.look(d.x, d.y);
         }
         operator.update(input, camera);
+        if (input.wasPressed('F4')) navLines.visible = !navLines.visible;
         // The click that takes control must not also fire.
         gunplay.update(locked && input.isButtonDown(0), locked && input.wasButtonPressed(0), input.wasPressed('KeyR'));
         const weapon = gunplay.weapon;

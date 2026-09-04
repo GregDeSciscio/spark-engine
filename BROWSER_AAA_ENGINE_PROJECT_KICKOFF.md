@@ -1368,6 +1368,7 @@ These are created as files during bootstrap. Ones marked *proposed* carry the re
 | ADR-006 | v1 non-goals: mobile, VR, first-person, WebGL2 quality tier, full editor | proposed | Milestone 0 |
 | ADR-007 | three.js version policy: exact pin, upgrades gated by the visual suite | proposed | Milestone 0 |
 | ADR-008 | Level authoring: Blender as editor, glTF extras as the entity format | proposed | Milestone 3 |
+| ADR-009 | Navigation: Recast/Detour navmesh baked from level collision; steering in the fixed step | proposed | Milestone 5 |
 
 Stub for the two open decisions, so they are not forgotten:
 
