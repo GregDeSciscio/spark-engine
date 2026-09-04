@@ -43,14 +43,15 @@ An engine without a game that needs it sprawls. The engine is built **for a name
 Decision is recorded in **ADR-005 (customer game)**, which has two parts with different deadlines:
 
 - **Multiplayer: no for v1.** Ratified. The simulation stays deterministic anyway (see Game Loop), so this closes no doors, but no gameplay system may assume a network layer exists.
-- **Which game: deferred until before Milestone 5 (gameplay slice).** Milestones 0 through 4 are engine core, rendering, assets, and physics, and the rainy alley benchmark scene is a sufficient forcing function for those. Until the game is named, the benchmark scene is treated as a candidate level, not a throwaway.
+- **Which game: the Task Unit sequel.** Named by Greg 2026-09-04. A single-player sequel to Task Unit in a darker, bloody, cyberpunk aesthetic. The rainy alley benchmark scene is a candidate level for it.
 
-Once named:
+Now that it is named:
 
 - the benchmark scene becomes (or is replaced by) a real level from that game
 - the Milestone 10 showcase is that game's vertical slice, not a separate tech demo
+- blood, gore, and wet-surface rendering are customer features, not nice-to-haves
 
-Do not start Milestone 5 until the game is named.
+Task Unit is a SOCOM-style over-the-shoulder tactical shooter; `docs/design/task-unit-reference.md` summarises what the sequel inherits. Task Unit code is a reference, not a dependency: port designs and data, rewrite anything that fights the engine. The single-player mission shape is in `docs/design/mission-shape.md` (lone operator, objective missions, enemy alert model) and the gore scope in `docs/design/gore-scope.md` (blood and ragdoll committed, dismemberment a post-Milestone-6 stretch).
 
 ### Camera model
 
@@ -59,15 +60,15 @@ The visual references above span first-person (Cyberpunk 2077), isometric (The A
 Decision is recorded in **ADR-004 (camera model)**. Recommended default:
 
 ```text
-Primary:      isometric / three-quarter and close third-person
-Supported:    cinematic cameras for cutscenes and menus
+Primary:      close third-person over the shoulder (the customer game)
+Supported:    isometric / three-quarter; cinematic cameras for cutscenes and menus
 Unsupported:  first-person
 ```
 
 Consequences of the recommended default:
 
-- draw distance is bounded, so distance culling and LOD matter less than density
-- one or two shadow cascades usually suffice
+- draw distance is bounded by level authoring (sightlines under ~120 m, far plane 200 m behind fog), so density matters more than distance culling and LOD
+- two shadow cascades on the default preset; the setting is night, so the shadow budget goes to local lights
 - screen-space reflections are mostly floors and puddles, which is exactly the benchmark scene
 - camera feel (follow, framing, shake, look-ahead) is an engine feature, not game code
 
@@ -1363,7 +1364,7 @@ These are created as files during bootstrap. Ones marked *proposed* carry the re
 | ADR-002 | Physics: Rapier on the main thread at a fixed step; worker move is a hosting decision | proposed | Milestone 4 |
 | ADR-003 | Entity model: adopt bitecs behind engine interfaces; numeric components, side tables for resources | ratified | Milestone 1 |
 | ADR-004 | Camera model: isometric / third-person primary, first-person unsupported | proposed | Milestone 2 |
-| ADR-005 | Customer game: multiplayer is **no** for v1 (ratified); which game drives the engine is **open** | partial | Milestone 5 |
+| ADR-005 | Customer game: multiplayer is **no** for v1; the game is the **Task Unit sequel** (single-player, dark bloody cyberpunk) | ratified | Milestone 5 |
 | ADR-006 | v1 non-goals: mobile, VR, first-person, WebGL2 quality tier, full editor | proposed | Milestone 0 |
 | ADR-007 | three.js version policy: exact pin, upgrades gated by the visual suite | proposed | Milestone 0 |
 | ADR-008 | Level authoring: Blender as editor, glTF extras as the entity format | proposed | Milestone 3 |
@@ -1389,17 +1390,19 @@ ADR-005 Customer game
                  so it cannot wait; the choice of game can wait until gameplay starts.
   Decision:      Multiplayer: NO for v1. Single-player only; no gameplay system
                  may assume a network layer. Determinism (Game Loop) is kept anyway.
-                 Game: <name it before Milestone 5>. Until then the rainy alley
-                 benchmark is treated as a candidate level. Given ADR-004 and the
-                 no-multiplayer decision, the game is single-player and isometric
-                 or close third-person.
+                 Game: the Task Unit sequel, single-player, darker bloody cyberpunk
+                 aesthetic. The rainy alley benchmark is a candidate level. Camera
+                 per ADR-004: isometric or close third-person.
   Alternatives:  engine-first with a synthetic showcase (rejected: no forcing function);
                  multiplayer from day one (rejected: doubles gameplay scope for a
                  game that is not yet named).
   Consequences:  Milestone 10 is that game's vertical slice; feature priority
                  follows that game's needs, not the feature lists in this doc.
-                 Milestone 5 is blocked until the game is named.
-  Status:        partial (multiplayer ratified, game open)
+                 Camera: close third-person over the shoulder, inherited.
+                 Mission shape: lone-operator objective missions with an enemy
+                 alert model (docs/design/mission-shape.md). Gore: blood and
+                 ragdoll committed, dismemberment stretch (docs/design/gore-scope.md).
+  Status:        ratified (multiplayer 2026-09-03, game named 2026-09-04)
 
 ADR-003 Entity model
   Context:       a bespoke ECS is a classic month-long detour before anything renders;
@@ -1614,10 +1617,10 @@ Implement:
 
 Demonstrate:
 
-- player
-- enemy
-- interactive prop
-- a level authored in Blender, round-tripped through the asset pipeline with one command
+- player operator
+- one enemy with the full awareness model (`docs/design/mission-shape.md`)
+- a Reach and a Plant objective with checkpoint reload
+- a level authored in Blender, round-tripped through the asset pipeline with one command, carrying objective and patrol data
 
 ---
 
@@ -1629,6 +1632,10 @@ Implement:
 - animation state machine
 - blend transitions
 - animation events
+- additive hit reactions by hit zone
+- death ragdoll with animation-to-physics blending (`docs/design/gore-scope.md`)
+
+Stretch, decided after this milestone lands: dismemberment via pre-split limb meshes.
 
 Demo:
 
@@ -1658,7 +1665,8 @@ Add selectively, integrating three's TSL display nodes first and building only w
 - motion blur (three)
 - depth of field (three)
 - SSR + denoise (three)
-- decals (build)
+- decals (build; blood decals and growing pools are the first customer)
+- per-character wound masks (build; small UV-space render-to-texture)
 - volumetric fog (build; WebGPU only)
 
 Every effect must have:
@@ -1678,6 +1686,7 @@ Demo:
 - rain
 - sparks
 - muzzle effects
+- blood sprays
 - smoke approximation
 - ambient particles
 
@@ -1708,6 +1717,8 @@ Create a polished playable demo.
 Target:
 
 **5–10 minutes**
+
+One complete mission of the Task Unit sequel: three objectives, 8 to 12 enemies with routes and level alert states, extraction.
 
 Should demonstrate:
 
