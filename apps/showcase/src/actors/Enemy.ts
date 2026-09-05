@@ -3,8 +3,12 @@ import {
   CharacterController,
   Character,
   MANNEQUIN_RAGDOLL,
-  PathFollower,
+  NavAgent,
   Transform,
+  findCover,
+  inViewCone,
+  lineOfSight,
+  peekPoint,
   type AnimationGraphDef,
   type AnimationWorld,
   type AudioSystem,
@@ -162,14 +166,13 @@ export class Enemy implements Damageable {
   private readonly visual: THREE.Object3D;
   private readonly tinted: THREE.MeshStandardMaterial[] = [];
   private animated = true;
-  private readonly follower = new PathFollower(0.4);
+  private readonly nav: NavAgent;
   private readonly weapon = new Weapon(ENEMY_RIFLE);
   private readonly flash: MuzzleFlash;
 
   private facing: number;
   private routeIndex = 0;
   private waitUntil = 0;
-  private repathAt = 0;
   private lastSeenAt = -100;
   private alertSince = -100;
   private lookUntil = -1;
@@ -184,14 +187,11 @@ export class Enemy implements Damageable {
   private readonly peekPoint = new THREE.Vector3();
   private peekAt = 0;
   private peekUntil = 0;
-  private readonly candidate = { x: 0, y: 0, z: 0 };
   private readonly playerEye = new THREE.Vector3();
   private readonly lastKnown = new THREE.Vector3();
-  private readonly pathTarget = new THREE.Vector3();
   private readonly velocity = new THREE.Vector3();
   private readonly step = { x: 0, y: 0, z: 0 };
   private readonly steer = { x: 0, y: 0, z: 0 };
-  private readonly corners: { x: number; y: number; z: number }[] = [];
   private readonly feetPos = new THREE.Vector3();
   private readonly playerFeet = new THREE.Vector3();
   private readonly eye = new THREE.Vector3();
@@ -204,6 +204,7 @@ export class Enemy implements Damageable {
     this.deps = deps;
     this.spec = spec;
     this.name = spec.name;
+    this.nav = new NavAgent(deps.navigation, { repathSeconds: REPATH_SECONDS, reachDistance: 0.4, arriveDistance: COVER_ARRIVE });
     const { entities, physics, animation, renderSync, scene, model, labels } = deps;
     const spawn = spec.route[0] ?? new THREE.Vector3();
     const next = spec.route[1] ?? spawn;
@@ -344,7 +345,7 @@ export class Enemy implements Damageable {
       this.investigate(position, now);
     } else if (this.state === 'suspicious') {
       this.lastKnown.copy(position);
-      this.repathAt = 0;
+      this.nav.clear();
       this.lookUntil = -1;
     }
   }
@@ -384,7 +385,7 @@ export class Enemy implements Damageable {
     this.awareness = 0;
     this.routeIndex = 0;
     this.waitUntil = 0;
-    this.repathAt = 0;
+    this.nav.clear();
     this.lookUntil = -1;
     this.burstUntil = -1;
     this.lastSeenAt = -100;
@@ -393,7 +394,7 @@ export class Enemy implements Damageable {
     this.inCover = false;
     this.peeking = false;
     this.velocity.set(0, 0, 0);
-    this.follower.clear();
+    this.nav.clear();
     this.weapon.ammo = ENEMY_RIFLE.magazineSize;
   }
 
@@ -437,7 +438,7 @@ export class Enemy implements Damageable {
         if (!wantsMove && this.lookUntil >= 0 && now >= this.lookUntil && this.awareness < AWARENESS.suspiciousAt) {
           this.state = 'unaware';
           this.lookUntil = -1;
-          this.follower.clear();
+          this.nav.clear();
         }
         break;
       case 'alert':
@@ -449,7 +450,7 @@ export class Enemy implements Damageable {
         if (now - this.lastSeenAt > AWARENESS.loseAfter) {
           this.state = 'searching';
           this.lookUntil = -1;
-          this.repathAt = 0;
+          this.nav.clear();
           break;
         }
         faceTarget = this.playerFeet;
@@ -462,7 +463,7 @@ export class Enemy implements Damageable {
           this.state = 'unaware';
           this.awareness = Math.min(this.awareness, AWARENESS.suspiciousAt - 0.05);
           this.lookUntil = -1;
-          this.follower.clear();
+          this.nav.clear();
         }
         break;
     }
@@ -499,18 +500,14 @@ export class Enemy implements Damageable {
     this.toPlayer.copy(this.playerFeet).sub(this.feetPos);
     const distance = Math.hypot(this.toPlayer.x, this.toPlayer.z);
     if (player.dead || distance > AWARENESS.sightRange) return { visible: false, distance, inCone: false, stance: player.stance, speed: player.speed, lit: player.lit };
-    const bearing = Math.atan2(this.toPlayer.x, this.toPlayer.z);
-    const inCone = Math.abs(wrapAngle(bearing - this.facing)) <= THREE.MathUtils.degToRad(AWARENESS.fovDeg / 2);
-    // Line of sight: eye to chest, blocked by the world only.
+    this.tmpB.set(Math.sin(this.facing), 0, Math.cos(this.facing));
+    const inCone = inViewCone(this.tmpB, this.feetPos, this.playerFeet, THREE.MathUtils.degToRad(AWARENESS.fovDeg));
+    // Line of sight from the eye to the centre of whatever the player currently is: chest standing, lower when crouched or prone.
     this.eye.copy(this.feetPos);
     this.eye.y += EYE_HEIGHT;
-    // Line of sight to the centre of whatever the player currently is: chest standing, lower when crouched or prone.
     this.tmpA.copy(this.playerFeet);
     this.tmpA.y += Math.min(CHEST_HEIGHT, player.colliderHeight * 0.65);
-    this.tmpB.copy(this.tmpA).sub(this.eye);
-    const len = this.tmpB.length();
-    const hit = this.deps.physics.raycast(this.eye, this.tmpB, len, { layers: 'world', excludeEid: this.eid });
-    const visible = hit === null;
+    const visible = lineOfSight(this.deps.physics, this.eye, this.tmpA, 'world', this.eid);
     return { visible, distance, inCone, stance: player.stance, speed: player.speed, lit: player.lit };
   }
 
@@ -532,7 +529,7 @@ export class Enemy implements Damageable {
       this.inCover = false;
       this.peeking = false;
       if (visible) {
-        this.follower.clear();
+        this.nav.clear();
         this.shoot(sample, player, now);
         return { moveSpeed: 0, wantsMove: false };
       }
@@ -543,7 +540,7 @@ export class Enemy implements Damageable {
       if (now < this.peekUntil) {
         // Out at the peek point: fire if the player is in view, else keep stepping out.
         if (visible) {
-          this.follower.clear();
+          this.nav.clear();
           this.shoot(sample, player, now);
           return { moveSpeed: 0, wantsMove: false };
         }
@@ -554,7 +551,7 @@ export class Enemy implements Damageable {
       if (!moving || this.feetPos.distanceTo(this.cover) < COVER_ARRIVE) {
         this.peeking = false;
         this.inCover = true;
-        this.follower.clear();
+        this.nav.clear();
         this.peekAt = now + random.range(PEEK_WAIT[0], PEEK_WAIT[1]);
         return { moveSpeed: 0, wantsMove: false };
       }
@@ -567,7 +564,7 @@ export class Enemy implements Damageable {
       const moving = this.pathTo(this.cover, now);
       if (!moving || this.feetPos.distanceTo(this.cover) < COVER_ARRIVE) {
         this.inCover = true;
-        this.follower.clear();
+        this.nav.clear();
         this.peekAt = now + random.range(PEEK_WAIT[0], PEEK_WAIT[1]);
         return { moveSpeed: 0, wantsMove: false };
       }
@@ -593,49 +590,32 @@ export class Enemy implements Damageable {
     this.peeking = false;
     this.playerEye.copy(this.playerFeet);
     this.playerEye.y += Math.min(EYE_HEIGHT, player.colliderHeight * 0.9);
-    let bestScore = Infinity;
-    for (let i = 0; i < COVER_SAMPLES; i++) {
-      const c = navigation.randomPointAround(this.feetPos, COVER_SEARCH_RADIUS, random, this.candidate);
-      if (!c) continue;
-      const dPlayer = Math.hypot(c.x - this.playerFeet.x, c.z - this.playerFeet.z);
-      if (dPlayer < COVER_MIN_PLAYER_DIST || dPlayer > COVER_MAX_PLAYER_DIST) continue;
-      // The player's eye must not see the candidate's chest.
-      this.tmpA.set(c.x, c.y + CHEST_HEIGHT * 0.8, c.z);
-      this.tmpB.copy(this.tmpA).sub(this.playerEye);
-      const len = this.tmpB.length();
-      const blocked = physics.raycast(this.playerEye, this.tmpB, len, { layers: 'world' }) !== null;
-      if (!blocked) continue;
-      const dSelf = Math.hypot(c.x - this.feetPos.x, c.z - this.feetPos.z);
-      const score = dSelf + Math.abs(dPlayer - 14) * 0.3;
-      if (score < bestScore) {
-        bestScore = score;
-        this.cover.set(c.x, c.y, c.z);
-        this.hasCover = true;
-      }
-    }
+    this.hasCover = findCover(
+      navigation,
+      physics,
+      random,
+      {
+        from: this.feetPos,
+        threatEye: this.playerEye,
+        searchRadius: COVER_SEARCH_RADIUS,
+        samples: COVER_SAMPLES,
+        minThreatDistance: COVER_MIN_PLAYER_DIST,
+        maxThreatDistance: COVER_MAX_PLAYER_DIST,
+        hideHeight: CHEST_HEIGHT * 0.8,
+        preferredThreatDistance: 14,
+      },
+      this.cover,
+    );
   }
 
   /** Step sideways out of cover, perpendicular to the player, onto the navmesh. */
   private startPeek(now: number): void {
     const { navigation, random } = this.deps;
-    const dx = this.playerFeet.x - this.cover.x;
-    const dz = this.playerFeet.z - this.cover.z;
-    const len = Math.hypot(dx, dz) || 1;
-    const px = -dz / len;
-    const pz = dx / len;
-    const first = random.next() < 0.5 ? 1 : -1;
-    for (const side of [first, -first]) {
-      this.candidate.x = this.cover.x + px * PEEK_OFFSET * side;
-      this.candidate.y = this.cover.y;
-      this.candidate.z = this.cover.z + pz * PEEK_OFFSET * side;
-      const snapped = navigation.nearestPoint(this.candidate, this.candidate);
-      if (!snapped) continue;
-      if (Math.hypot(snapped.x - this.cover.x, snapped.z - this.cover.z) < PEEK_OFFSET * 0.5) continue;
-      this.peekPoint.set(snapped.x, snapped.y, snapped.z);
+    if (peekPoint(navigation, this.cover, this.playerFeet, PEEK_OFFSET, random, this.peekPoint)) {
       this.peeking = true;
       this.inCover = false;
       this.peekUntil = now + random.range(PEEK_SECONDS[0], PEEK_SECONDS[1]);
-      this.repathAt = 0;
+      this.nav.clear();
       return;
     }
     // Nowhere to peek from: wait and try again.
@@ -655,14 +635,14 @@ export class Enemy implements Damageable {
     this.awareness = 1;
     this.lastSeenAt = Math.max(this.lastSeenAt, now - AWARENESS.loseAfter + 1.5);
     this.lookUntil = -1;
-    this.repathAt = 0;
+    this.nav.clear();
   }
 
   private investigate(position: THREE.Vector3, now: number): void {
     this.lastKnown.copy(position);
     this.state = this.state === 'searching' ? 'searching' : 'suspicious';
     this.lookUntil = -1;
-    this.repathAt = 0;
+    this.nav.clear();
     void now;
   }
 
@@ -674,15 +654,12 @@ export class Enemy implements Damageable {
     if (route.length < 2) return false;
     if (now < this.waitUntil) return false;
     const target = route[this.routeIndex % route.length] as THREE.Vector3;
-    if (!this.follower.hasPath || this.pathTarget.distanceToSquared(target) > 0.01) {
-      this.pathTarget.copy(target);
-      this.requestPath(target);
-    }
-    const moving = this.follower.steer(this.feetPos, this.steer);
+    this.nav.setDestination(target);
+    const moving = this.nav.steer(this.feetPos, now, this.steer);
     if (!moving) {
       this.routeIndex = (this.routeIndex + 1) % route.length;
       this.waitUntil = now + PATROL_WAIT;
-      this.follower.clear();
+      this.nav.clear();
     }
     return moving;
   }
@@ -695,20 +672,10 @@ export class Enemy implements Damageable {
     return moving;
   }
 
-  /** Follow a path toward `target`, repathing on a timer. Returns whether we are moving. */
+  /** Head toward `target` on the navmesh (the agent repaths on its cadence). Returns whether we are moving. */
   private pathTo(target: THREE.Vector3, now: number): boolean {
-    if (now >= this.repathAt || !this.follower.hasPath || this.pathTarget.distanceToSquared(target) > 1) {
-      this.pathTarget.copy(target);
-      this.requestPath(target);
-      this.repathAt = now + REPATH_SECONDS;
-    }
-    return this.follower.steer(this.feetPos, this.steer);
-  }
-
-  private requestPath(target: THREE.Vector3): void {
-    const reached = this.deps.navigation.findPath(this.feetPos, target, this.corners);
-    void reached;
-    this.follower.setPath(this.corners);
+    this.nav.setDestination(target);
+    return this.nav.steer(this.feetPos, now, this.steer);
   }
 
   // ---- fire -------------------------------------------------------------------------
