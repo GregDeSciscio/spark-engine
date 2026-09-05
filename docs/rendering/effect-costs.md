@@ -43,6 +43,10 @@ At 720p the whole frame is 1.5 ms of GPU and the loop is rAF-bound at 126 fps; t
 
 `tools/capture/out/probe.mjs` (gitignored) imports `launchBrowser`/`startServer` from `tools/capture/capture.mjs`, opens `?scene=alley&backend=webgpu&preset=high&size=WxH&overlay=0`, waits for `window.__spark.ready`, pins the scale (`renderer.setDynamicResolutionEnabled(false)`, `setRenderScale(1)`), waits ≥ 6 s and until the 60-frame CPU average is below 30 ms (a recompose compiles shaders synchronously and stalls the loop for a second or two), samples twice, then for each available effect flips it, waits for stability, samples twice, and restores it. The page can be reloaded by vite mid-run when another process edits engine sources; the probe re-pins and re-asserts the toggle when that happens.
 
+## Colour grade (added 2026-09-05)
+
+`grade` is a quad-level stage: exposure before tone mapping, then lift/gamma/gain, contrast, saturation, split tone, vignette and grain in display space before FXAA (`ColorGrade.ts`). It is enabled whenever a scene sets `pipeline.setColorGrade(settings)`; the showcase uses `CYBERPUNK_GRADE`. Not yet measured with the probe; expect the same order as FXAA (~0.2 ms at 1080p), since it is one full-screen pass with no texture reads beyond the input.
+
 ## Preset defaults
 
 | effect | low | medium | high | ultra | cinematic | quality knob (`QualitySettings`) |

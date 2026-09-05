@@ -39,6 +39,7 @@ import type { Disposable } from '../core/Disposable';
 import { Logger } from '../core/Logger';
 import type { QualitySettings } from './QualityPresets';
 import type { ActiveBackend } from './Renderer';
+import { colorGradeHDR, colorGradeLDR, type ColorGradeSettings } from './ColorGrade';
 import { VolumeFogNode, type VolumeFogSettings } from './VolumeFog';
 import { PREPASS_NAME, SCENE_PASS_NAME } from './WarmUp';
 
@@ -96,7 +97,7 @@ interface TemporalNode {
  * - `dof`         Depth of field (`setFocus`, or `CameraRig.bindFocus`). WebGPU only.
  * - `fxaa`        Post-tonemap FXAA. The compat-tier AA.
  */
-export type PostEffectName = 'ao' | 'traa' | 'msaa' | 'fsr1' | 'ssr' | 'volumetrics' | 'godrays' | 'motionBlur' | 'bloom' | 'dof' | 'fxaa';
+export type PostEffectName = 'ao' | 'traa' | 'msaa' | 'fsr1' | 'ssr' | 'volumetrics' | 'godrays' | 'motionBlur' | 'bloom' | 'dof' | 'grade' | 'fxaa';
 
 export const POST_EFFECT_NAMES: readonly PostEffectName[] = [
   'ao',
@@ -109,6 +110,7 @@ export const POST_EFFECT_NAMES: readonly PostEffectName[] = [
   'motionBlur',
   'bloom',
   'dof',
+  'grade',
   'fxaa',
 ];
 
@@ -264,6 +266,7 @@ export class RenderPipeline implements Disposable {
   private traaActive = false;
   private traaNode: TemporalNode | null = null;
   private toneMapping: THREE.ToneMapping = THREE.ACESFilmicToneMapping;
+  private colorGrade: ColorGradeSettings | null = null;
   private outputColorSpace: string = THREE.SRGBColorSpace;
 
   // ---- Milestone 7 state (uniforms and registrations; never shader variants) ----
@@ -299,6 +302,7 @@ export class RenderPipeline implements Disposable {
       motionBlur: quality.motionBlur,
       bloom: quality.bloom,
       dof: quality.depthOfField,
+      grade: true,
       fxaa: quality.fxaa,
     };
     this.renderScale = quality.renderScale;
@@ -323,11 +327,28 @@ export class RenderPipeline implements Disposable {
       case 'motionBlur':
       case 'dof':
         return gpuLayout;
+      case 'grade':
+        return this.colorGrade !== null;
       case 'fsr1':
       case 'bloom':
       case 'fxaa':
         return true;
     }
+  }
+
+  /**
+   * Colour grade (`ColorGrade.ts`): exposure before tone mapping, the rest in
+   * display space before FXAA. Uniform-driven, so `settings.set` is free;
+   * swapping the settings object recomposes. Null removes the stage.
+   */
+  setColorGrade(settings: ColorGradeSettings | null): void {
+    if (settings === this.colorGrade) return;
+    this.colorGrade = settings;
+    this.composeDirty = true;
+  }
+
+  getColorGrade(): ColorGradeSettings | null {
+    return this.colorGrade;
   }
 
   getEffects(): PostEffectState[] {
@@ -752,6 +773,7 @@ export class RenderPipeline implements Disposable {
     const useMotionBlur = on('motionBlur');
     const useBloom = on('bloom');
     const useDOF = on('dof');
+    const useGrade = on('grade') && this.colorGrade !== null;
     const useFXAA = on('fxaa');
     const active: PostEffectName[] = [];
 
@@ -908,7 +930,12 @@ export class RenderPipeline implements Disposable {
       color = aoTrigger.sample(screenUV).r.mul(0.0).add(color as THREE.Node<'vec4'>);
     }
 
+    if (useGrade && this.colorGrade) color = colorGradeHDR(color as THREE.Node<'vec4'>, this.colorGrade);
     let final: THREE.Node = renderOutput(color, this.toneMapping, this.outputColorSpace);
+    if (useGrade && this.colorGrade) {
+      final = colorGradeLDR(final as THREE.Node<'vec4'>, this.colorGrade);
+      active.push('grade');
+    }
     if (useFXAA) {
       const fxaaNode = fxaa(final);
       this.nodes.push(fxaaNode);

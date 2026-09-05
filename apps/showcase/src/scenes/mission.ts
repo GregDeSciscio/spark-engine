@@ -1,6 +1,19 @@
 import * as THREE from 'three/webgpu';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { DisposeBag, RagdollWorld, RenderSync, ShoulderCamera, initNavigation, litness, renderAllPlaceholders, type CaptureAPI, type SceneDefinition, type SceneInstance } from '@spark/engine';
+import {
+  CYBERPUNK_GRADE,
+  ColorGradeSettings,
+  DisposeBag,
+  RagdollWorld,
+  RenderSync,
+  ShoulderCamera,
+  initNavigation,
+  litness,
+  renderAllPlaceholders,
+  type CaptureAPI,
+  type SceneDefinition,
+  type SceneInstance,
+} from '@spark/engine';
 import { Enemy } from '../actors/Enemy';
 import { OPERATOR_MAX_HEALTH, Operator } from '../actors/Operator';
 import { TargetDummy } from '../actors/TargetDummy';
@@ -21,6 +34,8 @@ const MANNEQUIN_URL = '/models/mannequin.glb';
 const FREELOOK = new URLSearchParams(location.search).get('freelook') === '1';
 /** `?nav=1`: start with the navmesh overlay on (F4 toggles it either way). */
 const NAV_OVERLAY = new URLSearchParams(location.search).get('nav') === '1';
+/** `?grade=0` renders without the colour grade, for comparison shots. */
+const GRADE = new URLSearchParams(location.search).get('grade') !== '0';
 /** `?level=blockout` forces the procedural street; the default is the Blender-authored one, with the blockout as fallback. */
 const LEVEL = new URLSearchParams(location.search).get('level') ?? 'street';
 const STREET_URL = '/levels/street.glb';
@@ -52,6 +67,12 @@ export const missionScene: SceneDefinition = {
     // Dynamic resolution only makes sense on a wall clock; never on the capture clock.
     ctx.renderer.setDynamicResolutionEnabled(ctx.config.fixedFrameDelta === null && quality.dynamicResolution);
     bag.add(() => ctx.renderer.setDynamicResolutionEnabled(false));
+
+    // The look: crushed teal shadows, magenta highlights, vignette, grain (ADR-005).
+    if (GRADE) {
+      ctx.renderer.pipeline.setColorGrade(new ColorGradeSettings(CYBERPUNK_GRADE));
+      bag.add(() => ctx.renderer.pipeline.setColorGrade(null));
+    }
 
     // ---- image-based lighting until the level ships its own -------------------
     const pmrem = new THREE.PMREMGenerator(ctx.renderer.three);
