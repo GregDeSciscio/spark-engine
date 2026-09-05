@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { DisposeBag, Navigation, RenderSync, ShoulderCamera, initNavigation, renderAllPlaceholders, type SceneDefinition, type SceneInstance } from '@spark/engine';
+import { DisposeBag, RenderSync, ShoulderCamera, initNavigation, renderAllPlaceholders, type SceneDefinition, type SceneInstance } from '@spark/engine';
 import { Enemy } from '../actors/Enemy';
 import { OPERATOR_MAX_HEALTH, Operator } from '../actors/Operator';
 import { TargetDummy } from '../actors/TargetDummy';
@@ -10,6 +10,7 @@ import { Impacts } from '../combat/effects';
 import { Gunplay } from '../combat/Gunplay';
 import { RIFLE_BASELINE } from '../combat/weapons';
 import { buildBlockout } from '../levels/blockout';
+import { applyAtmosphere, loadStreetLevel, type MissionLevel } from '../levels/MissionLevel';
 import { MissionRunner } from '../mission/Objectives';
 import { createOperatorHud } from '../ui/hud';
 
@@ -18,6 +19,9 @@ const MANNEQUIN_URL = '/models/mannequin.glb';
 const FREELOOK = new URLSearchParams(location.search).get('freelook') === '1';
 /** `?nav=1`: start with the navmesh overlay on (F4 toggles it either way). */
 const NAV_OVERLAY = new URLSearchParams(location.search).get('nav') === '1';
+/** `?level=blockout` forces the procedural street; the default is the Blender-authored one, with the blockout as fallback. */
+const LEVEL = new URLSearchParams(location.search).get('level') ?? 'street';
+const STREET_URL = '/levels/street.glb';
 const SOUND_SHOT = 'rifle-shot';
 const SOUND_HIT = 'impact';
 /** Seconds the damage vignette takes to fade. */
@@ -29,8 +33,9 @@ const HURT_FADE = 0.8;
  * the awareness ladder from `docs/design/mission-shape.md`, and a
  * three-objective mission (reach, plant, extract). Completing an objective
  * moves the checkpoint; dying shows the failed card and Enter reloads it
- * (full health and ammo, surviving hostiles reset to their routes). What is
- * left of the milestone is the Blender-authored level (ADR-008).
+ * (full health and ammo, surviving hostiles reset to their routes). The level
+ * is the Blender-authored street through the ADR-008 pipeline, navmesh baked
+ * offline (ADR-009); the code-built blockout stays as `?level=blockout`.
  */
 export const missionScene: SceneDefinition = {
   name: 'mission',
@@ -56,16 +61,23 @@ export const missionScene: SceneDefinition = {
     // ---- level ----------------------------------------------------------------
     const renderSync = new RenderSync(entities);
     bag.add(entities.addSystem(renderSync));
-    const level = buildBlockout(scene, entities, physics, quality, random.fork());
-    bag.add(level);
-
-    // ---- navigation: baked at load for the blockout; shipped levels bake offline (ADR-009) ----
+    // Every layer any body will reference, before the first body exists, so the bit layout never depends on load order.
+    physics.layers.define('world', 'player', 'target', 'enemy', 'trigger');
+    bag.add(applyAtmosphere(scene, quality));
     await initNavigation();
-    const navStart = performance.now();
-    const navigation = Navigation.bake(level.navSoup.positions, level.navSoup.indices);
-    bag.add(navigation);
-    const navStats = navigation.stats();
-    logger.info(`mission: navmesh ${navStats.polys} polys / ${navStats.vertices} verts from ${level.navSoup.triangleCount} tris in ${(performance.now() - navStart).toFixed(0)} ms`);
+    let level: MissionLevel;
+    if (LEVEL === 'blockout') {
+      level = buildBlockout(scene, entities, physics, random.fork());
+    } else {
+      try {
+        level = await loadStreetLevel({ entities, physics, assets, renderSync, scene, logger }, STREET_URL);
+      } catch (error) {
+        logger.warn(`mission: street level failed (${error instanceof Error ? error.message : String(error)}); falling back to the blockout`);
+        level = buildBlockout(scene, entities, physics, random.fork());
+      }
+    }
+    bag.add(level);
+    const navigation = level.navigation;
     const navLines = new THREE.LineSegments(
       new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(navigation.debugLines(), 3)),
       new THREE.LineBasicMaterial({ color: 0x4dff9a, transparent: true, opacity: 0.6, depthTest: false }),

@@ -21,7 +21,13 @@ There is no in-engine editor and building one is a non-goal (ADR-006). Levels st
 ## Consequences
 
 - Prop libraries are separate GLBs loaded through the asset pipeline and referenced by name from level extras.
+- Game-specific `spark.type` values (objectives, patrol points, range targets) pass through the loader as `unknown` descriptors and are interpreted by game code, so the engine never learns a game's vocabulary.
+- The asset pipeline bakes a navmesh from the `COL_` nodes beside every level (ADR-009).
+
+## The round trip today
+
+`pnpm level:street` runs `tools/level-authoring/street.py` in Blender headless (writes `assets/source/levels/street.blend` and `street.glb` with `spark.*` custom properties), then the asset pipeline into `apps/showcase/public/levels/` with `street.navmesh.bin`. The showcase loads it through `LevelLoader` in `apps/showcase/src/levels/MissionLevel.ts`. A designer opens the `.blend`, edits, exports with "Custom Properties" ticked, and re-runs the pipeline half with `--skip-blender`.
 
 ## Status
 
-Proposed. Needed before Milestone 3.
+Ratified in practice 2026-09-04: the showcase's street level is the first Blender-authored level through the pipeline.

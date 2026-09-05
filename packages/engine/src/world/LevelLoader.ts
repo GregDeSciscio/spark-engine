@@ -446,7 +446,7 @@ export class LevelLoader {
           break;
         }
         case 'unknown':
-          this.log.info(`unknown spark.type "${descriptor.type}" on ${descriptor.node.path}; ignored`);
+          this.log.debug(`unknown spark.type "${descriptor.type}" on ${descriptor.node.path}; ignored`);
           break;
       }
     }

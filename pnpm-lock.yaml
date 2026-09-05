@@ -23,6 +23,12 @@ importers:
       '@gltf-transform/functions':
         specifier: 4.5.0
         version: 4.5.0(@types/node@22.19.0)
+      '@recast-navigation/core':
+        specifier: 0.43.1
+        version: 0.43.1
+      '@recast-navigation/generators':
+        specifier: 0.43.1
+        version: 0.43.1
       '@types/node':
         specifier: 22.19.0
         version: 22.19.0

@@ -6,6 +6,7 @@
  *   normalize   dedup, prune (extras kept), weld, resample, unit-scale / Y-up bake where detectable
  *   meshopt     EXT_meshopt_compression + KHR_mesh_quantization via meshoptimizer's encoder
  *   ktx2        Basis Universal textures via `toktx` when KTX-Software is on PATH (else warn + skip)
+ *   navmesh     Recast bake from COL_ nodes into <name>.navmesh.bin (ADR-009), levels only
  *   validate    triangle counts and texture sizes against the kickoff budgets (section 21),
  *               plus a listing of every node carrying spark.* extras and COL_ collision nodes
  *
@@ -28,6 +29,7 @@ import { Logger, NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS, KHRTextureBasisu } from '@gltf-transform/extensions';
 import { clearNodeTransform, dedup, getBounds, getTextureColorSpace, inspect, listTextureSlots, meshopt, prune, resample, weld } from '@gltf-transform/functions';
 import { MeshoptDecoder, MeshoptEncoder } from 'meshoptimizer';
+import { bakeNavMesh } from './navmesh.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
@@ -342,6 +344,10 @@ export async function processFile({ io, file, outDir, budgetFlag, dryRun, verbos
   for (const note of notes) log(`  normalize: ${note}`);
   if (notes.length === 0 && verbose) log('  normalize: units and up-axis look right, nothing baked');
 
+  // Navmesh (ADR-009): baked from the COL_ nodes before any compression touches the geometry.
+  const nav = await bakeNavMesh(doc);
+  if (nav) log(`  navmesh: ${nav.polys} polys from ${nav.triangles} collision tris (${nav.boxes} box, ${nav.trimeshes} trimesh), ${kib(nav.bytes.byteLength)}`);
+
   await doc.transform(
     dedup(),
     prune({ keepExtras: true, keepLeaves: false }),
@@ -371,6 +377,11 @@ export async function processFile({ io, file, outDir, budgetFlag, dryRun, verbos
     await mkdir(outDir, { recursive: true });
     await writeFile(outFile, bytes);
     log(`  wrote ${rel(outFile)} (${kib(bytes.byteLength)}, ${((bytes.byteLength / inputBytes) * 100).toFixed(0)}% of source)`);
+    if (nav) {
+      const navFile = path.join(outDir, `${name}.navmesh.bin`);
+      await writeFile(navFile, nav.bytes);
+      log(`  wrote ${rel(navFile)}`);
+    }
   }
   return { name, outFile, bytes: bytes.byteLength, warnings: result.warnings };
 }

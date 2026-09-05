@@ -1,24 +1,14 @@
 import * as THREE from 'three/webgpu';
-import {
-  DisposeBag,
-  Transform,
-  TriangleSoup,
-  createHeightFog,
-  type Entity,
-  type EntityWorld,
-  type PhysicsWorld,
-  type QualitySettings,
-  type Random,
-} from '@spark/engine';
+import { DisposeBag, Navigation, Transform, TriangleSoup, type Entity, type EntityWorld, type PhysicsWorld, type Random } from '@spark/engine';
 import type { ObjectiveDef } from '../mission/Objectives';
+import type { MissionLevel } from './MissionLevel';
 
 /**
- * A grey-box night street: the first stand-in level for the mission scene
- * until a Blender-authored level arrives through the ADR-008 pipeline. Two rows
- * of building slabs, crates and low walls for cover, neon on the facades, a
- * moon for the one shadowed directional, and height fog that closes the street
- * off around the ADR-004 sightline limit. Everything is seeded so the same
- * seed gives the same street.
+ * A grey-box night street built in code: the fallback level (`?level=blockout`)
+ * and the reference the Blender-authored street (tools/level-authoring/street.py)
+ * was drawn from. Two rows of building slabs, crates and low walls for cover,
+ * neon on the facades. Everything is seeded so the same seed gives the same
+ * street. Bakes its own navmesh at load; call `initNavigation()` first.
  */
 
 const STREET_HALF_WIDTH = 9;
@@ -26,24 +16,6 @@ const STREET_Z_MIN = -70;
 const STREET_Z_MAX = 40;
 const SIDEWALK = 2.5;
 const NEON_COLORS = [0xff2bd6, 0x22e8ff, 0xff7a1a, 0x4dff6a, 0xff3d5a, 0x3d7bff, 0xffd23d, 0xb14dff] as const;
-
-export interface Blockout {
-  /** Where the operator starts, feet on the ground. */
-  readonly spawn: THREE.Vector3;
-  /** Facing at spawn (camera yaw). 0 looks down -Z, up the street. */
-  readonly spawnYaw: number;
-  /** Level meshes by physics entity, so hits can clip decals to what they struck. */
-  readonly meshes: ReadonlyMap<Entity, THREE.Mesh>;
-  /** Where the target dummies stand (feet), facing the spawn. */
-  readonly targetSpots: readonly { readonly position: THREE.Vector3; readonly yaw: number }[];
-  /** Enemy patrol loops (feet positions); the first point of each is the spawn. */
-  readonly patrols: readonly { readonly name: string; readonly route: readonly THREE.Vector3[] }[];
-  /** The mission's objectives in order. */
-  readonly objectives: readonly ObjectiveDef[];
-  /** Collision geometry as triangle soup, for the navmesh bake (ADR-009). */
-  readonly navSoup: TriangleSoup;
-  dispose(): void;
-}
 
 interface Box {
   x: number;
@@ -54,13 +26,7 @@ interface Box {
   hz: number;
 }
 
-export function buildBlockout(
-  scene: THREE.Scene,
-  entities: EntityWorld,
-  physics: PhysicsWorld,
-  quality: QualitySettings,
-  random: Random,
-): Blockout {
+export function buildBlockout(scene: THREE.Scene, entities: EntityWorld, physics: PhysicsWorld, random: Random): MissionLevel {
   const bag = new DisposeBag();
   const spawned: Entity[] = [];
   const meshes = new Map<Entity, THREE.Mesh>();
@@ -68,28 +34,6 @@ export function buildBlockout(
   bag.add(() => {
     for (const eid of spawned) entities.destroy(eid);
   });
-
-  // ---- atmosphere ---------------------------------------------------------
-  scene.background = new THREE.Color(0x05060a);
-  // Fog reaches full opacity around 120 m: the level's own sightline limit (ADR-004).
-  const fog = createHeightFog({ color: 0x0a0e1c, density: 0.014, groundY: 0, falloff: 5, groundBoost: 1.0 });
-  scene.fogNode = fog.node;
-
-  const moon = new THREE.DirectionalLight(0x6f88d0, 2.2);
-  moon.position.set(-18, 40, -10);
-  moon.target.position.set(0, 0, -20);
-  moon.castShadow = quality.shadows;
-  moon.shadow.mapSize.set(quality.shadowMapSize, quality.shadowMapSize);
-  moon.shadow.camera.near = 5;
-  moon.shadow.camera.far = 120;
-  moon.shadow.camera.left = -40;
-  moon.shadow.camera.right = 40;
-  moon.shadow.camera.top = 60;
-  moon.shadow.camera.bottom = -60;
-  moon.shadow.bias = -0.0006;
-  moon.shadow.normalBias = 0.04;
-  scene.add(moon, moon.target);
-  scene.add(new THREE.HemisphereLight(0x2a3a66, 0x0e0b08, 1.4));
 
   // ---- shared geometry and materials ----------------------------------------
   const unitBox = new THREE.BoxGeometry(1, 1, 1);
@@ -187,9 +131,14 @@ export function buildBlockout(
   addBox({ x: 0, y: 6, z: STREET_Z_MAX + 1, hx: STREET_HALF_WIDTH + SIDEWALK + 2, hy: 6, hz: 1 }, facade);
 
   bag.add(() => {
-    for (const light of neonLights) light.dispose();
-    moon.dispose();
+    for (const light of neonLights) {
+      scene.remove(light);
+      light.dispose();
+    }
   });
+
+  const navigation = Navigation.bake(navSoup.positions, navSoup.indices);
+  bag.add(navigation);
 
   // Range targets on the right sidewalk near the spawn, out of the patrol lanes.
   const targetSpots = [
@@ -217,7 +166,7 @@ export function buildBlockout(
     targetSpots,
     patrols,
     objectives,
-    navSoup,
+    navigation,
     dispose: () => bag.dispose(),
   };
 }

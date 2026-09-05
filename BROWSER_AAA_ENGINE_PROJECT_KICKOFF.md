@@ -1616,12 +1616,12 @@ Implement:
 - camera rig per ADR-004
 - DOM HUD through the engine's UI host
 
-Demonstrate:
+Demonstrate (done 2026-09-04 in `apps/showcase`):
 
 - player operator
 - one enemy with the full awareness model (`docs/design/mission-shape.md`)
 - a Reach and a Plant objective with checkpoint reload
-- a level authored in Blender, round-tripped through the asset pipeline with one command, carrying objective and patrol data
+- a level authored in Blender, round-tripped through the asset pipeline with one command (`pnpm level:street`), carrying objective and patrol data, navmesh baked beside it
 
 ---
 

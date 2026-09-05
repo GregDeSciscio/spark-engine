@@ -20,7 +20,8 @@
     "visual": "node tools/capture/visual.mjs",
     "thumbnails": "node tools/capture/thumbnails.mjs",
     "perf": "node tools/benchmarks/perf.mjs",
-    "assets": "node tools/asset-pipeline/pipeline.mjs"
+    "assets": "node tools/asset-pipeline/pipeline.mjs",
+    "level:street": "node tools/level-authoring/build.mjs"
   },
   "devDependencies": {
     "@eslint/js": "9.39.4",
@@ -28,6 +29,8 @@
     "@gltf-transform/core": "4.5.0",
     "@gltf-transform/extensions": "4.5.0",
     "@gltf-transform/functions": "4.5.0",
+    "@recast-navigation/core": "0.43.1",
+    "@recast-navigation/generators": "0.43.1",
     "@types/node": "22.19.0",
     "eslint": "9.39.4",
     "meshoptimizer": "1.2.0",
