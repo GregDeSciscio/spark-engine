@@ -45,6 +45,7 @@ Everything `@spark/engine` exports, grouped as in `packages/engine/src/index.ts`
 | --- | --- |
 | `SparkRenderer`, `detectWebGPU` | The WebGPU renderer with the WebGL2 fallback. |
 | `RenderPipeline`, `POST_EFFECT_NAMES` | The post stack and its toggles. |
+| `StylizeStage`, `StylizeInputs` | A scene-supplied display-space stage (`pipeline.setStylize`) for toon, print and sketch looks; gets depth and normal samplers where the layout has them. |
 | `QUALITY_SETTINGS`, `getQualitySettings` | What each preset turns on. |
 | `LightingSystem`, `Light`, `illuminanceAt`, `litness` | Clustered local lights under a budget; light queries for gameplay. |
 | `SurfaceLibrary`, `createSurface`, `surfaceKindOf` | Procedural wet-city materials by name; material name to surface kind. |

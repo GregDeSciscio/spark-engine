@@ -111,6 +111,8 @@ export {
   type DebugViewName,
   type GodraysOptions,
   type PostEffectName,
+  type StylizeInputs,
+  type StylizeStage,
   type PostEffectState,
   type RenderPipelineStats,
 } from './rendering/RenderPipeline';

@@ -22,7 +22,7 @@ Rapier on the main thread at the fixed step. `physics.addBody(eid, { type, shape
 
 ## Rendering
 
-Three's WebGPU renderer with TSL node materials, a WebGL2 fallback with fewer effects. `RenderPipeline` is the post stack (ambient occlusion, temporal anti-aliasing, upscaling, reflections, volumetrics, godrays, motion blur, bloom, depth of field, colour grade); `QualitySettings` from the preset decides what is on. `LightingSystem` clusters local lights on the GPU under a budget and answers `illuminanceAt` for gameplay. `SurfaceLibrary` is a set of procedural wet-city materials assigned by material name. `Decals`, `HeightFog`, `VolumeFog`, `CameraRig` and `ShoulderCamera` are the other rendering tools a game reaches for.
+Three's WebGPU renderer with TSL node materials, a WebGL2 fallback with fewer effects. `RenderPipeline` is the post stack (ambient occlusion, temporal anti-aliasing, upscaling, reflections, volumetrics, godrays, motion blur, bloom, depth of field, colour grade, and a `stylize` slot a scene fills with its own display-space TSL stage for a toon or print look); `QualitySettings` from the preset decides what is on. `LightingSystem` clusters local lights on the GPU under a budget and answers `illuminanceAt` for gameplay. `SurfaceLibrary` is a set of procedural wet-city materials assigned by material name. `Decals`, `HeightFog`, `VolumeFog`, `CameraRig` and `ShoulderCamera` are the other rendering tools a game reaches for.
 
 ## Assets and levels
 

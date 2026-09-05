@@ -26,6 +26,7 @@ What building the customer game's first slice (ADR-005, `apps/showcase`) taught 
 | Ragdolls emitted no contacts, so the body fall was timed. | `RagdollConfig.contactEvents` enables events on the root part; `Ragdoll.hasPart` / `rootEid` route them. |
 | `spatialVoices` counted only entity-attached voices. | It counts every voice with a panner. |
 | Rigify bone names carry dots (`DEF-spine.001`, `DEF-hand.R`) and three's glTF loader strips them, so every bone name in a config pointed at nothing while the clips still played. | Character builds rename joints to dot-free names (`build-character.mjs`); `RagdollWorld.create` already throws on a missing bone, which is how this surfaced. |
+| A second game (Late Edition, a printed Sunday-comics look) needed a non-photographic display-space pass: halftone, ink outlines, plate misregistration. The post stack composed a fixed effect set and a look like that had nowhere to go except forking the pipeline. | `RenderPipeline.setStylize(stage)`: a scene-supplied TSL stage between the grade and FXAA, given the display image plus depth and normal samplers where the layout has them. Toggleable as `stylize` like every other effect. |
 
 ## Game code that turned out to be engine material
 

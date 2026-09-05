@@ -44,6 +44,17 @@
       ],
       "port": 5175,
       "autoPort": true
+    },
+    {
+      "name": "late-edition",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "-C",
+        "../late-edition",
+        "dev"
+      ],
+      "port": 5180,
+      "autoPort": true
     }
   ]
 }

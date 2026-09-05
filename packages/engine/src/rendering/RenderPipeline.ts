@@ -1,6 +1,8 @@
 import * as THREE from 'three/webgpu';
 import {
   builtinAOContext,
+  cameraFar,
+  cameraNear,
   convertToTexture,
   float,
   int,
@@ -12,6 +14,7 @@ import {
   output,
   packNormalToRGB,
   pass,
+  perspectiveDepthToViewZ,
   renderOutput,
   roughness,
   sample,
@@ -24,6 +27,7 @@ import {
   vec3,
   vec4,
   velocity,
+  viewZToOrthographicDepth,
 } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { dof } from 'three/addons/tsl/display/DepthOfFieldNode.js';
@@ -95,9 +99,23 @@ interface TemporalNode {
  * - `motionBlur`  Per-pixel motion blur along the velocity MRT. WebGPU only.
  * - `bloom`       HDR bloom before tone mapping.
  * - `dof`         Depth of field (`setFocus`, or `CameraRig.bindFocus`). WebGPU only.
+ * - `stylize`     A scene-supplied display-space stage (`setStylize`): toon, print, sketch looks.
  * - `fxaa`        Post-tonemap FXAA. The compat-tier AA.
  */
-export type PostEffectName = 'ao' | 'traa' | 'msaa' | 'fsr1' | 'ssr' | 'volumetrics' | 'godrays' | 'motionBlur' | 'bloom' | 'dof' | 'grade' | 'fxaa';
+export type PostEffectName =
+  | 'ao'
+  | 'traa'
+  | 'msaa'
+  | 'fsr1'
+  | 'ssr'
+  | 'volumetrics'
+  | 'godrays'
+  | 'motionBlur'
+  | 'bloom'
+  | 'dof'
+  | 'grade'
+  | 'stylize'
+  | 'fxaa';
 
 export const POST_EFFECT_NAMES: readonly PostEffectName[] = [
   'ao',
@@ -111,8 +129,32 @@ export const POST_EFFECT_NAMES: readonly PostEffectName[] = [
   'bloom',
   'dof',
   'grade',
+  'stylize',
   'fxaa',
 ];
+
+/**
+ * What a stylize stage (`setStylize`) builds its node from. `color` is the
+ * graded, tone-mapped display-space image at `screenUV`; the samplers read
+ * the same frame at any uv (0..1, origin bottom-left) for neighbourhood work:
+ * outlines from depth and normal discontinuities, halftone screens, plate
+ * offsets, blur. Samplers that a layout cannot provide are null (the compat
+ * tier and MSAA presets have no readable depth; a normal buffer exists only
+ * on presets with ambient occlusion or screen-space reflections), and a
+ * stage must build a working node without them.
+ */
+export interface StylizeInputs {
+  readonly color: THREE.Node<'vec4'>;
+  readonly sampleColor: (uv: THREE.Node<'vec2'>) => THREE.Node<'vec4'>;
+  /** Linear depth, 0 at the near plane and 1 at the far plane. */
+  readonly sampleDepth: ((uv: THREE.Node<'vec2'>) => THREE.Node<'float'>) | null;
+  /** View-space unit normal. */
+  readonly sampleNormal: ((uv: THREE.Node<'vec2'>) => THREE.Node<'vec3'>) | null;
+  readonly camera: THREE.Camera;
+}
+
+/** Builds the stylized display-space colour. Called once per compose, never per frame: put knobs in uniforms. */
+export type StylizeStage = (inputs: StylizeInputs) => THREE.Node<'vec4'>;
 
 /**
  * Debug views (kickoff §24). `wireframe` is a scene override material swapped
@@ -267,6 +309,7 @@ export class RenderPipeline implements Disposable {
   private traaNode: TemporalNode | null = null;
   private toneMapping: THREE.ToneMapping = THREE.ACESFilmicToneMapping;
   private colorGrade: ColorGradeSettings | null = null;
+  private stylize: StylizeStage | null = null;
   private outputColorSpace: string = THREE.SRGBColorSpace;
 
   // ---- Milestone 7 state (uniforms and registrations; never shader variants) ----
@@ -303,6 +346,7 @@ export class RenderPipeline implements Disposable {
       bloom: quality.bloom,
       dof: quality.depthOfField,
       grade: true,
+      stylize: true,
       fxaa: quality.fxaa,
     };
     this.renderScale = quality.renderScale;
@@ -329,6 +373,8 @@ export class RenderPipeline implements Disposable {
         return gpuLayout;
       case 'grade':
         return this.colorGrade !== null;
+      case 'stylize':
+        return this.stylize !== null;
       case 'fsr1':
       case 'bloom':
       case 'fxaa':
@@ -349,6 +395,23 @@ export class RenderPipeline implements Disposable {
 
   getColorGrade(): ColorGradeSettings | null {
     return this.colorGrade;
+  }
+
+  /**
+   * A scene-supplied display-space stage, applied after the colour grade and
+   * before FXAA: the hook for a non-photographic look (toon ramps, print
+   * halftone, ink outlines) that the fixed effect set cannot express. The
+   * stage is called once per compose with `StylizeInputs`; drive anything
+   * that changes per frame through uniforms it closes over. Null removes it.
+   */
+  setStylize(stage: StylizeStage | null): void {
+    if (stage === this.stylize) return;
+    this.stylize = stage;
+    this.composeDirty = true;
+  }
+
+  getStylize(): StylizeStage | null {
+    return this.stylize;
   }
 
   getEffects(): PostEffectState[] {
@@ -774,6 +837,7 @@ export class RenderPipeline implements Disposable {
     const useBloom = on('bloom');
     const useDOF = on('dof');
     const useGrade = on('grade') && this.colorGrade !== null;
+    const useStylize = on('stylize') && this.stylize !== null;
     const useFXAA = on('fxaa');
     const active: PostEffectName[] = [];
 
@@ -935,6 +999,27 @@ export class RenderPipeline implements Disposable {
     if (useGrade && this.colorGrade) {
       final = colorGradeLDR(final as THREE.Node<'vec4'>, this.colorGrade);
       active.push('grade');
+    }
+    if (useStylize && this.stylize) {
+      // The display image becomes a texture so the stage can read neighbours.
+      const source = this.asTexture(final);
+      const sampleColor = (uv: THREE.Node<'vec2'>): THREE.Node<'vec4'> => source.sample(uv) as unknown as THREE.Node<'vec4'>;
+      // Depth is only readable when the scene pass is not multisampled.
+      const perspective = (camera as THREE.PerspectiveCamera).isPerspectiveCamera === true;
+      const sampleDepth = layout.msaa
+        ? null
+        : (uv: THREE.Node<'vec2'>): THREE.Node<'float'> => {
+            const raw = (depthTexture.sample(uv) as unknown as THREE.Node<'vec4'>).r as unknown as THREE.Node<'float'>;
+            if (!perspective) return raw;
+            return viewZToOrthographicDepth(perspectiveDepthToViewZ(raw, cameraNear, cameraFar), cameraNear, cameraFar) as unknown as THREE.Node<'float'>;
+          };
+      const packedNormal = layout.ssr ? scenePass.getTextureNode('normal') : layout.prePass ? layout.prePass.getTextureNode() : null;
+      const sampleNormal = packedNormal
+        ? (uv: THREE.Node<'vec2'>): THREE.Node<'vec3'> =>
+            unpackRGBToNormal((packedNormal.sample(uv) as unknown as THREE.Node<'vec4'>).rgb) as unknown as THREE.Node<'vec3'>
+        : null;
+      final = this.stylize({ color: source as unknown as THREE.Node<'vec4'>, sampleColor, sampleDepth, sampleNormal, camera });
+      active.push('stylize');
     }
     if (useFXAA) {
       const fxaaNode = fxaa(final);
