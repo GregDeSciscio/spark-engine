@@ -5,42 +5,19 @@
  *   pnpm level:street            author in Blender, export, run the asset pipeline
  *   pnpm level:street --skip-blender   pipeline only, when the .glb is already exported
  *
- * Finds Blender through $BLENDER, then PATH, then the usual Windows install
- * folder. The pipeline step bakes the navmesh beside the level (ADR-009).
+ * Finds Blender through `blender.mjs` ($BLENDER, PATH, the usual Windows
+ * install folder). The pipeline step bakes the navmesh beside the level (ADR-009).
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findBlender } from './blender.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
 const SCRIPT = path.join(here, 'street.py');
 const SRC = path.join(repoRoot, 'assets', 'source', 'levels');
 const OUT = path.join(repoRoot, 'apps', 'showcase', 'public', 'levels');
-
-function findBlender() {
-  if (process.env.BLENDER && existsSync(process.env.BLENDER)) return process.env.BLENDER;
-  const onPath = spawnSync(process.platform === 'win32' ? 'where.exe' : 'which', ['blender'], { encoding: 'utf8' });
-  if (onPath.status === 0) {
-    const first = onPath.stdout.split(/\r?\n/).find((l) => l.trim().length > 0);
-    if (first) return first.trim();
-  }
-  if (process.platform === 'win32') {
-    const base = 'C:\\Program Files\\Blender Foundation';
-    if (existsSync(base)) {
-      const versions = readdirSync(base)
-        .filter((d) => d.startsWith('Blender '))
-        .sort()
-        .reverse();
-      for (const v of versions) {
-        const exe = path.join(base, v, 'blender.exe');
-        if (existsSync(exe)) return exe;
-      }
-    }
-  }
-  return null;
-}
 
 const skipBlender = process.argv.includes('--skip-blender');
 if (!skipBlender) {

@@ -140,3 +140,26 @@ describe('RagdollWorld', () => {
     f.dispose();
   });
 });
+
+describe('ragdoll mass', () => {
+  it('weighs parts by volume at a human density and caps the kill impulse by speed', async () => {
+    const { capsuleVolume } = await import('../src/physics/Ragdoll');
+    expect(capsuleVolume(0, 0.1)).toBeCloseTo((4 / 3) * Math.PI * 0.001, 6);
+    const f = await fixture();
+    const { root, hips } = skeleton();
+    const owner = f.entities.create(Transform);
+    // An absurd impulse on a light rig: the hit part may gain at most maxSpeed.
+    const r = f.ragdolls.create(owner, root, CONFIG, {
+      blendSeconds: 0,
+      activation: { impulse: { point: { x: 0, y: 2.6, z: 0 }, direction: { x: 1, y: 0, z: 0 }, strength: 1e6, maxSpeed: 4 } },
+    });
+    const total = r.parts.reduce((n, p) => n + p.mass, 0);
+    expect(total).toBeGreaterThan(5);
+    expect(total).toBeLessThan(200);
+    for (const p of r.parts) expect(p.mass).toBeGreaterThan(0.05);
+    f.tick(6);
+    const p = hips.getWorldPosition(new THREE.Vector3());
+    expect(Math.abs(p.x)).toBeLessThan(4 * 6 * DT * 2 + 0.05);
+    f.dispose();
+  });
+});

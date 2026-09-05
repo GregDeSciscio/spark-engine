@@ -39,3 +39,4 @@ Kept as game code on purpose: the awareness ladder and its tuning, weapons and d
 - Levels bake their navmesh offline; the blockout bakes at load only because it is procedural.
 - A held weapon follows the hand bone for position and the aim for orientation. Inheriting the bone's twist needs two-hand IK to look right; the view direction is what the player expects the barrel to follow anyway.
 - Drop an override layer's weight for a beat when a base-layer reaction (the chest flinch) has to show through, and while sprinting so the arms pump.
+- Retargeting between two T-posed rigs needs no add-on: per bone, apply the source's rotation delta from rest to the target's rest in armature space, copy hip travel scaled by hip height, bake, export one NLA track per clip (`tools/level-authoring/character.py`). Reparent IK-style helper bones (the kit's feet lived under the root) under the limb first, or the ragdoll leaves them behind.

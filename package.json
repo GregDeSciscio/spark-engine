@@ -24,6 +24,7 @@
     "level:street": "node tools/level-authoring/build.mjs",
     "props:fetch": "node tools/asset-pipeline/fetch-polyhaven.mjs --kit=street",
     "character:build": "node tools/asset-pipeline/build-character.mjs",
+    "character:retarget": "node tools/asset-pipeline/build-character.mjs --retarget",
     "props:build": "node tools/asset-pipeline/pipeline.mjs --src=assets/source/props --out=apps/showcase/public/models --budget=prop"
   },
   "devDependencies": {

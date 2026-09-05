@@ -52,9 +52,9 @@ const UPPER_FADE = 10;
 /** The chest flinch lives on the base layer; drop the upper override this long so it shows. */
 const HIT_UPPER_SECONDS = 0.35;
 const RELOAD_CLIP_SECONDS = 1.67;
-/** Operator colours: near-black kit, cyan joints that glow a little. */
-const OPERATOR_MAIN = 0x1f2228;
-const OPERATOR_ACCENT = 0x19c8d8;
+/** Operator colours: dark grey kit, deep-teal jacket panels with a faint glow. */
+const OPERATOR_MAIN = 0x2a2d33;
+const OPERATOR_ACCENT = 0x1f4a55;
 
 /**
  * Base layer: stand / crouch locomotion on horizontal speed, an airborne
@@ -194,7 +194,7 @@ export class Operator {
     this.root = new THREE.Group();
     const visual = model.instantiate({ castShadow: true, receiveShadow: true });
     this.visual = visual;
-    this.materials = tintCharacter(visual, OPERATOR_MAIN, OPERATOR_ACCENT, 0.35);
+    this.materials = tintCharacter(visual, OPERATOR_MAIN, OPERATOR_ACCENT, 0.08);
     visual.position.y = -this.bodyHeight / 2;
     this.root.add(visual);
     scene.add(this.root);
@@ -203,7 +203,7 @@ export class Operator {
 
     // The rifle rides in the right hand and points where the camera looks (the
     // body already faces the camera yaw; pitch is applied per frame).
-    this.rifle = new RifleProp(this.root, findBone(visual, BONES.handR), new THREE.Vector3(0.26, 1.32 - this.bodyHeight / 2, 0.12));
+    this.rifle = new RifleProp(this.root, findBone(visual, BONES.weapon), new THREE.Vector3(0.26, 1.32 - this.bodyHeight / 2, 0.12));
     this.muzzle = this.rifle.muzzle;
   }
 

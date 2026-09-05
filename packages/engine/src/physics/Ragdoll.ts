@@ -28,6 +28,8 @@ export interface RagdollBoneSpec {
    * is also in the config, else `leafLength`.
    */
   readonly length?: number | undefined;
+  /** Mass in kg; default the capsule volume at the config's density. */
+  readonly mass?: number | undefined;
 }
 
 export interface RagdollConfig {
@@ -35,6 +37,12 @@ export interface RagdollConfig {
   readonly bones: readonly RagdollBoneSpec[];
   /** Length for bones with no configured child and no explicit length. Default 0.25. */
   readonly leafLength?: number | undefined;
+  /**
+   * kg per cubic metre for parts without an explicit mass. Default 1000
+   * (people are mostly water). Rapier's own default is 1, which makes a
+   * forearm weigh three grams and any impulse launch it.
+   */
+  readonly density?: number | undefined;
   readonly layer?: LayerSpec | undefined;
   readonly collidesWith?: LayerSpec | undefined;
   readonly linearDamping?: number | undefined;
@@ -67,8 +75,13 @@ export const MANNEQUIN_RAGDOLL: RagdollConfig = {
 export interface RagdollActivation {
   /** Initial linear velocity for every part (the animated momentum). */
   readonly velocity?: Vec3Like | undefined;
-  /** An impulse applied to the part nearest `point`. */
-  readonly impulse?: { readonly point: Vec3Like; readonly direction: Vec3Like; readonly strength: number } | undefined;
+  /**
+   * An impulse (kg·m/s) applied to the part nearest `point`, capped so that
+   * part gains at most `maxSpeed` m/s (default 8): a round that hits a
+   * forearm must not send it into orbit while the same round barely moves
+   * the chest.
+   */
+  readonly impulse?: { readonly point: Vec3Like; readonly direction: Vec3Like; readonly strength: number; readonly maxSpeed?: number | undefined } | undefined;
 }
 
 export interface RagdollOptions {
@@ -77,9 +90,14 @@ export interface RagdollOptions {
   readonly activation?: RagdollActivation | undefined;
 }
 
-interface Part {
+export interface RagdollPart {
   readonly bone: THREE.Object3D;
   readonly eid: Entity;
+  /** kg. */
+  readonly mass: number;
+}
+
+interface Part extends RagdollPart {
   readonly parent: Part | null;
   /** Bone origin in body space. */
   readonly offsetPos: THREE.Vector3;
@@ -90,6 +108,13 @@ interface Part {
 }
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
+const DEFAULT_DENSITY = 1000;
+const DEFAULT_MAX_IMPULSE_SPEED = 8;
+
+/** Volume of a capsule: the cylinder plus the two half-spheres. */
+export function capsuleVolume(halfHeight: number, radius: number): number {
+  return Math.PI * radius * radius * (2 * halfHeight) + (4 / 3) * Math.PI * radius * radius * radius;
+}
 const _a = new THREE.Vector3();
 const _b = new THREE.Vector3();
 const _q = new THREE.Quaternion();
@@ -267,11 +292,13 @@ export class RagdollWorld implements Disposable {
       const center = _s.copy(_a).addScaledVector(dir, len / 2);
       const bodyQuat = _q2.setFromUnitVectors(Y_AXIS, dir);
       const halfHeight = Math.max(0.01, len / 2 - spec.radius);
+      const mass = spec.mass ?? capsuleVolume(halfHeight, spec.radius) * (config.density ?? DEFAULT_DENSITY);
 
       const eid = this.entities.create([Transform, { x: center.x, y: center.y, z: center.z, qx: bodyQuat.x, qy: bodyQuat.y, qz: bodyQuat.z, qw: bodyQuat.w }]);
       this.physics.addBody(eid, {
         type: 'dynamic',
         shape: { kind: 'capsule', halfHeight, radius: spec.radius },
+        mass,
         layer: config.layer ?? 'ragdoll',
         collidesWith: config.collidesWith ?? ['world'],
         friction: config.friction ?? 0.8,
@@ -295,6 +322,7 @@ export class RagdollWorld implements Disposable {
       const part: Part = {
         bone,
         eid,
+        mass,
         parent,
         offsetPos: _a.clone().sub(center).applyQuaternion(invBody),
         offsetQuat: invBody.clone().multiply(_q),
@@ -332,7 +360,7 @@ export class RagdollWorld implements Disposable {
           }
         }
         if (best) {
-          const s = activation.impulse.strength;
+          const s = Math.min(activation.impulse.strength, best.mass * (activation.impulse.maxSpeed ?? DEFAULT_MAX_IMPULSE_SPEED));
           const d = activation.impulse.direction;
           this.physics.applyImpulse(best.eid, { x: d.x * s, y: d.y * s, z: d.z * s });
         }

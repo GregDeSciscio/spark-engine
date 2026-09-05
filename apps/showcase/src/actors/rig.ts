@@ -2,57 +2,68 @@ import type * as THREE from 'three/webgpu';
 import type { RagdollConfig } from '@spark/engine';
 
 /**
- * The showcase character (`tools/asset-pipeline/build-character.mjs`): the
- * Quaternius Universal Animation Library mannequin on a Rigify DEF- skeleton,
- * 1.83 m tall, forward +Z at yaw 0. Bone names, the upper-body mask and the
- * ragdoll shape live here so the actors and the build script agree. Names are
- * Rigify's with underscores for dots (`DEF-spine_001`, `DEF-hand_R`): the
- * build step renames them because three's glTF loader strips dots.
+ * The showcase character (`tools/asset-pipeline/build-character.mjs`):
+ * Quaternius' Cyberpunk Game Kit character, scaled to 1.8 m, with the
+ * Universal Animation Library's clips retargeted onto its skeleton by
+ * `tools/level-authoring/character.py`. Forward is +Z at yaw 0. Bone names,
+ * the upper-body mask and the ragdoll shape live here so the actors and the
+ * build agree.
+ *
+ * Skeleton: Root → Body (the hips) → Hips / Abdomen → Torso → Chest → Neck →
+ * Head, Chest → Shoulder → UpperArm → LowerArm → Hand (Hand_R → Weapon, a
+ * socket at the grip), Body → UpperLeg → LowerLeg → Foot. `PT_*` are
+ * pole-target leftovers.
  *
  * Clips (engine names): idle, walk, run, sprint, crouch_idle, crouch_walk,
  * ready, aim_up, aim, aim_down, reload, hit, hit_head, death, jump, land.
  */
 export const CHARACTER_URL = '/models/operator.glb';
 
-/** Model height as authored; the capsule is `OPERATOR.height`, close enough for hit zones. */
-export const CHARACTER_HEIGHT = 1.83;
+/** Model height as built; the same as the standing capsule. */
+export const CHARACTER_HEIGHT = 1.8;
 
 export const BONES = {
-  root: 'root',
-  hips: 'DEF-hips',
-  spine1: 'DEF-spine_001',
-  spine2: 'DEF-spine_002',
-  spine3: 'DEF-spine_003',
-  neck: 'DEF-neck',
-  head: 'DEF-head',
-  handR: 'DEF-hand_R',
-  handL: 'DEF-hand_L',
+  root: 'Root',
+  hips: 'Body',
+  spine1: 'Abdomen',
+  spine2: 'Torso',
+  spine3: 'Chest',
+  neck: 'Neck',
+  head: 'Head',
+  handR: 'Hand_R',
+  handL: 'Hand_L',
+  /** Weapon socket in the right hand. */
+  weapon: 'Weapon',
 } as const;
 
 /**
  * Bone-name prefixes the aim / ready layer overrides: the upper spine, neck,
- * head and both arms. The hips, the first spine link and the legs stay with
- * locomotion so walking and crouching still read through an aim.
+ * head and both arms. The hips, abdomen and legs stay with locomotion so
+ * walking and crouching still read through an aim.
  */
-export const UPPER_BODY_MASK: readonly string[] = ['DEF-spine_002', 'DEF-spine_003', 'DEF-neck', 'DEF-head', 'DEF-shoulder', 'DEF-upper_arm', 'DEF-forearm', 'DEF-hand', 'DEF-f_', 'DEF-thumb'];
+export const UPPER_BODY_MASK: readonly string[] = ['Torso', 'Chest', 'Neck', 'Head', 'Shoulder', 'UpperArm', 'LowerArm', 'Hand', 'Weapon'];
 
-/** Ragdoll capsules for the rig; parents before children (engine `RagdollConfig`). */
+/**
+ * Ragdoll capsules for the rig; parents before children (engine
+ * `RagdollConfig`). Explicit lengths where a bone's first configured child is
+ * not along it (the hips fan out to the legs) or is missing (forearms, shins).
+ */
 export const CHARACTER_RAGDOLL: RagdollConfig = {
   bones: [
-    { bone: 'DEF-hips', radius: 0.15 },
-    { bone: 'DEF-spine_001', radius: 0.14 },
-    { bone: 'DEF-spine_002', radius: 0.14 },
-    { bone: 'DEF-spine_003', radius: 0.15 },
-    { bone: 'DEF-neck', radius: 0.06 },
-    { bone: 'DEF-head', radius: 0.11, length: 0.2 },
-    { bone: 'DEF-upper_arm_L', radius: 0.055 },
-    { bone: 'DEF-forearm_L', radius: 0.045, length: 0.36 },
-    { bone: 'DEF-upper_arm_R', radius: 0.055 },
-    { bone: 'DEF-forearm_R', radius: 0.045, length: 0.36 },
-    { bone: 'DEF-thigh_L', radius: 0.08 },
-    { bone: 'DEF-shin_L', radius: 0.065, length: 0.5 },
-    { bone: 'DEF-thigh_R', radius: 0.08 },
-    { bone: 'DEF-shin_R', radius: 0.065, length: 0.5 },
+    { bone: 'Body', radius: 0.15, length: 0.14 },
+    { bone: 'Abdomen', radius: 0.14 },
+    { bone: 'Torso', radius: 0.14 },
+    { bone: 'Chest', radius: 0.15, length: 0.13 },
+    { bone: 'Neck', radius: 0.06, length: 0.12 },
+    { bone: 'Head', radius: 0.11, length: 0.22 },
+    { bone: 'UpperArm_L', radius: 0.055 },
+    { bone: 'LowerArm_L', radius: 0.045, length: 0.37 },
+    { bone: 'UpperArm_R', radius: 0.055 },
+    { bone: 'LowerArm_R', radius: 0.045, length: 0.37 },
+    { bone: 'UpperLeg_L', radius: 0.08 },
+    { bone: 'LowerLeg_L', radius: 0.065, length: 0.46 },
+    { bone: 'UpperLeg_R', radius: 0.08 },
+    { bone: 'LowerLeg_R', radius: 0.065, length: 0.46 },
   ],
   leafLength: 0.25,
   linearDamping: 0.4,
@@ -75,7 +86,11 @@ export function findBone(root: THREE.Object3D, name: string): THREE.Object3D | n
   return found;
 }
 
-/** Recolour a character instance: base and accent materials, cloned per instance so tints never leak. */
+/**
+ * Recolour a character instance: the kit's `Main` material takes `main`,
+ * `Accent` / `Accent_Dark` take `accent` (optionally glowing), `Black` stays
+ * black. Materials are cloned per instance so tints never leak.
+ */
 export function tintCharacter(visual: THREE.Object3D, main: THREE.ColorRepresentation, accent: THREE.ColorRepresentation, emissive = 0): THREE.MeshStandardMaterial[] {
   const out: THREE.MeshStandardMaterial[] = [];
   visual.traverse((o) => {
@@ -85,13 +100,21 @@ export function tintCharacter(visual: THREE.Object3D, main: THREE.ColorRepresent
     const cloned = materials.map((mat) => {
       const m = (mat as THREE.MeshStandardMaterial).clone();
       const isAccent = /joint|accent/i.test(m.name);
-      m.color.set(isAccent ? accent : main);
-      if (isAccent && emissive > 0) {
-        m.emissive.set(accent);
-        m.emissiveIntensity = emissive;
+      const isBlack = /black/i.test(m.name);
+      if (isAccent) {
+        m.color.set(accent);
+        if (emissive > 0) {
+          m.emissive.set(accent);
+          m.emissiveIntensity = emissive;
+        }
+        if (/dark/i.test(m.name)) m.color.multiplyScalar(0.45);
+        m.roughness = 0.35;
+        m.metalness = 0.3;
+      } else if (!isBlack) {
+        m.color.set(main);
+        m.roughness = 0.7;
+        m.metalness = 0.05;
       }
-      m.roughness = isAccent ? 0.35 : 0.7;
-      m.metalness = isAccent ? 0.3 : 0.05;
       out.push(m);
       return m;
     });

@@ -1,18 +1,24 @@
 #!/usr/bin/env node
 /**
- * Build the showcase's character from Quaternius' Universal Animation Library
- * (CC0; the free tier, mirrored as glTF at
- * https://github.com/J-Ponzo/gltf-universal-animation-library):
+ * Build the showcase's character (all CC0, see assets/source/characters/SOURCES.md):
  *
- *   node tools/asset-pipeline/build-character.mjs [--no-pipeline] [--verbose]
+ *   node tools/asset-pipeline/build-character.mjs [--rig=cyberpunk|ual] [--retarget] [--no-pipeline] [--verbose]
  *
- * The library ships one 1.83 m mannequin on a Rigify DEF- skeleton (53
- * joints) with 46 clips. This keeps the clips the showcase graphs use, renames
- * them to the engine's conventions (`idle`, `walk`, `run`, `hit`, `death`,
- * ... see CLIPS), replaces the dots in bone names with underscores (three's
- * loader would strip them), marks loops and the root-motion bone with `spark.*` extras,
- * writes assets/source/characters/operator.glb and runs the asset pipeline on
- * it into apps/showcase/public/models/operator.glb.
+ * Clips come from Quaternius' Universal Animation Library (a 1.83 m mannequin
+ * on a Rigify DEF- skeleton, 46 clips). Rigs:
+ *
+ *   cyberpunk (default)  Quaternius' Cyberpunk Game Kit character with the
+ *                        library's clips retargeted onto it by Blender
+ *                        (tools/level-authoring/character.py; `--retarget` runs
+ *                        it, else the last export is used) → operator.glb
+ *   ual                  the library's own mannequin → operator_ual.glb
+ *
+ * Either way this keeps the clips the showcase graphs use, renames them to the
+ * engine's conventions (`idle`, `walk`, `run`, `hit`, `death`, ... see CLIPS),
+ * replaces the dots in bone names with underscores (three's loader would strip
+ * them), marks loops and the root-motion bone with `spark.*` extras, writes
+ * assets/source/characters/<name>.glb and runs the asset pipeline on it into
+ * apps/showcase/public/models/.
  *
  * The rig's bone names, masks and ragdoll shape live in
  * apps/showcase/src/actors/rig.ts; the two must agree.
@@ -22,14 +28,23 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
+import { runBlender } from '../level-authoring/blender.mjs';
 import { runPipeline } from './pipeline.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
-const SRC = path.join(repoRoot, 'assets', 'source', 'characters', 'ual', 'AnimationLibrary_Godot_Standard.gltf');
-const OUT_DIR = path.join(repoRoot, 'assets', 'source', 'characters');
-const OUT = path.join(OUT_DIR, 'operator.glb');
+const CHARACTERS = path.join(repoRoot, 'assets', 'source', 'characters');
+const UAL = path.join(CHARACTERS, 'ual', 'AnimationLibrary_Godot_Standard.gltf');
+const KIT_CHARACTER = path.join(CHARACTERS, 'cyberpunk', 'SK_Character.usda');
+const RETARGETED = path.join(CHARACTERS, 'cyberpunk', 'SK_Character.retargeted.glb');
+const RETARGET_SCRIPT = path.join(repoRoot, 'tools', 'level-authoring', 'character.py');
+const OUT_DIR = CHARACTERS;
 const PUBLIC = path.join(repoRoot, 'apps', 'showcase', 'public', 'models');
+
+export const RIGS = {
+  cyberpunk: { src: RETARGETED, root: 'Root', out: 'operator', source: 'Quaternius Cyberpunk Game Kit character + Universal Animation Library clips (CC0)' },
+  ual: { src: UAL, root: 'root', out: 'operator_ual', source: 'Quaternius Universal Animation Library (CC0)' },
+};
 
 /** Engine clip name → library clip, and whether it loops. */
 export const CLIPS = {
@@ -53,18 +68,27 @@ export const CLIPS = {
   land: { from: 'Jump_Land', loop: false },
 };
 
-export async function buildCharacter({ log = console.log, pipeline = true, verbose = false } = {}) {
+export async function buildCharacter({ log = console.log, rig = 'cyberpunk', retarget = false, pipeline = true, verbose = false } = {}) {
+  const spec = RIGS[rig];
+  if (!spec) throw new Error(`unknown rig "${rig}"; rigs: ${Object.keys(RIGS).join(', ')}`);
+  if (rig === 'cyberpunk' && retarget) {
+    const clips = Object.values(CLIPS).map((c) => c.from).join(',');
+    const status = runBlender(RETARGET_SCRIPT, [UAL, KIT_CHARACTER, RETARGETED, clips]);
+    if (status !== 0) throw new Error(`retarget failed (blender exit ${status})`);
+  }
+  const OUT = path.join(OUT_DIR, `${spec.out}.glb`);
   const io = new NodeIO().registerExtensions(ALL_EXTENSIONS);
-  const doc = await io.read(SRC);
+  const doc = await io.read(spec.src);
   const root = doc.getRoot();
 
-  const byName = new Map(root.listAnimations().map((a) => [a.getName(), a]));
+  // Blender suffixes a retargeted action with .001 when the source action holds the plain name.
+  const byName = new Map(root.listAnimations().map((a) => [a.getName().replace(/\.\d{3}$/, ''), a]));
   const wanted = new Set(Object.values(CLIPS).map((c) => c.from));
   for (const [name, anim] of byName) if (!wanted.has(name)) anim.dispose();
-  for (const [name, spec] of Object.entries(CLIPS)) {
-    const anim = byName.get(spec.from);
-    if (!anim) throw new Error(`clip "${spec.from}" (for ${name}) not in ${path.relative(repoRoot, SRC)}`);
-    anim.setName(name).setExtras({ 'spark.loop': spec.loop, 'spark.source': spec.from });
+  for (const [name, clip] of Object.entries(CLIPS)) {
+    const anim = byName.get(clip.from);
+    if (!anim) throw new Error(`clip "${clip.from}" (for ${name}) not in ${path.relative(repoRoot, spec.src)}`);
+    anim.setName(name).setExtras({ 'spark.loop': clip.loop, 'spark.source': clip.from });
   }
 
   // Rigify names carry dots (DEF-spine.001, DEF-hand.R); three's glTF loader strips
@@ -74,20 +98,20 @@ export async function buildCharacter({ log = console.log, pipeline = true, verbo
     const name = node.getName();
     if (name.includes('.')) node.setName(name.replace(/\./g, '_'));
   }
-  const rootJoint = root.listNodes().find((n) => n.getName() === 'root');
-  if (!rootJoint) throw new Error('no "root" joint');
+  const rootJoint = root.listNodes().find((n) => n.getName() === spec.root);
+  if (!rootJoint) throw new Error(`no "${spec.root}" joint`);
   rootJoint.setExtras({ 'spark.rootBone': true });
   const scene = root.listScenes()[0];
-  const rig = scene.listChildren()[0];
-  rig.setExtras({ 'spark.type': 'character', 'spark.budget': 'enemy', 'spark.source': 'Quaternius Universal Animation Library (CC0)' });
-  root.setExtras({ 'spark.source': 'Quaternius Universal Animation Library, standard tier (CC0)' });
+  const top = scene.listChildren()[0];
+  top.setExtras({ 'spark.type': 'character', 'spark.budget': 'enemy', 'spark.source': spec.source });
+  root.setExtras({ 'spark.source': spec.source });
 
   if (verbose) {
     const walk = (n, d) => {
       log(`${'  '.repeat(d)}${n.getName()} t=${n.getTranslation().map((v) => v.toFixed(3)).join(',')}`);
       for (const c of n.listChildren()) walk(c, d + 1);
     };
-    walk(rig, 0);
+    for (const child of scene.listChildren()) walk(child, 0);
   }
 
   await mkdir(OUT_DIR, { recursive: true });
@@ -95,14 +119,20 @@ export async function buildCharacter({ log = console.log, pipeline = true, verbo
   await writeFile(OUT, glb);
   log(`wrote ${path.relative(repoRoot, OUT)} (${(glb.byteLength / 1024).toFixed(0)} KiB, ${Object.keys(CLIPS).length} clips)`);
   if (!pipeline) return OUT;
-  const ok = await runPipeline({ src: OUT_DIR, out: PUBLIC, only: 'operator', budget: 'enemy', verbose, log });
+  const ok = await runPipeline({ src: OUT_DIR, out: PUBLIC, only: spec.out, budget: 'enemy', verbose, log });
   if (!ok) throw new Error('asset pipeline failed');
-  return path.join(PUBLIC, 'operator.glb');
+  return path.join(PUBLIC, `${spec.out}.glb`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const argv = process.argv.slice(2);
-  buildCharacter({ pipeline: !argv.includes('--no-pipeline'), verbose: argv.includes('--verbose') }).catch((err) => {
+  const rigArg = argv.find((a) => a.startsWith('--rig='));
+  buildCharacter({
+    rig: rigArg ? rigArg.slice(6) : 'cyberpunk',
+    retarget: argv.includes('--retarget'),
+    pipeline: !argv.includes('--no-pipeline'),
+    verbose: argv.includes('--verbose'),
+  }).catch((err) => {
     console.error(err);
     process.exit(1);
   });

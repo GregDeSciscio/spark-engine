@@ -115,11 +115,11 @@ const PEEK_OFFSET = 1.1;
 const PEEK_WAIT: readonly [number, number] = [0.8, 1.8];
 const PEEK_SECONDS: readonly [number, number] = [1.0, 1.8];
 
-/** Impulse (kg·m/s) a killing round puts into the nearest ragdoll part. */
-const KILL_IMPULSE = 26;
+/** Impulse (kg·m/s) a killing round puts into the nearest ragdoll part: a real shove on a 20 kg chest, capped by the engine on light limbs. */
+const KILL_IMPULSE = 90;
 const BASE_TINT = 0x3a1f2a;
 const BLOOD_TINT = 0x2a0408;
-const ACCENT_TINT = 0xff2040;
+const ACCENT_TINT = 0x6e1624;
 /** The chest flinch lives on the base layer; drop the upper override this long so it shows. */
 const HIT_UPPER_SECONDS = 0.35;
 const UPPER_FADE = 10;
@@ -266,14 +266,14 @@ export class Enemy implements Damageable {
     this.visual = visual;
     visual.position.y = -OPERATOR.height / 2;
     // A darker tint so enemies read apart from the operator and the range dummies; it bloodies as health drops.
-    this.tinted = tintCharacter(visual, BASE_TINT, ACCENT_TINT, 0.12);
+    this.tinted = tintCharacter(visual, BASE_TINT, ACCENT_TINT, 0.2);
     this.root.add(visual);
     scene.add(this.root);
     renderSync.attach(entities, this.eid, this.root);
     animation.attach(this.eid, visual, model.animations, ENEMY_GRAPH, { rootMotion: { mode: 'none' } });
     labels.attach(this.eid, { kind: 'healthbar', text: spec.name, offsetY: 2.05 });
     this.flash = new MuzzleFlash(deps, ENEMY_RIFLE.muzzle.flashColor, ENEMY_RIFLE.muzzle.flashIntensity);
-    this.rifle = new RifleProp(this.root, findBone(visual, BONES.handR), new THREE.Vector3(0.26, 1.32 - OPERATOR.height / 2, 0.12), 0x33363c);
+    this.rifle = new RifleProp(this.root, findBone(visual, BONES.weapon), new THREE.Vector3(0.26, 1.32 - OPERATOR.height / 2, 0.12), 0x33363c);
   }
 
   private fadeUpper(target: number, dt: number): void {
@@ -288,9 +288,10 @@ export class Enemy implements Damageable {
     const base = new THREE.Color(BASE_TINT);
     const blood = new THREE.Color(BLOOD_TINT);
     for (const m of this.tinted) {
-      const accent = m.emissiveIntensity > 0 || m.emissive.getHex() !== 0;
+      if (/black/i.test(m.name)) continue;
+      const accent = /joint|accent/i.test(m.name);
       m.color.lerpColors(accent ? m.emissive : base, blood, accent ? t * 0.5 : t * 0.85);
-      if (accent) m.emissiveIntensity = 0.12 * (1 - t);
+      if (accent) m.emissiveIntensity = 0.2 * (1 - t);
     }
   }
 
