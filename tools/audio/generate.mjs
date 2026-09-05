@@ -34,10 +34,17 @@ const MAX_SECONDS = 22;
 /** Credits per second of requested sound, from ElevenLabs' published rate (approximate). */
 const CREDITS_PER_SECOND = 100;
 
+/** PowerShell's `>` writes UTF-16; read the file as whatever it is. */
+async function readEnvFile() {
+  const bytes = await readFile(path.join(repoRoot, '.env'));
+  const utf16 = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff);
+  return utf16 ? new TextDecoder(bytes[0] === 0xff ? 'utf-16le' : 'utf-16be').decode(bytes.subarray(2)) : bytes.toString('utf8').replace(/^﻿/, '');
+}
+
 export async function loadApiKey() {
   if (process.env.ELEVENLABS_API_KEY) return process.env.ELEVENLABS_API_KEY;
   try {
-    const env = await readFile(path.join(repoRoot, '.env'), 'utf8');
+    const env = await readEnvFile();
     for (const line of env.split(/\r?\n/)) {
       const m = /^\s*ELEVENLABS_API_KEY\s*=\s*"?([^"#\s]+)"?/.exec(line);
       if (m) return m[1];
@@ -51,7 +58,7 @@ export async function loadApiKey() {
 async function loadVoiceId() {
   if (process.env.ELEVENLABS_VOICE_ID) return process.env.ELEVENLABS_VOICE_ID;
   try {
-    const env = await readFile(path.join(repoRoot, '.env'), 'utf8');
+    const env = await readEnvFile();
     const m = /^\s*ELEVENLABS_VOICE_ID\s*=\s*"?([^"#\s]+)"?/m.exec(env);
     if (m) return m[1];
   } catch {
