@@ -10,6 +10,7 @@ import {
   type QualitySettings,
   type Random,
 } from '@spark/engine';
+import type { ObjectiveDef } from '../mission/Objectives';
 
 /**
  * A grey-box night street: the first stand-in level for the mission scene
@@ -37,6 +38,8 @@ export interface Blockout {
   readonly targetSpots: readonly { readonly position: THREE.Vector3; readonly yaw: number }[];
   /** Enemy patrol loops (feet positions); the first point of each is the spawn. */
   readonly patrols: readonly { readonly name: string; readonly route: readonly THREE.Vector3[] }[];
+  /** The mission's objectives in order. */
+  readonly objectives: readonly ObjectiveDef[];
   /** Collision geometry as triangle soup, for the navmesh bake (ADR-009). */
   readonly navSoup: TriangleSoup;
   dispose(): void;
@@ -200,12 +203,20 @@ export function buildBlockout(
     { name: 'Rifleman 3', route: [new THREE.Vector3(0, 0, -52), new THREE.Vector3(6, 0, -42), new THREE.Vector3(-6, 0, -44)] },
   ];
 
+  // Insert at the near end, cross the street, set the charge at the far wall, come back out.
+  const objectives: ObjectiveDef[] = [
+    { id: 'square', kind: 'reach', label: 'Reach the square', position: new THREE.Vector3(0, 0, -8), radius: 3 },
+    { id: 'charge', kind: 'plant', label: 'Set the charge on the depot wall', position: new THREE.Vector3(0, 0, STREET_Z_MIN + 4), radius: 2.2, holdSeconds: 3 },
+    { id: 'extract', kind: 'reach', label: 'Return to extraction', position: new THREE.Vector3(0, 0, STREET_Z_MAX - 6), radius: 3 },
+  ];
+
   return {
     spawn: new THREE.Vector3(0, 0, STREET_Z_MAX - 6),
     spawnYaw: 0,
     meshes,
     targetSpots,
     patrols,
+    objectives,
     navSoup,
     dispose: () => bag.dispose(),
   };

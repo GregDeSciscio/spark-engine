@@ -10,6 +10,7 @@ import { Impacts } from '../combat/effects';
 import { Gunplay } from '../combat/Gunplay';
 import { RIFLE_BASELINE } from '../combat/weapons';
 import { buildBlockout } from '../levels/blockout';
+import { MissionRunner } from '../mission/Objectives';
 import { createOperatorHud } from '../ui/hud';
 
 const MANNEQUIN_URL = '/models/mannequin.glb';
@@ -23,11 +24,13 @@ const SOUND_HIT = 'impact';
 const HURT_FADE = 0.8;
 
 /**
- * Milestone 5, third step: the operator with the baseline rifle against
+ * Milestone 5 gameplay slice: the operator with the baseline rifle against
  * three riflemen patrolling a grey-box night street on a baked navmesh, with
- * the awareness ladder from `docs/design/mission-shape.md`. Dying shows the
- * failed card; Enter reloads the checkpoint (spawn, full health, enemies
- * reset). Objectives are next.
+ * the awareness ladder from `docs/design/mission-shape.md`, and a
+ * three-objective mission (reach, plant, extract). Completing an objective
+ * moves the checkpoint; dying shows the failed card and Enter reloads it
+ * (full health and ammo, surviving hostiles reset to their routes). What is
+ * left of the milestone is the Blender-authored level (ADR-008).
  */
 export const missionScene: SceneDefinition = {
   name: 'mission',
@@ -171,6 +174,11 @@ export const missionScene: SceneDefinition = {
       }
     };
 
+    // ---- objectives and checkpoints ----------------------------------------------
+    const mission = new MissionRunner({ entities, scene, labels: ui.labels, renderSync }, level.objectives, { position: level.spawn, yaw: level.spawnYaw });
+    bag.add(mission);
+    let interactHeld = false;
+
     // ---- HUD and pointer lock ------------------------------------------------
     const hud = createOperatorHud(ui);
     bag.add(hud);
@@ -180,11 +188,14 @@ export const missionScene: SceneDefinition = {
     ctx.config.container.addEventListener('pointerdown', onPointerDown);
     bag.add(() => ctx.config.container.removeEventListener('pointerdown', onPointerDown));
 
+    // Checkpoint reload: back to the last completed objective; dead hostiles stay dead, the rest reset.
     const retry = (): void => {
-      operator.respawn(level.spawn, level.spawnYaw);
-      camera.setLook(level.spawnYaw, THREE.MathUtils.degToRad(6));
-      for (const e of enemies) e.reset();
+      const cp = mission.checkpoint;
+      operator.respawn(cp.position, cp.yaw);
+      camera.setLook(cp.yaw, THREE.MathUtils.degToRad(6));
+      for (const e of enemies) if (!e.dead) e.reset();
       gunplay.resetAmmo();
+      mission.resetProgress();
       hud.setFailed(false);
     };
 
@@ -204,6 +215,7 @@ export const missionScene: SceneDefinition = {
         operator.update(input, camera);
         if (input.wasPressed('F4')) navLines.visible = !navLines.visible;
         if (operator.dead && input.wasPressed('Enter')) retry();
+        interactHeld = !operator.dead && input.isDown('KeyF');
         // The click that takes control must not also fire.
         gunplay.update(locked && input.isButtonDown(0), locked && input.wasButtonPressed(0), input.wasPressed('KeyR'));
         const weapon = gunplay.weapon;
@@ -216,6 +228,11 @@ export const missionScene: SceneDefinition = {
         hud.setStatus(operator.stance, operator.speed, operator.grounded);
         hud.setScore(gunplay.stats.hits, gunplay.stats.kills, enemies.filter((e) => !e.dead).length);
         hud.setFailed(operator.dead);
+        const ms = mission.status();
+        const promptText =
+          ms.objective?.kind === 'plant' && ms.inRange ? (ms.progress > 0 ? 'setting charge' : 'hold F to set the charge') : null;
+        hud.setObjective(ms.index, ms.total, ms.objective?.label ?? null, ms.distance, ms.progress, promptText);
+        hud.setComplete(ms.complete);
       },
       fixedUpdate(fixedDt) {
         now += fixedDt;
@@ -223,6 +240,12 @@ export const missionScene: SceneDefinition = {
         gunplay.fixedUpdate(fixedDt);
         for (const d of dummies) d.fixedUpdate(now);
         for (const e of enemies) e.fixedUpdate(fixedDt, now, operator, onAlert);
+        operator.feet(feet);
+        mission.fixedUpdate(fixedDt, feet, interactHeld, enemies.filter((e) => !e.dead).length);
+        if (mission.justCompleted) {
+          logger.info(`mission: objective "${mission.justCompleted.id}" complete, checkpoint moved`);
+          mission.justCompleted = null;
+        }
       },
       lateUpdate(dt) {
         syncCamera();

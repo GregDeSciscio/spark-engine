@@ -19,7 +19,10 @@ export interface OperatorHud {
   setAlert(level: 'undetected' | 'suspicious' | 'alert'): void;
   setStatus(stance: Stance, speed: number, grounded: boolean): void;
   setScore(hits: number, kills: number, enemiesLeft: number): void;
+  /** Current objective line; `progress` 0..1 fills the hold bar, `prompt` shows the interact hint. */
+  setObjective(index: number, total: number, label: string | null, distance: number, progress: number, prompt: string | null): void;
   setFailed(visible: boolean): void;
+  setComplete(visible: boolean): void;
   dispose(): void;
 }
 
@@ -157,6 +160,64 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
     pointerEvents: 'none',
   } satisfies Partial<CSSStyleDeclaration>);
 
+  const objective = document.createElement('div');
+  Object.assign(objective.style, {
+    position: 'absolute',
+    left: '16px',
+    bottom: '96px',
+    font: `12px/1.6 ${MONO}`,
+    color: '#dfe6ff',
+    letterSpacing: '0.06em',
+    pointerEvents: 'none',
+  } satisfies Partial<CSSStyleDeclaration>);
+  const objectiveHead = document.createElement('div');
+  Object.assign(objectiveHead.style, { color: '#9aa4bd', textTransform: 'uppercase', fontSize: '11px', letterSpacing: '0.12em' } satisfies Partial<CSSStyleDeclaration>);
+  const objectiveLabel = document.createElement('div');
+  const objectiveMeta = document.createElement('div');
+  Object.assign(objectiveMeta.style, { color: '#9aa4bd', fontSize: '11px' } satisfies Partial<CSSStyleDeclaration>);
+  objective.append(objectiveHead, objectiveLabel, objectiveMeta);
+
+  const interact = document.createElement('div');
+  Object.assign(interact.style, {
+    position: 'absolute',
+    left: '50%',
+    top: '58%',
+    transform: 'translateX(-50%)',
+    width: '220px',
+    font: `12px/1.5 ${MONO}`,
+    color: '#dfe6ff',
+    letterSpacing: '0.08em',
+    textAlign: 'center',
+    textTransform: 'uppercase',
+    pointerEvents: 'none',
+  } satisfies Partial<CSSStyleDeclaration>);
+  const interactText = document.createElement('div');
+  const interactTrack = document.createElement('div');
+  Object.assign(interactTrack.style, { marginTop: '6px', height: '4px', background: 'rgba(255,255,255,0.15)', borderRadius: '2px', overflow: 'hidden' } satisfies Partial<CSSStyleDeclaration>);
+  const interactFill = document.createElement('div');
+  Object.assign(interactFill.style, { height: '100%', width: '0%', background: '#4dd2ff' } satisfies Partial<CSSStyleDeclaration>);
+  interactTrack.appendChild(interactFill);
+  interact.append(interactText, interactTrack);
+  interact.hidden = true;
+
+  const complete = document.createElement('div');
+  complete.innerHTML = '<div style="font-size:26px;letter-spacing:0.3em;color:#8fd3a5">MISSION COMPLETE</div><div style="margin-top:10px;color:#9aa4bd;letter-spacing:0.08em">charge set, operator extracted</div>';
+  Object.assign(complete.style, {
+    position: 'absolute',
+    left: '50%',
+    top: '42%',
+    transform: 'translate(-50%, -50%)',
+    padding: '22px 36px',
+    font: `13px/1.5 ${MONO}`,
+    textAlign: 'center',
+    textTransform: 'uppercase',
+    background: 'rgba(8, 10, 16, 0.85)',
+    border: '1px solid #1c3a26',
+    borderRadius: '4px',
+    pointerEvents: 'none',
+  } satisfies Partial<CSSStyleDeclaration>);
+  complete.hidden = true;
+
   const failed = document.createElement('div');
   failed.innerHTML = '<div style="font-size:26px;letter-spacing:0.3em;color:#ff5a5a">MISSION FAILED</div><div style="margin-top:10px;color:#9aa4bd;letter-spacing:0.08em">press Enter to retry from the checkpoint</div>';
   Object.assign(failed.style, {
@@ -175,7 +236,7 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
   } satisfies Partial<CSSStyleDeclaration>);
   failed.hidden = true;
 
-  const all = [vignette, dot, ring, ammo, healthWrap, alert, status, score, prompt, failed];
+  const all = [vignette, dot, ring, ammo, healthWrap, alert, status, score, objective, interact, prompt, failed, complete];
   for (const el of all) ui.mount('hud', el);
 
   let lastRadius = -1;
@@ -221,8 +282,21 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
     setScore(hits, kills, enemiesLeft) {
       score.textContent = `hits ${hits} · down ${kills} · hostiles ${enemiesLeft}`;
     },
+    setObjective(index, total, label, distance, progress, promptText) {
+      objectiveHead.textContent = label ? `objective ${index + 1} / ${total}` : 'mission';
+      objectiveLabel.textContent = label ?? 'complete';
+      objectiveMeta.textContent = label ? `${distance.toFixed(0)} m` : '';
+      interact.hidden = promptText === null;
+      if (promptText !== null) {
+        interactText.textContent = promptText;
+        interactFill.style.width = `${Math.round(progress * 100)}%`;
+      }
+    },
     setFailed(visible) {
       failed.hidden = !visible;
+    },
+    setComplete(visible) {
+      complete.hidden = !visible;
     },
     dispose() {
       for (const el of all) ui.unmount(el);
