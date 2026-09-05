@@ -38,9 +38,12 @@ import {
  * surface (and tint) is shared across every mesh that uses it, so the swap
  * never adds draw-call variety or shader variants.
  */
-export type SurfaceName = 'asphalt' | 'brick' | 'concrete' | 'metal' | 'skyline';
+export type SurfaceName = 'asphalt' | 'brick' | 'concrete' | 'metal' | 'skyline' | 'window';
 
-export const SURFACE_NAMES: readonly SurfaceName[] = ['asphalt', 'brick', 'concrete', 'metal', 'skyline'];
+export const SURFACE_NAMES: readonly SurfaceName[] = ['asphalt', 'brick', 'concrete', 'metal', 'skyline', 'window'];
+
+/** Window grid spacing the level dressing uses, so the lit/dark choice per pane lines up with the geometry. */
+export const WINDOW_GRID = { u: 2.4, v: 3.2 } as const;
 
 export function isSurfaceName(value: string): value is SurfaceName {
   return (SURFACE_NAMES as readonly string[]).includes(value);
@@ -205,6 +208,36 @@ function skyline(): THREE.MeshStandardNodeMaterial {
 }
 
 /**
+ * Windows: each pane in a world-space grid (`WINDOW_GRID`) is lit or dark by a
+ * hash, so one material covers every window box a level places on that grid.
+ * Lit panes glow warm or cool through half-closed blinds and a mullion,
+ * dimmer toward the sill; dark ones are bluish glass with a wet gloss.
+ */
+function window(): THREE.MeshStandardNodeMaterial {
+  const m = new THREE.MeshStandardNodeMaterial();
+  m.name = 'surface:window';
+  const facingX = abs(normalWorld.x).greaterThan(0.5);
+  const u = facingX.select(positionWorld.z, positionWorld.x);
+  const v = positionWorld.y;
+  const cell = vec2(floor(u.div(WINDOW_GRID.u)), floor(v.div(WINDOW_GRID.v)));
+  const id = hash(cell.x.add(cell.y.mul(211.0)).add(41.0));
+  const id2 = hash(cell.x.add(cell.y.mul(211.0)).add(97.0));
+  const lit = smoothstep(0.58, 0.62, id);
+  // Pane-local coordinates: 0..1 across the pane's own span within the cell.
+  const pu = fract(u.div(WINDOW_GRID.u).add(0.5)).sub(0.5).mul(WINDOW_GRID.u).div(1.1).add(0.5);
+  const pv = fract(v.div(WINDOW_GRID.v).add(0.5)).sub(0.5).mul(WINDOW_GRID.v).div(1.5).add(0.5);
+  const glow = mix(float(1.35), float(0.55), saturate(pv).oneMinus().pow(1.6));
+  const slats = smoothstep(0.35, 0.5, fract(pv.mul(6.0))).mul(0.4).add(0.6);
+  const mullion = smoothstep(0.47, 0.485, pu).mul(smoothstep(0.53, 0.515, pu)).oneMinus();
+  const tone = mix(color(0xffc27a), color(0x8cc4ff), smoothstep(0.35, 0.65, id2));
+  m.colorNode = mix(color(0x0d1220), color(0x1a1408), lit);
+  m.emissiveNode = tone.mul(glow.mul(slats).mul(mullion)).mul(lit).mul(2.4);
+  m.roughnessNode = mix(float(0.15), float(0.4), lit);
+  m.metalnessNode = float(0.0);
+  return m;
+}
+
+/**
  * Creates and caches one material per surface (and tint), so every mesh that
  * asks for `brick` shares the same instance. Dispose it with the scene.
  */
@@ -280,6 +313,8 @@ function create(name: SurfaceName, options: SurfaceOptions): THREE.MeshStandardN
       return metal(options);
     case 'skyline':
       return skyline();
+    case 'window':
+      return window();
   }
 }
 

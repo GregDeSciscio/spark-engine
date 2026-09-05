@@ -21,7 +21,9 @@
     "thumbnails": "node tools/capture/thumbnails.mjs",
     "perf": "node tools/benchmarks/perf.mjs",
     "assets": "node tools/asset-pipeline/pipeline.mjs",
-    "level:street": "node tools/level-authoring/build.mjs"
+    "level:street": "node tools/level-authoring/build.mjs",
+    "props:fetch": "node tools/asset-pipeline/fetch-polyhaven.mjs --kit=street",
+    "props:build": "node tools/asset-pipeline/pipeline.mjs --src=assets/source/props --out=apps/showcase/public/models --budget=prop"
   },
   "devDependencies": {
     "@eslint/js": "9.39.4",

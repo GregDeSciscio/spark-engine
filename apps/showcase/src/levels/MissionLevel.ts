@@ -90,6 +90,26 @@ export function applyAtmosphere(scene: THREE.Scene, quality: QualitySettings): {
   };
 }
 
+/** The CC0 prop kit (tools/asset-pipeline/fetch-polyhaven.mjs --kit=street), served from the app's models folder. */
+export const PROP_KIT = [
+  'fire_hydrant',
+  'metal_trash_can',
+  'trashbag',
+  'barrel_03',
+  'barrel_stove',
+  'concrete_road_barrier',
+  'old_tyre',
+  'street_lamp_01',
+  'utility_box_01',
+  'water_manhole_cover',
+  'cardboard_box_01',
+  'plastic_crate_03',
+  'power_box_01',
+  'portable_generator',
+] as const;
+
+const PROP_URLS: Readonly<Record<string, string>> = Object.fromEntries(PROP_KIT.map((id) => [id, `/models/${id}.glb`]));
+
 export interface StreetLevelDeps {
   readonly entities: EntityWorld;
   readonly physics: PhysicsWorld;
@@ -122,7 +142,7 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
 
   const navUrl = url.replace(/\.glb$/i, '.navmesh.bin');
   const [level, navBytes] = await Promise.all([
-    new LevelLoader({ entities, assets, renderSync, scene, physics, teams: ['player'], castShadow: true, receiveShadow: true }).load(url),
+    new LevelLoader({ entities, assets, renderSync, scene, physics, props: PROP_URLS, teams: ['player'], castShadow: true, receiveShadow: true }).load(url),
     fetch(navUrl).then(async (r) => {
       if (!r.ok) throw new Error(`${navUrl}: ${r.status}`);
       return new Uint8Array(await r.arrayBuffer());
@@ -211,7 +231,7 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
 
   const stats = navigation.stats();
   logger.info(
-    `street: ${level.entities.length} entities, ${level.colliders.length} colliders (${meshes.size} with render twins), ${level.lights.length} lights, ${surfaced} surfaced meshes, ${vfx.length} vfx spots, ${objectives.length} objectives, ${patrols.length} patrols, navmesh ${stats.polys} polys`,
+    `street: ${level.entities.length} entities, ${level.colliders.length} colliders (${meshes.size} with render twins), ${level.lights.length} lights, ${level.props.length} props, ${surfaced} surfaced meshes, ${vfx.length} vfx spots, ${objectives.length} objectives, ${patrols.length} patrols, navmesh ${stats.polys} polys`,
   );
 
   return {
