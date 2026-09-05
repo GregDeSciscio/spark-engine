@@ -55,7 +55,12 @@ export interface LayerDef {
   readonly states: readonly StateDef[];
   /** Evaluated before the current state's own transitions, every step. */
   readonly anyState?: readonly TransitionDef[];
-  /** Layers above the base are additive (three's mixer has no per-bone override). Default true for layer > 0. */
+  /**
+   * Layers above the base are additive by default (their clips play as deltas from
+   * their own first frame). `false` makes an override layer: on the bones its
+   * `mask` names, its clips replace the base pose by the layer's weight, which is
+   * how an aim pose sits on the upper body over any locomotion.
+   */
   readonly additive?: boolean;
   /** Bone-name prefixes this layer is allowed to drive. Omit for every bone. */
   readonly mask?: readonly string[];

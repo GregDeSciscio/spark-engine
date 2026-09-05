@@ -76,6 +76,7 @@ apps/benchmark      the benchmark app and perf scenes (?scene=name)
 apps/showcase       the customer game's vertical slice (ADR-005); `pnpm dev:showcase`
 tools/level-authoring  Blender scripts that author levels; `pnpm level:street` = Blender → pipeline → showcase
 assets/source/props    CC0 props from Poly Haven; `pnpm props:fetch` downloads the street kit, `pnpm props:build` runs the pipeline into the showcase
+assets/source/characters  the showcase character: Quaternius' CC0 animation-library mannequin; `pnpm character:build` selects clips and runs the pipeline
 tools/capture       headless boot + screenshot + stats (the agent verification loop)
 tools/benchmarks    perf runner and per-machine baselines
 tools/asset-pipeline normalize / compress / validate GLB assets

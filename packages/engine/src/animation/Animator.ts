@@ -21,7 +21,7 @@ import {
  * actions and state machine live in `AnimationWorld`'s side table).
  *
  * - `speed`: playback rate multiplier (1 = clip speed; 0 pauses).
- * - `layer1..3`: weight of additive layers 1..3 (layer 0 is always 1).
+ * - `layer1..3`: weight of layers 1..3, additive or override (layer 0 is always 1).
  * - `rootMotion`: 0 disables applying root motion for this entity.
  */
 export const Animator = defineComponentType(
@@ -78,6 +78,21 @@ export interface AnimationWorldStats {
 interface LayerBinding {
   readonly actions: Map<string, THREE.AnimationAction>;
   readonly durations: Map<string, number>;
+  /** Normal-blend layer above the base: its clips replace the base pose on the (masked) bones it drives. */
+  readonly override: boolean;
+}
+
+/**
+ * Three's mixer averages every normal-blend action on a property by weight, so
+ * an override layer at share `s` against a base whose weights sum to 1 needs
+ * weight `s / (1 - s)`. Capped so a full override leaves 0.1 percent of the base,
+ * which no one can see, instead of a division by zero.
+ */
+const OVERRIDE_MAX_BOOST = 1000;
+export function overrideBoost(share: number): number {
+  if (share <= 0) return 0;
+  if (share >= 1) return OVERRIDE_MAX_BOOST;
+  return Math.min(OVERRIDE_MAX_BOOST, share / (1 - share));
 }
 
 interface Instance {
@@ -359,7 +374,7 @@ export class AnimationWorld {
       actions.set(name, action);
       durations.set(name, source.duration);
     }
-    return { actions, durations };
+    return { actions, durations, override: index > 0 && !additive };
   }
 
   /** Masked and/or additive copy of a clip. Cached so every instance shares one. */
@@ -391,10 +406,12 @@ export class AnimationWorld {
       if (layerWeight <= 0) continue;
       const layer = playback.layers[i];
       if (!layer) continue;
+      // An override layer's samples sum to 1 inside the layer; the boost makes the layer as a whole win by its weight.
+      const scale = binding.override ? overrideBoost(Math.min(1, layerWeight)) : layerWeight;
       for (const sample of layer.samples) {
         const action = binding.actions.get(sample.clip);
         if (!action) continue;
-        const w = sample.weight * layerWeight;
+        const w = sample.weight * scale;
         if (w <= 0) continue;
         const duration = binding.durations.get(sample.clip) ?? action.getClip().duration;
         const existing = action.getEffectiveWeight();

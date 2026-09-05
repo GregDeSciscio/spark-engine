@@ -243,3 +243,43 @@ describe('AnimationWorld', () => {
     f.dispose();
   });
 });
+
+describe('override layers', () => {
+  it('replaces the base pose on masked bones by the layer weight and leaves the rest alone', async () => {
+    const { overrideBoost } = await import('../src/animation/Animator');
+    expect(overrideBoost(0)).toBe(0);
+    expect(overrideBoost(0.5)).toBeCloseTo(1);
+    expect(overrideBoost(0.9)).toBeCloseTo(9);
+    expect(overrideBoost(1)).toBe(1000);
+
+    const f = fixture();
+    const rig = makeRig();
+    const eid = f.entities.create([Transform, {}]);
+    // Base: attack holds the arm bent (frame 0.25 is -1.2 rad) and lifts the hips; override: idle keeps hips at rest, arm untouched.
+    const graph: AnimationGraphDef = {
+      layers: [
+        { entry: 'attack', states: [{ name: 'attack', clip: 'attack', speed: 0 }] },
+        { entry: 'idle', additive: false, mask: ['hips'], states: [{ name: 'idle', clip: 'idle' }] },
+      ],
+    };
+    f.animation.attach(eid, rig.root, rig.clips, graph, { rootMotion: { mode: 'none' } });
+    const a = f.entities.store(Animator);
+    a.layer1[eid] = 1;
+    f.frame();
+    // Hips: override wins (idle holds y = 1, attack frame 0 also has y = 1; step the attack to mid-clip to see a difference).
+    f.animation.play(eid, 'attack', 0, { offset: 0.5, duration: 0 });
+    f.frame();
+    expect(rig.bones.hips.position.y).toBeCloseTo(1, 2);
+    // The arm is not in the mask: the base pose stays.
+    expect(Math.abs(new THREE.Euler().setFromQuaternion(rig.bones.arm.quaternion).x)).toBeGreaterThan(0.5);
+    // Half weight: hips halfway between the base (1.25 at mid-clip) and the override (1).
+    a.layer1[eid] = 0.5;
+    f.frame();
+    expect(rig.bones.hips.position.y).toBeGreaterThan(1.05);
+    expect(rig.bones.hips.position.y).toBeLessThan(1.25);
+    a.layer1[eid] = 0;
+    f.frame();
+    expect(rig.bones.hips.position.y).toBeGreaterThan(1.2);
+    f.dispose();
+  });
+});

@@ -2,7 +2,7 @@ import * as THREE from 'three/webgpu';
 import {
   CharacterController,
   Character,
-  MANNEQUIN_RAGDOLL,
+  Animator,
   NavAgent,
   Transform,
   findCover,
@@ -27,6 +27,8 @@ import type { Gore } from '../combat/gore';
 import { MuzzleFlash, type EffectsDeps, type Impacts } from '../combat/effects';
 import { Weapon } from '../combat/Weapon';
 import { RIFLE_BASELINE, applySpread, damageAt, hitZoneAt, type HitZone, type WeaponDefinition } from '../combat/weapons';
+import { RifleProp } from './RifleProp';
+import { AIM_PITCH_RANGE, BONES, CHARACTER_RAGDOLL, LOCOMOTION, UPPER_BODY_MASK, findBone, tintCharacter } from './rig';
 import { OPERATOR, type Stance } from './Operator';
 
 /**
@@ -113,15 +115,22 @@ const PEEK_OFFSET = 1.1;
 const PEEK_WAIT: readonly [number, number] = [0.8, 1.8];
 const PEEK_SECONDS: readonly [number, number] = [1.0, 1.8];
 
-const WALK_ANIM = 1.2;
-const RUN_ANIM = 4.0;
 /** Impulse (kg·m/s) a killing round puts into the nearest ragdoll part. */
 const KILL_IMPULSE = 26;
 const BASE_TINT = 0x3a1f2a;
 const BLOOD_TINT = 0x2a0408;
+const ACCENT_TINT = 0xff2040;
+/** The chest flinch lives on the base layer; drop the upper override this long so it shows. */
+const HIT_UPPER_SECONDS = 0.35;
+const UPPER_FADE = 10;
 
+/**
+ * Base layer: locomotion on speed, a crouch while holding cover, hit and death
+ * by trigger. Layer 1 overrides the upper body with the weapon-ready pose, or
+ * the aim poses on pitch toward the player while engaging.
+ */
 const ENEMY_GRAPH: AnimationGraphDef = {
-  params: { speed: 0, dead: 0 },
+  params: { speed: 0, dead: 0, crouch: 0, aim: 0, pitch: 0 },
   layers: [
     {
       name: 'base',
@@ -133,10 +142,22 @@ const ENEMY_GRAPH: AnimationGraphDef = {
             param: 'speed',
             points: [
               { clip: 'idle', threshold: 0 },
-              { clip: 'walk', threshold: WALK_ANIM },
-              { clip: 'run', threshold: RUN_ANIM },
+              { clip: 'walk', threshold: LOCOMOTION.walk },
+              { clip: 'run', threshold: LOCOMOTION.run },
             ],
           },
+          transitions: [{ to: 'crouch', conditions: [{ param: 'crouch', op: '==', value: 1 }], duration: 0.2 }],
+        },
+        {
+          name: 'crouch',
+          blend: {
+            param: 'speed',
+            points: [
+              { clip: 'crouch_idle', threshold: 0 },
+              { clip: 'crouch_walk', threshold: LOCOMOTION.crouchWalk },
+            ],
+          },
+          transitions: [{ to: 'locomotion', conditions: [{ param: 'crouch', op: '==', value: 0 }], duration: 0.2 }],
         },
         { name: 'hit', clip: 'hit', transitions: [{ to: 'locomotion', exitTime: 1, duration: 0.15 }] },
         { name: 'death', clip: 'death', transitions: [{ to: 'locomotion', conditions: [{ trigger: 'respawn' }], duration: 0.3 }] },
@@ -144,6 +165,27 @@ const ENEMY_GRAPH: AnimationGraphDef = {
       anyState: [
         { to: 'death', conditions: [{ trigger: 'die' }], duration: 0.1 },
         { to: 'hit', conditions: [{ trigger: 'hit' }, { param: 'dead', op: '==', value: 0 }], duration: 0.08, allowSelf: true },
+      ],
+    },
+    {
+      name: 'upper',
+      entry: 'ready',
+      additive: false,
+      mask: UPPER_BODY_MASK,
+      states: [
+        { name: 'ready', clip: 'ready', transitions: [{ to: 'aim', conditions: [{ param: 'aim', op: '==', value: 1 }], duration: 0.15 }] },
+        {
+          name: 'aim',
+          blend: {
+            param: 'pitch',
+            points: [
+              { clip: 'aim_up', threshold: -AIM_PITCH_RANGE },
+              { clip: 'aim', threshold: 0 },
+              { clip: 'aim_down', threshold: AIM_PITCH_RANGE },
+            ],
+          },
+          transitions: [{ to: 'ready', conditions: [{ param: 'aim', op: '==', value: 0 }], duration: 0.2 }],
+        },
       ],
     },
   ],
@@ -164,8 +206,13 @@ export class Enemy implements Damageable {
   private readonly controller: CharacterController;
   private readonly root: THREE.Group;
   private readonly visual: THREE.Object3D;
-  private readonly tinted: THREE.MeshStandardMaterial[] = [];
+  private readonly tinted: THREE.MeshStandardMaterial[];
+  private readonly rifle: RifleProp;
   private animated = true;
+  private upperWeight = 1;
+  private hitUntil = -1;
+  private aimPitch = 0;
+  private aiming = false;
   private readonly nav: NavAgent;
   private readonly weapon = new Weapon(ENEMY_RIFLE);
   private readonly flash: MuzzleFlash;
@@ -219,22 +266,21 @@ export class Enemy implements Damageable {
     this.visual = visual;
     visual.position.y = -OPERATOR.height / 2;
     // A darker tint so enemies read apart from the operator and the range dummies; it bloodies as health drops.
-    visual.traverse((o) => {
-      const mesh = o as THREE.Mesh;
-      if (!mesh.isMesh) return;
-      const m = (mesh.material as THREE.MeshStandardMaterial).clone();
-      m.color.setHex(BASE_TINT);
-      m.emissive.setHex(0xff2040);
-      m.emissiveIntensity = 0.12;
-      mesh.material = m;
-      this.tinted.push(m);
-    });
+    this.tinted = tintCharacter(visual, BASE_TINT, ACCENT_TINT, 0.12);
     this.root.add(visual);
     scene.add(this.root);
     renderSync.attach(entities, this.eid, this.root);
     animation.attach(this.eid, visual, model.animations, ENEMY_GRAPH, { rootMotion: { mode: 'none' } });
     labels.attach(this.eid, { kind: 'healthbar', text: spec.name, offsetY: 2.05 });
     this.flash = new MuzzleFlash(deps, ENEMY_RIFLE.muzzle.flashColor, ENEMY_RIFLE.muzzle.flashIntensity);
+    this.rifle = new RifleProp(this.root, findBone(visual, BONES.handR), new THREE.Vector3(0.26, 1.32 - OPERATOR.height / 2, 0.12), 0x33363c);
+  }
+
+  private fadeUpper(target: number, dt: number): void {
+    const k = Math.min(1, UPPER_FADE * dt);
+    this.upperWeight += (target - this.upperWeight) * k;
+    if (Math.abs(this.upperWeight - target) < 0.005) this.upperWeight = target;
+    this.deps.entities.store(Animator).layer1[this.eid] = this.upperWeight;
   }
 
   private applyTint(): void {
@@ -242,8 +288,9 @@ export class Enemy implements Damageable {
     const base = new THREE.Color(BASE_TINT);
     const blood = new THREE.Color(BLOOD_TINT);
     for (const m of this.tinted) {
-      m.color.lerpColors(base, blood, t * 0.85);
-      m.emissiveIntensity = 0.12 * (1 - t);
+      const accent = m.emissiveIntensity > 0 || m.emissive.getHex() !== 0;
+      m.color.lerpColors(accent ? m.emissive : base, blood, accent ? t * 0.5 : t * 0.85);
+      if (accent) m.emissiveIntensity = 0.12 * (1 - t);
     }
   }
 
@@ -254,7 +301,7 @@ export class Enemy implements Damageable {
     const activation = impact
       ? { velocity, impulse: { point: { x: impact.point.x, y: impact.point.y, z: impact.point.z }, direction: { x: impact.direction.x, y: impact.direction.y, z: impact.direction.z }, strength: KILL_IMPULSE } }
       : { velocity };
-    const ragdoll = ragdolls.create(this.eid, this.visual, MANNEQUIN_RAGDOLL, { blendSeconds: 0.12, activation });
+    const ragdoll = ragdolls.create(this.eid, this.visual, CHARACTER_RAGDOLL, { blendSeconds: 0.12, activation });
     if (this.animated) {
       animation.detach(this.eid);
       this.animated = false;
@@ -314,6 +361,7 @@ export class Enemy implements Damageable {
     this.health = Math.max(0, this.health - damage);
     labels.setValue(this.eid, this.health / MAX_HEALTH);
     this.applyTint();
+    this.hitUntil = now + HIT_UPPER_SECONDS;
     // Being shot is the loudest possible tell.
     this.becomeAlert(now);
     if (this.health === 0) {
@@ -396,11 +444,16 @@ export class Enemy implements Damageable {
     this.velocity.set(0, 0, 0);
     this.nav.clear();
     this.weapon.ammo = ENEMY_RIFLE.magazineSize;
+    this.hitUntil = -1;
+    this.aiming = false;
+    this.aimPitch = 0;
   }
 
   fixedUpdate(dt: number, now: number, player: OperatorView, onAlert: (enemy: Enemy) => void): void {
     if (this.dead) {
       this.flash.fixedUpdate(now);
+      // The rifle stays with the hand as the ragdoll settles.
+      this.rifle.update(0);
       return;
     }
     const { animation, entities } = this.deps;
@@ -491,6 +544,22 @@ export class Enemy implements Damageable {
     t.qy[this.eid] = Math.sin(this.facing / 2);
     t.qw[this.eid] = Math.cos(this.facing / 2);
     animation.setParam(this.eid, 'speed', this.speed);
+    animation.setParam(this.eid, 'crouch', this.inCover && !this.peeking && this.speed < 0.3 ? 1 : 0);
+    // Aim at the player while alert with a target; the pitch follows the line to their chest.
+    this.aiming = this.state === 'alert' && now - this.lastSeenAt < 1.5;
+    if (this.aiming) {
+      this.tmpA.copy(this.playerFeet);
+      this.tmpA.y += Math.min(CHEST_HEIGHT, player.colliderHeight * 0.65);
+      const dx = this.tmpA.x - this.feetPos.x;
+      const dz = this.tmpA.z - this.feetPos.z;
+      this.aimPitch = Math.atan2(-(this.tmpA.y - (this.feetPos.y + EYE_HEIGHT)), Math.hypot(dx, dz));
+    } else {
+      this.aimPitch += (0 - this.aimPitch) * Math.min(1, 4 * dt);
+    }
+    animation.setParam(this.eid, 'aim', this.aiming ? 1 : 0);
+    animation.setParam(this.eid, 'pitch', THREE.MathUtils.radToDeg(this.aimPitch));
+    this.fadeUpper(now < this.hitUntil ? 0 : 1, dt);
+    this.rifle.update(this.aimPitch);
     this.flash.fixedUpdate(now);
   }
 
@@ -701,7 +770,7 @@ export class Enemy implements Damageable {
       this.shotDir.y += Math.min(CHEST_HEIGHT, player.colliderHeight * 0.65);
       this.shotDir.sub(this.eye).normalize();
       applySpread(this.shotDir, spreadDeg, random, this.tmpA, this.tmpB);
-      this.tmpA.copy(this.eye).addScaledVector(this.shotDir, 0.6);
+      this.rifle.muzzle.getWorldPosition(this.tmpA);
       this.flash.fire(this.tmpA, this.shotDir, now);
       if (shotSound) audio.playAt(shotSound, this.eid, { spatial: { refDistance: 4, rolloff: 1, maxDistance: 80 }, volume: 0.8 });
       const hit = physics.raycast(this.eye, this.shotDir, ENEMY_RIFLE.range, { layers: ['world', 'player'], excludeEid: this.eid });
@@ -726,6 +795,7 @@ export class Enemy implements Damageable {
     this.retireRagdoll();
     if (this.animated) animation.detach(this.eid);
     for (const m of this.tinted) m.dispose();
+    this.rifle.dispose();
     if (!this.dead) {
       this.controller.detach(this.eid);
       physics.removeBody(this.eid);

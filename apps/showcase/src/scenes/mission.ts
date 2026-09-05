@@ -16,6 +16,7 @@ import {
 } from '@spark/engine';
 import { Enemy } from '../actors/Enemy';
 import { OPERATOR_MAX_HEALTH, Operator } from '../actors/Operator';
+import { CHARACTER_URL } from '../actors/rig';
 import { TargetDummy } from '../actors/TargetDummy';
 import { AWARENESS, overallState } from '../ai/Awareness';
 import type { Damageable } from '../combat/Damageable';
@@ -29,7 +30,6 @@ import { applyAtmosphere, loadStreetLevel, type MissionLevel } from '../levels/M
 import { MissionRunner } from '../mission/Objectives';
 import { createOperatorHud } from '../ui/hud';
 
-const MANNEQUIN_URL = '/models/mannequin.glb';
 /** `?freelook=1`: treat the pointer as locked without asking the browser. For headless capture and probes, where pointer lock cannot be granted. */
 const FREELOOK = new URLSearchParams(location.search).get('freelook') === '1';
 /** `?nav=1`: start with the navmesh overlay on (F4 toggles it either way). */
@@ -135,8 +135,8 @@ export const missionScene: SceneDefinition = {
     }
 
     // ---- actors ----------------------------------------------------------------
-    const model = await assets.loadModel(MANNEQUIN_URL);
-    bag.add(() => assets.release(MANNEQUIN_URL));
+    const model = await assets.loadModel(CHARACTER_URL);
+    bag.add(() => assets.release(CHARACTER_URL));
     const effects = { entities, vfx, scene };
     const impacts = new Impacts({ ...effects, audio, random: random.fork(), worldMeshes: level.meshes, hitSound });
     bag.add(impacts);
@@ -329,7 +329,7 @@ export const missionScene: SceneDefinition = {
     return {
       scene,
       camera: camera.camera,
-      update(_dt) {
+      update(dt) {
         if (!freelook && input.pointerLockUnavailable) {
           freelook = true;
           logger.warn(`mission: pointer lock unavailable here (${input.pointerLockError}); using free look`);
@@ -339,7 +339,7 @@ export const missionScene: SceneDefinition = {
           const d = input.pointerDelta;
           camera.look(d.x, d.y);
         }
-        operator.update(input, camera);
+        operator.update(input, camera, now, dt);
         if (qaAim) operator.aiming = true;
         if (input.wasPressed('F4')) navLines.visible = !navLines.visible;
         if (operator.dead && input.wasPressed('Enter')) retry();
@@ -347,6 +347,7 @@ export const missionScene: SceneDefinition = {
         // The click that takes control must not also fire.
         gunplay.update((locked && input.isButtonDown(0)) || autoFire > 0, (locked && input.wasButtonPressed(0)) || autoFire > 0, input.wasPressed('KeyR') || (autoFire > 0 && gunplay.weapon.ammo === 0));
         const weapon = gunplay.weapon;
+        operator.reloading = weapon.reloading;
         hud.setLocked(locked, freelook && !FREELOOK ? 'pointer lock refused by this view: free look, cursor stays visible. Open http://localhost:5174 in a browser tab for the real thing' : null);
         hud.setAiming(operator.aiming);
         const viewportHeight = ctx.config.container.clientHeight || 720;

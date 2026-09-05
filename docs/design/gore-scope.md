@@ -14,14 +14,14 @@ The measured alley scene on the high preset at 1080p uses about 3.3 ms of the 16
 - Blood decals on world surfaces from the Milestone 7 decal system, with a pool decal that grows over a few seconds under a body.
 - Wound marks on characters through a per-character wound mask written in UV space on hit (a small render-to-texture, cheap and persists on the corpse). This is the "ragdoll wounds" part: wounds stay where the bullets landed after the body drops.
 - Caps: decal budget per level, one growing pool per corpse, wound mask at 256 by 256.
-- Status 2026-09-04: sprays (GPU `blood` preset), splatter and drip decals, and growing corpse pools are in the showcase (`apps/showcase/src/combat/gore.ts`). Wound masks wait for character art with a UV layout; the placeholder mannequin tints toward blood as health drops instead.
+- Status 2026-09-04: sprays (GPU `blood` preset), splatter and drip decals, and growing corpse pools are in the showcase (`apps/showcase/src/combat/gore.ts`). Wound masks wait for character art with a UV layout; the Quaternius mannequin (2026-09-05, `apps/showcase/src/actors/rig.ts`) has UVs but no textures, so it still tints toward blood as health drops.
 
 ### Tier 2: ragdoll and hit reactions (committed, Milestone 6)
 
 - Death ragdoll from the animated pose, driven by Rapier articulated bodies, with a short blend from animation to physics so the body carries momentum. This moves "ragdoll blending" from the kickoff's Later list into Milestone 6.
 - Additive hit reactions by hit zone (head, torso, legs, matching Task Unit's zones) while alive.
 - Caps: at most 6 simulating ragdolls, then the oldest settles into a static corpse pose. Ragdolls sleep aggressively.
-- Status 2026-09-04: the engine has physics joints and a `RagdollWorld` (capsules per bone, spherical joints, momentum carried in as velocity plus an impulse at the hit, a 0.12 s blend from the animated pose); enemies ragdoll on death in the showcase, capped at 6 and 12 s. Hit reactions still use the mannequin's `hit` clip rather than an additive layer.
+- Status 2026-09-04: the engine has physics joints and a `RagdollWorld` (capsules per bone, spherical joints, momentum carried in as velocity plus an impulse at the hit, a 0.12 s blend from the animated pose); enemies ragdoll on death in the showcase, capped at 6 and 12 s. 2026-09-05: the ragdoll follows the Rigify skeleton of the real character (14 capsules, `CHARACTER_RAGDOLL`). Hit reactions use the library's `Hit_Chest` clip on the base layer with the upper-body override dropped for 0.35 s; an additive flinch is still the plan.
 
 ### Tier 3: dismemberment (stretch, decided after Milestone 6 lands)
 

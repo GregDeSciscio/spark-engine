@@ -28,6 +28,7 @@ export {
 export { rootMotionDelta, rotateByQuaternion, sampleVec3, type Vec3Track, type Vec3Tuple } from './RootMotion';
 export {
   AnimationWorld,
+  overrideBoost,
   Animator,
   type AnimationEvent,
   type AnimationTransition,

@@ -16,6 +16,8 @@ What building the customer game's first slice (ADR-005, `apps/showcase`) taught 
 | Unknown `spark.type` values are the game's vocabulary, not a loader problem. | The loader reports them at debug level and passes them through as `unknown` descriptors. |
 | Over-the-shoulder aiming needs two rays: what the reticle is over, then the shot from the shoulder toward it, or cover the camera sees past eats the round with no feedback. | `ShoulderCamera.directionFor` and the screen-projection helpers; the two-ray scheme itself stays game code. |
 | Recoil that kicks and returns the whole view fights the player's own correction. | The reticle carries most of the kick on screen and bullets follow it; the camera follows a fraction. Recoil offsets on `ShoulderCamera` support this split. |
+| A weapon-ready or aim pose has to sit on the upper body over any locomotion. Additive layers cannot do it (a pose minus its own first frame is nothing), and three's mixer averages normal-blend actions by weight, so a masked pose at weight 1 only got half the arms. | Override layers: `additive: false` on a masked layer makes its clips replace the base on those bones by the layer weight (`overrideBoost` maps the share to a mixer weight; a full override leaves 0.1 percent of the base). |
+| Rigify bone names carry dots (`DEF-spine.001`, `DEF-hand.R`) and three's glTF loader strips them, so every bone name in a config pointed at nothing while the clips still played. | Character builds rename joints to dot-free names (`build-character.mjs`); `RagdollWorld.create` already throws on a missing bone, which is how this surfaced. |
 
 ## Game code that turned out to be engine material
 
@@ -35,3 +37,5 @@ Kept as game code on purpose: the awareness ladder and its tuning, weapons and d
 - A camera pivot can sit inside geometry; rays from it want Rapier's `solid: false`.
 - Detour's random-point-around samples whole polygons the circle touches, so the radius is a search size, not a bound.
 - Levels bake their navmesh offline; the blockout bakes at load only because it is procedural.
+- A held weapon follows the hand bone for position and the aim for orientation. Inheriting the bone's twist needs two-hand IK to look right; the view direction is what the player expects the barrel to follow anyway.
+- Drop an override layer's weight for a beat when a base-layer reaction (the chest flinch) has to show through, and while sprinting so the arms pump.

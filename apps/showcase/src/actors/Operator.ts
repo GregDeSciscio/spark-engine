@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import {
+  Animator,
   CharacterController,
   Character,
   Transform,
@@ -13,7 +14,9 @@ import {
   type RenderSync,
   type ShoulderCamera,
 } from '@spark/engine';
-import type { HitZone } from '../combat/weapons';
+import { RIFLE_BASELINE, type HitZone } from '../combat/weapons';
+import { RifleProp } from './RifleProp';
+import { AIM_PITCH_RANGE, BONES, LOCOMOTION, UPPER_BODY_MASK, findBone, tintCharacter } from './rig';
 
 /**
  * The player character: a kinematic capsule on the engine's character
@@ -44,12 +47,23 @@ export const OPERATOR = {
 } as const;
 
 const UP = new THREE.Vector3(0, 1, 0);
-const WALK_ANIM = 1.2;
-const RUN_ANIM = 4.0;
+/** How fast the upper-body layer fades in and out (per second). */
+const UPPER_FADE = 10;
+/** The chest flinch lives on the base layer; drop the upper override this long so it shows. */
+const HIT_UPPER_SECONDS = 0.35;
+const RELOAD_CLIP_SECONDS = 1.67;
+/** Operator colours: near-black kit, cyan joints that glow a little. */
+const OPERATOR_MAIN = 0x1f2228;
+const OPERATOR_ACCENT = 0x19c8d8;
 
-/** idle/walk/run on horizontal speed; hit/death by trigger. Root motion off: the controller owns the transform. */
+/**
+ * Base layer: stand / crouch locomotion on horizontal speed, an airborne
+ * loop, hit and death by trigger. Layer 1 overrides the upper body with the
+ * weapon-ready pose, or the aim poses blended on view pitch while aiming.
+ * Root motion off: the controller owns the transform.
+ */
 const OPERATOR_GRAPH: AnimationGraphDef = {
-  params: { speed: 0, dead: 0 },
+  params: { speed: 0, dead: 0, crouch: 0, air: 0, aim: 0, pitch: 0, reload: 0 },
   layers: [
     {
       name: 'base',
@@ -61,11 +75,28 @@ const OPERATOR_GRAPH: AnimationGraphDef = {
             param: 'speed',
             points: [
               { clip: 'idle', threshold: 0 },
-              { clip: 'walk', threshold: WALK_ANIM },
-              { clip: 'run', threshold: RUN_ANIM },
+              { clip: 'walk', threshold: LOCOMOTION.walk },
+              { clip: 'run', threshold: LOCOMOTION.run },
+              { clip: 'sprint', threshold: LOCOMOTION.sprint },
             ],
           },
+          transitions: [
+            { to: 'crouch', conditions: [{ param: 'crouch', op: '==', value: 1 }], duration: 0.2 },
+            { to: 'air', conditions: [{ param: 'air', op: '==', value: 1 }], duration: 0.1 },
+          ],
         },
+        {
+          name: 'crouch',
+          blend: {
+            param: 'speed',
+            points: [
+              { clip: 'crouch_idle', threshold: 0 },
+              { clip: 'crouch_walk', threshold: LOCOMOTION.crouchWalk },
+            ],
+          },
+          transitions: [{ to: 'locomotion', conditions: [{ param: 'crouch', op: '==', value: 0 }], duration: 0.2 }],
+        },
+        { name: 'air', clip: 'jump', transitions: [{ to: 'locomotion', conditions: [{ param: 'air', op: '==', value: 0 }], duration: 0.15 }] },
         { name: 'hit', clip: 'hit', transitions: [{ to: 'locomotion', exitTime: 1, duration: 0.15 }] },
         { name: 'death', clip: 'death', transitions: [{ to: 'locomotion', conditions: [{ trigger: 'respawn' }], duration: 0.3 }] },
       ],
@@ -73,6 +104,30 @@ const OPERATOR_GRAPH: AnimationGraphDef = {
         { to: 'death', conditions: [{ trigger: 'die' }], duration: 0.1 },
         { to: 'hit', conditions: [{ trigger: 'hit' }, { param: 'dead', op: '==', value: 0 }], duration: 0.08, allowSelf: true },
       ],
+    },
+    {
+      name: 'upper',
+      entry: 'ready',
+      additive: false,
+      mask: UPPER_BODY_MASK,
+      states: [
+        { name: 'ready', clip: 'ready', transitions: [{ to: 'aim', conditions: [{ param: 'aim', op: '==', value: 1 }], duration: 0.12 }] },
+        {
+          name: 'aim',
+          blend: {
+            param: 'pitch',
+            points: [
+              { clip: 'aim_up', threshold: -AIM_PITCH_RANGE },
+              { clip: 'aim', threshold: 0 },
+              { clip: 'aim_down', threshold: AIM_PITCH_RANGE },
+            ],
+          },
+          transitions: [{ to: 'ready', conditions: [{ param: 'aim', op: '==', value: 0 }], duration: 0.15 }],
+        },
+        // The clip is 1.67 s; slowed to fill the rifle's 2.5 s reload (combat/weapons.ts).
+        { name: 'reload', clip: 'reload', speed: RELOAD_CLIP_SECONDS / RIFLE_BASELINE.reloadTime, transitions: [{ to: 'ready', conditions: [{ param: 'reload', op: '==', value: 0 }], duration: 0.15 }] },
+      ],
+      anyState: [{ to: 'reload', conditions: [{ param: 'reload', op: '==', value: 1 }], duration: 0.1 }],
     },
   ],
 };
@@ -95,6 +150,8 @@ export class Operator {
   stance: Stance = 'stand';
   aiming = false;
   sprinting = false;
+  /** Set by the scene from the weapon each frame; drives the reload clip on the upper body. */
+  reloading = false;
   health = OPERATOR_MAX_HEALTH;
   dead = false;
   /** 0..1 how lit the operator is this tick, from the lighting query. Written by the scene. */
@@ -112,9 +169,13 @@ export class Operator {
   private readonly tmpR = new THREE.Vector3();
   private facing = 0;
   private jumpQueued = false;
-  private readonly rifleParts: readonly { dispose(): void }[];
-  private readonly rifle: THREE.Group;
+  private readonly rifle: RifleProp;
   private readonly visual: THREE.Object3D;
+  private readonly materials: readonly THREE.Material[];
+  /** Current weight of the upper-body layer, chased toward its target every frame. */
+  private upperWeight = 1;
+  private hitUntil = -1;
+  private pitch = 0;
   /** Height of the current collider; the entity transform sits at half of it. */
   private bodyHeight: number = OPERATOR.height;
   private readonly feetScratch = new THREE.Vector3();
@@ -133,26 +194,17 @@ export class Operator {
     this.root = new THREE.Group();
     const visual = model.instantiate({ castShadow: true, receiveShadow: true });
     this.visual = visual;
+    this.materials = tintCharacter(visual, OPERATOR_MAIN, OPERATOR_ACCENT, 0.35);
     visual.position.y = -this.bodyHeight / 2;
     this.root.add(visual);
     scene.add(this.root);
     renderSync.attach(entities, this.eid, this.root);
     animation.attach(this.eid, visual, model.animations, OPERATOR_GRAPH, { rootMotion: { mode: 'none' } });
 
-    // A placeholder rifle at the right shoulder that points where the camera looks
-    // (the body already faces the camera yaw; pitch is applied per frame), until a
-    // real weapon model and an aim pose with arm IK exist.
-    this.rifle = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.06, 0.62), new THREE.MeshStandardMaterial({ color: 0x7a808c, roughness: 0.45, metalness: 0.7 }));
-    body.position.z = 0.34;
-    body.castShadow = true;
-    this.rifle.add(body);
-    this.rifleParts = [body.geometry, body.material as THREE.Material];
-    this.muzzle = new THREE.Object3D();
-    this.muzzle.position.z = 0.68;
-    this.rifle.add(this.muzzle);
-    this.rifle.position.set(0.26, 1.32 - this.bodyHeight / 2, 0.12);
-    this.root.add(this.rifle);
+    // The rifle rides in the right hand and points where the camera looks (the
+    // body already faces the camera yaw; pitch is applied per frame).
+    this.rifle = new RifleProp(this.root, findBone(visual, BONES.handR), new THREE.Vector3(0.26, 1.32 - this.bodyHeight / 2, 0.12));
+    this.muzzle = this.rifle.muzzle;
   }
 
   /** Capsule dimensions for a stance height. Prone is short enough to need a thinner radius. */
@@ -235,6 +287,7 @@ export class Operator {
     if (this.dead) return false;
     this.health = Math.max(0, this.health - damage);
     this.lastHitAt = now;
+    this.hitUntil = now + HIT_UPPER_SECONDS;
     if (this.health === 0) {
       this.dead = true;
       this.aiming = false;
@@ -263,6 +316,7 @@ export class Operator {
     this.facing = yaw + Math.PI;
     this.health = OPERATOR_MAX_HEALTH;
     this.stance = 'stand';
+    this.hitUntil = -1;
     if (this.dead) {
       this.dead = false;
       animation.setParam(this.eid, 'dead', 0);
@@ -271,11 +325,13 @@ export class Operator {
   }
 
   /** Read this frame's input. Pressed-edge queries are per frame, so this must not run inside the fixed step. */
-  update(input: Input, camera: ShoulderCamera): void {
+  update(input: Input, camera: ShoulderCamera, now: number, dt: number): void {
     if (this.dead) {
       this.wish.set(0, 0, 0);
       this.sprinting = false;
       this.aiming = false;
+      this.fadeUpper(0, dt);
+      this.rifle.update(0);
       return;
     }
     if (input.wasPressed('KeyC')) this.setStance(this.stance === 'crouch' ? 'stand' : 'crouch');
@@ -293,8 +349,17 @@ export class Operator {
     // Face where the camera looks. The mannequin's forward is +Z at yaw 0, the camera's is -Z.
     this.facing = camera.getYaw() + Math.PI;
     // The rifle's +Z is the body's forward; tilt it to the view pitch (positive looks down).
-    this.rifle.rotation.x = camera.effectivePitch();
-    this.rifle.position.y = this.height * 0.73 - this.bodyHeight / 2;
+    this.pitch = camera.effectivePitch();
+    this.rifle.update(this.pitch);
+    // The upper-body layer stands down while sprinting (arms pump) and for a beat after a hit (the flinch shows).
+    this.fadeUpper(this.sprinting || now < this.hitUntil ? 0 : 1, dt);
+  }
+
+  private fadeUpper(target: number, dt: number): void {
+    const k = Math.min(1, UPPER_FADE * dt);
+    this.upperWeight += (target - this.upperWeight) * k;
+    if (Math.abs(this.upperWeight - target) < 0.005) this.upperWeight = target;
+    this.deps.entities.store(Animator).layer1[this.eid] = this.upperWeight;
   }
 
   fixedUpdate(dt: number): void {
@@ -328,6 +393,11 @@ export class Operator {
     t.qw[this.eid] = Math.cos(this.facing / 2);
 
     animation.setParam(this.eid, 'speed', this.speed);
+    animation.setParam(this.eid, 'crouch', this.stance === 'stand' ? 0 : 1);
+    animation.setParam(this.eid, 'air', this.grounded ? 0 : 1);
+    animation.setParam(this.eid, 'aim', this.aiming ? 1 : 0);
+    animation.setParam(this.eid, 'reload', this.reloading ? 1 : 0);
+    animation.setParam(this.eid, 'pitch', THREE.MathUtils.radToDeg(this.pitch));
   }
 
   dispose(): void {
@@ -335,7 +405,8 @@ export class Operator {
     animation.detach(this.eid);
     this.controller.detach(this.eid);
     this.controller.dispose();
-    for (const part of this.rifleParts) part.dispose();
+    this.rifle.dispose();
+    for (const m of this.materials) m.dispose();
     scene.remove(this.root);
     entities.destroy(this.eid);
   }
