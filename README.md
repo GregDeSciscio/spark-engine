@@ -15,7 +15,7 @@ pnpm install
 pnpm dev
 ```
 
-Then open **http://localhost:5173** and pick a scene from the menu. The featured card is **the showcase**, the customer game in progress (ADR-005); it runs as its own app, so start it alongside with `pnpm dev:showcase`. Of the engine scenes, start with **Rainy Alley**.
+Then open **http://localhost:5173** and pick a scene from the menu. The featured card is **the showcase**, a demo built with the engine; it runs as its own app, so start it alongside with `pnpm dev:showcase`. Of the engine scenes, start with **Rainy Alley**.
 
 The first load of a scene spends a few seconds on "Compiling shaders"; that's expected and only happens once per scene per session. If your machine struggles, drop the quality preset in the menu to `medium` or `low`. If it flies, try `cinematic`.
 

@@ -27,10 +27,8 @@ export interface SceneEntry {
   readonly href?: string;
   /** Display name for the menu card. */
   readonly title: string;
-  /** One sentence on what the scene demonstrates. */
+  /** One short line on what the card shows. Controls live in the scene and the README, not here. */
   readonly blurb: string;
-  /** Controls line, or null for scenes that take no input. */
-  readonly controls: string | null;
   /** The scene to lead with. Exactly one entry sets this. */
   readonly featured?: boolean;
 }
@@ -45,89 +43,20 @@ const entries: readonly SceneEntry[] = [
     definition: null,
     key: 'showcase',
     href: SHOWCASE_URL,
-    title: 'The Showcase: a night on the street',
-    blurb:
-      'The customer game in progress: a lone operator on a rain-soaked neon street, a retargeted CC0 character with an aim layer and ragdolls, hostiles on a Recast navmesh with an awareness ladder and cover, hitscan gunplay with gore, objectives with checkpoints, and a generated soundscape (ElevenLabs) of rifles, impacts, footsteps, barks, neon and rain.',
-    controls: 'Click to lock the mouse · WASD move · Shift sprint · right mouse aim · left mouse fire · R reload · C crouch · X prone · F interact · Enter retry',
+    title: 'The Showcase',
+    blurb: 'A demo built with the engine: one operator on a neon street in the rain, hostiles, gunplay, a generated soundscape.',
     featured: true,
   },
-  {
-    definition: alleyScene,
-    key: alleyScene.name,
-    title: 'Rainy Alley',
-    blurb:
-      'Procedural brick and wet asphalt with puddle ripples, projected decals, volumetric fog and godrays, screen-space reflections, GPU rain, and an animated hero.',
-    controls: 'WASD move · Shift walk · Space attack — or leave it alone and the hero walks itself',
-  },
-  {
-    definition: hudScene,
-    key: hudScene.name,
-    title: 'Audio & UI',
-    blurb:
-      'Health and stamina HUD, floating name plates and health bars, damage numbers, footsteps, spatial neon buzz, a rain bed, and music that follows the player.',
-    controls: 'WASD move · Shift walk · Space attack · Esc menu · drag to orbit',
-  },
-  {
-    definition: streamingScene,
-    key: streamingScene.name,
-    title: 'Streaming District',
-    blurb:
-      'A 960 m procedural city streamed in 24 m chunks around a flying camera, with LOD swaps, frustum culling, and a loaded level at the origin plaza.',
-    controls: 'WASD steer (A/D turn, W/S throttle) · Q/E altitude · F3 physics wireframe — hands off flies itself',
-  },
-  {
-    definition: physicsScene,
-    key: physicsScene.name,
-    title: 'Physics Arena',
-    blurb:
-      'Rapier at the fixed step: 300 dynamic boxes and spheres in a seeded pile, a ramp, a sensor volume, a character controller, and pointer hover highlighting.',
-    controls: 'WASD move · Space jump · hover to highlight · F3 physics wireframe',
-  },
-  {
-    definition: vfxScene,
-    key: vfxScene.name,
-    title: 'GPU Particles',
-    blurb:
-      'A dark yard with fire embers, steam vents, seeded spark bursts, and a 100k-streak rain volume. Live particle counts on screen.',
-    controls: 'Space muzzle flash',
-  },
-  {
-    definition: animationScene,
-    key: animationScene.name,
-    title: 'Skeletal Animation',
-    blurb:
-      'An idle/walk/run blend tree with root motion, an additive upper-body attack layered over locomotion, and a crowd of sixty mannequins.',
-    controls: 'WASD move · Shift walk · Space attack · H hit · K die · R respawn · drag to orbit',
-  },
-  {
-    definition: lightsScene,
-    key: lightsScene.name,
-    title: 'Clustered Lights',
-    blurb:
-      'Benchmark B: 256 moving coloured point lights over a field of 1,600 instanced props under a shadowed sun, culled per screen cluster on the GPU. ?lights=N to change the count.',
-    controls: null,
-  },
-  {
-    definition: entitiesScene,
-    key: entitiesScene.name,
-    title: 'Entities',
-    blurb: 'A few thousand ECS entities orbiting on fixed-step systems, drawn as a single instanced call.',
-    controls: null,
-  },
-  {
-    definition: assetsScene,
-    key: assetsScene.name,
-    title: 'Assets',
-    blurb: 'GLB loading through the asset pipeline: 200 crates instantiated from one cached template.',
-    controls: null,
-  },
-  {
-    definition: bootstrapScene,
-    key: bootstrapScene.name,
-    title: 'Bootstrap',
-    blurb: 'The smoke test — a PBR sphere grid sweeping roughness against metalness under one shadowed light.',
-    controls: null,
-  },
+  { definition: alleyScene, key: alleyScene.name, title: 'Rainy Alley', blurb: 'Wet brick and asphalt, puddle ripples, volumetrics, screen-space reflections, GPU rain.' },
+  { definition: hudScene, key: hudScene.name, title: 'Audio & UI', blurb: 'HUD, name plates, damage numbers, spatial audio and adaptive music.' },
+  { definition: streamingScene, key: streamingScene.name, title: 'Streaming District', blurb: 'A 960 m city streamed in chunks around a flying camera, with LOD and culling.' },
+  { definition: physicsScene, key: physicsScene.name, title: 'Physics Arena', blurb: '300 rigid bodies, a ramp, a sensor volume and a character controller.' },
+  { definition: vfxScene, key: vfxScene.name, title: 'GPU Particles', blurb: 'Embers, steam, spark bursts and a 100k-streak rain volume.' },
+  { definition: animationScene, key: animationScene.name, title: 'Skeletal Animation', blurb: 'Blend trees, root motion, an additive attack layer, a crowd of sixty.' },
+  { definition: lightsScene, key: lightsScene.name, title: 'Clustered Lights', blurb: '256 moving point lights over 1,600 instanced props, clustered on the GPU.' },
+  { definition: entitiesScene, key: entitiesScene.name, title: 'Entities', blurb: 'Thousands of ECS entities in one instanced draw.' },
+  { definition: assetsScene, key: assetsScene.name, title: 'Assets', blurb: 'GLB loading through the asset pipeline.' },
+  { definition: bootstrapScene, key: bootstrapScene.name, title: 'Bootstrap', blurb: 'The smoke test: a PBR sphere grid.' },
 ];
 
 const sceneEntries = entries.filter((entry): entry is SceneEntry & { definition: SceneDefinition } => entry.definition !== null);

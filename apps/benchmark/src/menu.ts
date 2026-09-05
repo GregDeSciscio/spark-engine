@@ -1,4 +1,4 @@
-import { QUALITY_PRESETS, type QualityPreset } from '@spark/engine';
+import { QUALITY_PRESETS } from '@spark/engine';
 import { SCENE_ENTRIES } from './scenes/registry';
 
 /**
@@ -9,18 +9,10 @@ import { SCENE_ENTRIES } from './scenes/registry';
  */
 
 const BACKENDS = [
-  { value: 'auto', label: 'Auto', hint: 'WebGPU, falling back to WebGL2' },
-  { value: 'webgpu', label: 'WebGPU', hint: 'force the modern backend' },
-  { value: 'webgl', label: 'WebGL2', hint: 'force the fallback' },
+  { value: 'auto', label: 'Auto' },
+  { value: 'webgpu', label: 'WebGPU' },
+  { value: 'webgl', label: 'WebGL2' },
 ] as const;
-
-const PRESET_HINTS: Record<QualityPreset, string> = {
-  low: 'no shadows or post',
-  medium: 'shadows, light post',
-  high: 'the default',
-  ultra: 'everything on',
-  cinematic: 'ultra plus depth of field',
-};
 
 const CSS = `
 .menu { position: absolute; inset: 0; overflow-y: auto; background: #05060a;
@@ -53,10 +45,9 @@ const CSS = `
 .menu .card.featured { grid-column: 1 / -1; background: linear-gradient(160deg, #2a1330 0%, #131a2e 45%, #0a0d15 80%);
   border-color: #4a2f5e; }
 .menu .card.featured:hover { border-color: #7a4f8f; }
-.menu .card .app-note { color: #6f7b96; font-size: 12px; }
 @media (min-width: 760px) {
   .menu .card.featured { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr);
-    grid-template-rows: repeat(4, auto); align-content: center; column-gap: 20px; padding: 0 20px 0 0; }
+    grid-template-rows: repeat(2, auto); align-content: center; column-gap: 20px; padding: 0 20px 0 0; }
   .menu .card.featured > :not(.thumb) { grid-column: 2; margin-left: 0; margin-right: 0; }
   .menu .card.featured .thumb { grid-row: 1 / -1; height: 100%; border-bottom: none;
     border-right: 1px solid #2c3757; }
@@ -69,7 +60,6 @@ const CSS = `
   font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #a8c0ff;
   background: #1b2440; border: 1px solid #2f3d63; vertical-align: 2px; }
 .menu .card p { margin: 0; color: #9aa4bd; }
-.menu .card .controls { color: #6f7b96; font-size: 12px; }
 .menu footer { margin-top: 28px; color: #6f7b96; font-size: 12px; }
 .menu a { color: #8fa6ff; }
 @media (max-width: 640px) { .menu { padding: 28px 18px 48px; } }
@@ -84,12 +74,12 @@ function field(label: string, select: HTMLSelectElement): HTMLElement {
   return wrap;
 }
 
-function selector(options: readonly { value: string; label: string; hint?: string }[], initial: string): HTMLSelectElement {
+function selector(options: readonly { value: string; label: string }[], initial: string): HTMLSelectElement {
   const select = document.createElement('select');
   for (const option of options) {
     const el = document.createElement('option');
     el.value = option.value;
-    el.textContent = option.hint ? `${option.label} — ${option.hint}` : option.label;
+    el.textContent = option.label;
     select.append(el);
   }
   select.value = initial;
@@ -112,8 +102,7 @@ export function renderMenu(container: HTMLElement): () => void {
   title.textContent = 'Spark Engine';
   const tagline = document.createElement('p');
   tagline.className = 'tagline';
-  tagline.textContent =
-    'A WebGPU-first browser engine on Three.js. Pick a scene — everything you see is procedural or built from four small placeholder models.';
+  tagline.textContent = 'A WebGPU-first browser engine on Three.js.';
   inner.append(title, tagline);
 
   if (typeof navigator !== 'undefined' && !('gpu' in navigator)) {
@@ -125,7 +114,7 @@ export function renderMenu(container: HTMLElement): () => void {
   }
 
   const presetSelect = selector(
-    QUALITY_PRESETS.map((p) => ({ value: p, label: p, hint: PRESET_HINTS[p] })),
+    QUALITY_PRESETS.map((p) => ({ value: p, label: p })),
     'high',
   );
   const backendSelect = selector(BACKENDS, 'auto');
@@ -170,17 +159,7 @@ export function renderMenu(container: HTMLElement): () => void {
     const blurb = document.createElement('p');
     blurb.textContent = entry.blurb;
 
-    const controls = document.createElement('p');
-    controls.className = 'controls';
-    controls.textContent = entry.controls ?? 'No controls — sit back and watch';
-
-    card.append(heading, blurb, controls);
-    if (entry.href) {
-      const note = document.createElement('p');
-      note.className = 'app-note';
-      note.textContent = import.meta.env.DEV ? 'Opens the showcase app: run pnpm dev:showcase alongside this server.' : 'Opens the showcase app.';
-      card.append(note);
-    }
+    card.append(heading, blurb);
     const definition = entry.definition;
     if (definition) {
       card.addEventListener('click', () => {
@@ -197,8 +176,7 @@ export function renderMenu(container: HTMLElement): () => void {
   inner.append(grid);
 
   const footer = document.createElement('footer');
-  footer.textContent =
-    'The stats readout is always on. F2 opens the engine inspector. Every option here is also a URL parameter — see the README.';
+  footer.textContent = 'F2 opens the inspector. Every option is also a URL parameter.';
   inner.append(footer);
 
   container.append(root);
