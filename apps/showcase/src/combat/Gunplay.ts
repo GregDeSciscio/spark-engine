@@ -3,6 +3,7 @@ import { DisposeBag, type AudioSystem, type Entity, type PhysicsWorld, type Rand
 import type { Operator } from '../actors/Operator';
 import type { Damageable } from './Damageable';
 import { MuzzleFlash, type EffectsDeps, type Impacts } from './effects';
+import type { Gore } from './gore';
 import { Weapon } from './Weapon';
 import { ZONE_MULTIPLIER, applySpread, damageAt, hitZoneAt, type WeaponDefinition } from './weapons';
 
@@ -24,6 +25,7 @@ export interface GunplayDeps extends EffectsDeps {
   readonly operator: Operator;
   readonly targets: readonly Damageable[];
   readonly impacts: Impacts;
+  readonly gore: Gore;
   /** Defined gunshot sound, or null to stay silent. */
   readonly shotSound: string | null;
   /** Fired after every shot with the muzzle position and how far the report carries, world units. */
@@ -98,7 +100,7 @@ export class Gunplay {
   }
 
   private fire(spreadDeg: number): void {
-    const { physics, audio, labels, camera, operator, random, impacts, shotSound, onShot } = this.deps;
+    const { physics, audio, labels, camera, operator, random, impacts, gore, shotSound, onShot } = this.deps;
     const def = this.weapon.def;
     this.stats.shots += 1;
 
@@ -121,7 +123,8 @@ export class Gunplay {
       if (target.dead) return;
       const zone = hitZoneAt(target.heightFraction(this.hitPoint.y));
       const damage = Math.max(1, Math.round(damageAt(def, hit.distance) * ZONE_MULTIPLIER[zone]));
-      const killed = target.hit(zone, damage, this.now);
+      gore.characterHit(this.hitPoint, this.direction, zone === 'head');
+      const killed = target.hit(zone, damage, this.now, { point: this.hitPoint, direction: this.direction });
       this.stats.hits += 1;
       if (killed) this.stats.kills += 1;
       labels.popup(target.eid, zone === 'head' ? `-${damage} HEAD` : `-${damage}`, {

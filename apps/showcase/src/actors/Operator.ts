@@ -96,6 +96,8 @@ export class Operator {
   sprinting = false;
   health = OPERATOR_MAX_HEALTH;
   dead = false;
+  /** 0..1 how lit the operator is this tick, from the lighting query. Written by the scene. */
+  lit = 1;
   /** Set when damage lands this tick, cleared by whoever reads it (the HUD flash). */
   lastHitAt = -100;
 

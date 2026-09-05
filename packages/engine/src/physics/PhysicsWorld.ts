@@ -69,6 +69,12 @@ export interface PhysicsPair {
   b: Entity;
 }
 
+/** Anchors are in each body's local frame. */
+export type JointDesc =
+  | { kind: 'spherical'; anchorA: Vec3Like; anchorB: Vec3Like }
+  | { kind: 'revolute'; anchorA: Vec3Like; anchorB: Vec3Like; axis: Vec3Like }
+  | { kind: 'fixed'; anchorA: Vec3Like; anchorB: Vec3Like };
+
 export interface PhysicsEvents extends Record<string, unknown> {
   /** A sensor and another collider started overlapping. `a` is the sensor. */
   triggerEnter: PhysicsPair;
@@ -177,6 +183,7 @@ export class PhysicsWorld implements Disposable {
   readonly raw: RAPIER.World;
 
   private readonly bodies: SideTable<RAPIER.RigidBody>;
+  private readonly joints = new Map<number, RAPIER.ImpulseJoint>();
   private readonly colliders: SideTable<RAPIER.Collider>;
   private readonly colliderToEid = new Map<number, Entity>();
   private readonly activePairs = new Map<number, ActivePair>();
@@ -298,6 +305,44 @@ export class PhysicsWorld implements Disposable {
     this.colliderToEid.set(collider.handle, eid);
   }
 
+  /**
+   * Connect two bodies with an impulse joint. Returns a handle for
+   * `removeJoint`; joints also go away with either body.
+   */
+  addJoint(a: Entity, b: Entity, desc: JointDesc): number {
+    this.assertLive();
+    const bodyA = this.bodies.get(a);
+    const bodyB = this.bodies.get(b);
+    if (!bodyA || !bodyB) throw new Error(`PhysicsWorld.addJoint: entities ${a} and ${b} both need bodies`);
+    let data: RAPIER.JointData;
+    switch (desc.kind) {
+      case 'spherical':
+        data = RAPIER.JointData.spherical(desc.anchorA, desc.anchorB);
+        break;
+      case 'revolute':
+        data = RAPIER.JointData.revolute(desc.anchorA, desc.anchorB, desc.axis);
+        break;
+      case 'fixed':
+        data = RAPIER.JointData.fixed(desc.anchorA, _identity, desc.anchorB, _identity);
+        break;
+    }
+    const joint = this.raw.createImpulseJoint(data, bodyA, bodyB, true);
+    this.joints.set(joint.handle, joint);
+    return joint.handle;
+  }
+
+  removeJoint(handle: number): boolean {
+    const joint = this.joints.get(handle);
+    if (!joint) return false;
+    this.joints.delete(handle);
+    if (!this.disposed) this.raw.removeImpulseJoint(joint, true);
+    return true;
+  }
+
+  get jointCount(): number {
+    return this.joints.size;
+  }
+
   /** Remove the body and collider from the entity. The entity itself survives. */
   removeBody(eid: Entity): void {
     if (this.disposed) return;
@@ -316,6 +361,10 @@ export class PhysicsWorld implements Disposable {
     }
     const collider = this.colliders.get(eid);
     if (collider) this.colliderToEid.delete(collider.handle);
+    // Rapier drops the joints with the body; forget their handles too.
+    for (const [handle, joint] of this.joints) {
+      if (joint.body1().handle === body.handle || joint.body2().handle === body.handle) this.joints.delete(handle);
+    }
     if (!this.disposed) this.raw.removeRigidBody(body);
   }
 

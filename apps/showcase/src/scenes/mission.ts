@@ -1,12 +1,13 @@
 import * as THREE from 'three/webgpu';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { DisposeBag, RenderSync, ShoulderCamera, initNavigation, renderAllPlaceholders, type SceneDefinition, type SceneInstance } from '@spark/engine';
+import { DisposeBag, RagdollWorld, RenderSync, ShoulderCamera, initNavigation, litness, renderAllPlaceholders, type SceneDefinition, type SceneInstance } from '@spark/engine';
 import { Enemy } from '../actors/Enemy';
 import { OPERATOR_MAX_HEALTH, Operator } from '../actors/Operator';
 import { TargetDummy } from '../actors/TargetDummy';
 import { AWARENESS, overallState } from '../ai/Awareness';
 import type { Damageable } from '../combat/Damageable';
 import { Impacts } from '../combat/effects';
+import { Gore } from '../combat/gore';
 import { Gunplay } from '../combat/Gunplay';
 import { RIFLE_BASELINE } from '../combat/weapons';
 import { buildBlockout } from '../levels/blockout';
@@ -26,6 +27,9 @@ const SOUND_SHOT = 'rifle-shot';
 const SOUND_HIT = 'impact';
 /** Seconds the damage vignette takes to fade. */
 const HURT_FADE = 0.8;
+/** Ragdoll caps (docs/design/gore-scope.md): at most this many simulating, none older than this. */
+const MAX_RAGDOLLS = 6;
+const RAGDOLL_SECONDS = 12;
 
 /**
  * Milestone 5 gameplay slice: the operator with the baseline rifle against
@@ -62,7 +66,7 @@ export const missionScene: SceneDefinition = {
     const renderSync = new RenderSync(entities);
     bag.add(entities.addSystem(renderSync));
     // Every layer any body will reference, before the first body exists, so the bit layout never depends on load order.
-    physics.layers.define('world', 'player', 'target', 'enemy', 'trigger');
+    physics.layers.define('world', 'player', 'target', 'enemy', 'trigger', 'ragdoll');
     bag.add(applyAtmosphere(scene, quality));
     await initNavigation();
     let level: MissionLevel;
@@ -113,6 +117,11 @@ export const missionScene: SceneDefinition = {
     const effects = { entities, vfx, scene };
     const impacts = new Impacts({ ...effects, audio, random: random.fork(), worldMeshes: level.meshes, hitSound });
     bag.add(impacts);
+    const gore = new Gore({ ...effects, physics, random: random.fork(), worldMeshes: level.meshes });
+    bag.add(gore);
+    const ragdolls = new RagdollWorld(entities, physics);
+    bag.add(ragdolls);
+    bag.add(entities.addSystem(ragdolls.system()));
     const operator = new Operator({ entities, physics, animation, renderSync, scene, model }, level.spawn, level.spawnYaw);
     bag.add(operator);
     const dummies = level.targetSpots.map((spot, i) => {
@@ -122,7 +131,7 @@ export const missionScene: SceneDefinition = {
     });
     const enemies = level.patrols.map((spec) => {
       const enemy = new Enemy(
-        { ...effects, physics, animation, renderSync, model, labels: ui.labels, navigation, random: random.fork(), audio, impacts, shotSound },
+        { ...effects, physics, animation, renderSync, model, labels: ui.labels, navigation, random: random.fork(), audio, impacts, shotSound, ragdolls, gore },
         spec,
       );
       bag.add(enemy);
@@ -165,6 +174,7 @@ export const missionScene: SceneDefinition = {
         operator,
         targets,
         impacts,
+        gore,
         shotSound,
         onShot: (position, loudness) => {
           for (const e of enemies) e.hear(position, loudness, now);
@@ -174,6 +184,20 @@ export const missionScene: SceneDefinition = {
       operator.muzzle,
     );
     bag.add(gunplay);
+    // How lit the operator is: the lighting query at chest height, shadowed by the level (ADR-005).
+    const chest = new THREE.Vector3();
+    const lightDir = new THREE.Vector3();
+    const lightOccluder = (from: THREE.Vector3, to: THREE.Vector3): boolean => {
+      lightDir.copy(to).sub(from);
+      const d = lightDir.length();
+      return physics.raycast(from, lightDir, d, { layers: 'world' }) !== null;
+    };
+    const sampleLit = (): void => {
+      operator.feet(chest);
+      chest.y += 1.2;
+      const e = ctx.lighting.illuminanceAt(chest, { ambient: AWARENESS.nightAmbient, occluder: lightOccluder, maxOccluded: 3 });
+      operator.lit = litness(e, AWARENESS.litReference);
+    };
     const enemyFeet = new THREE.Vector3();
     const otherFeet = new THREE.Vector3();
     const onAlert = (source: Enemy): void => {
@@ -236,6 +260,7 @@ export const missionScene: SceneDefinition = {
         hud.setSpread(gunplay.spreadNow());
         hud.setAmmo(weapon.ammo, weapon.reserve, weapon.reloading, weapon.reloadProgress);
         hud.setHealth(operator.health / OPERATOR_MAX_HEALTH, Math.max(0, 1 - (now - operator.lastHitAt) / HURT_FADE) * (operator.dead ? 1 : 0.85));
+        hud.setVisibility(operator.lit);
         hud.setAlert(overallState(enemies.filter((e) => !e.dead).map((e) => e.state)));
         hud.setStatus(operator.stance, operator.speed, operator.grounded);
         hud.setScore(gunplay.stats.hits, gunplay.stats.kills, enemies.filter((e) => !e.dead).length);
@@ -251,7 +276,16 @@ export const missionScene: SceneDefinition = {
         operator.fixedUpdate(fixedDt);
         gunplay.fixedUpdate(fixedDt);
         for (const d of dummies) d.fixedUpdate(now);
+        sampleLit();
         for (const e of enemies) e.fixedUpdate(fixedDt, now, operator, onAlert);
+        gore.fixedUpdate(fixedDt);
+        // Retire ragdolls past the cap or the age limit; their bones keep the last pose.
+        const live = ragdolls.list();
+        for (let i = 0; i < live.length; i++) {
+          const r = live[i];
+          if (!r) continue;
+          if (live.length - i > MAX_RAGDOLLS || r.age > RAGDOLL_SECONDS) enemies.find((e) => e.eid === r.owner)?.retireRagdoll();
+        }
         operator.feet(feet);
         mission.fixedUpdate(fixedDt, feet, interactHeld, enemies.filter((e) => !e.dead).length);
         if (mission.justCompleted) {

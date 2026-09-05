@@ -28,6 +28,12 @@ export const AWARENESS = {
   loudAlertFraction: 0.35,
   /** Radius within which one enemy's alert warns the others. */
   warnRadius: 30,
+  /** Sight gain multiplier for a target in full darkness (1 = light does not matter). */
+  darkGain: 0.25,
+  /** Illuminance from sky and moon everywhere, in the engine's light units. */
+  nightAmbient: 0.35,
+  /** Illuminance that reads as 63 percent lit on the visibility meter. */
+  litReference: 2.0,
 } as const;
 
 export interface SightSample {
@@ -39,6 +45,8 @@ export interface SightSample {
   readonly stance: Stance;
   /** Target horizontal speed. */
   readonly speed: number;
+  /** 0..1 how lit the target is (engine illuminance through `litness`). */
+  readonly lit: number;
 }
 
 /** Awareness gained per second from this sighting. Zero when the target cannot be seen. */
@@ -52,6 +60,8 @@ export function sightGain(s: SightSample): number {
   if (s.stance === 'crouch') gain *= 0.7;
   else if (s.stance === 'prone') gain *= 0.45;
   if (s.speed > 0.5) gain *= 1 + Math.min(1, s.speed / 8) * 0.8;
+  // Darkness is the stealth resource: a figure in shadow registers at a quarter of the rate of one under a neon.
+  gain *= AWARENESS.darkGain + (1 - AWARENESS.darkGain) * Math.min(1, Math.max(0, s.lit));
   if (s.distance <= AWARENESS.closeRange) gain = Math.max(gain, 4);
   return gain;
 }

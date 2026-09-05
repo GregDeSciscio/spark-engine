@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu';
 import {
   CharacterController,
   Character,
+  MANNEQUIN_RAGDOLL,
   PathFollower,
   Transform,
   type AnimationGraphDef,
@@ -11,12 +12,14 @@ import {
   type ModelAsset,
   type Navigation,
   type PhysicsWorld,
+  type RagdollWorld,
   type Random,
   type RenderSync,
   type WorldLabels,
 } from '@spark/engine';
 import { AWARENESS, sightGain, type AwarenessState } from '../ai/Awareness';
-import type { Damageable } from '../combat/Damageable';
+import type { Damageable, Impact } from '../combat/Damageable';
+import type { Gore } from '../combat/gore';
 import { MuzzleFlash, type EffectsDeps, type Impacts } from '../combat/effects';
 import { Weapon } from '../combat/Weapon';
 import { RIFLE_BASELINE, applySpread, damageAt, hitZoneAt, type HitZone, type WeaponDefinition } from '../combat/weapons';
@@ -41,6 +44,8 @@ export interface OperatorView {
   readonly dead: boolean;
   readonly stance: Stance;
   readonly speed: number;
+  /** 0..1 how lit the operator is. */
+  readonly lit: number;
   feet(out: THREE.Vector3): THREE.Vector3;
   /** Apply damage. Returns true when it killed the operator. */
   takeDamage(damage: number, zone: HitZone, now: number): boolean;
@@ -63,6 +68,8 @@ export interface EnemyDeps extends EffectsDeps {
   readonly audio: AudioSystem;
   readonly impacts: Impacts;
   readonly shotSound: string | null;
+  readonly ragdolls: RagdollWorld;
+  readonly gore: Gore;
 }
 
 /** Same gun as the player, throttled: slower cadence, lighter hits, so a fair fight lasts more than a second. */
@@ -86,6 +93,10 @@ const REACTION_SECONDS = 0.45;
 
 const WALK_ANIM = 1.2;
 const RUN_ANIM = 4.0;
+/** Impulse (kg·m/s) a killing round puts into the nearest ragdoll part. */
+const KILL_IMPULSE = 26;
+const BASE_TINT = 0x3a1f2a;
+const BLOOD_TINT = 0x2a0408;
 
 const ENEMY_GRAPH: AnimationGraphDef = {
   params: { speed: 0, dead: 0 },
@@ -130,6 +141,9 @@ export class Enemy implements Damageable {
   private readonly spec: EnemySpec;
   private readonly controller: CharacterController;
   private readonly root: THREE.Group;
+  private readonly visual: THREE.Object3D;
+  private readonly tinted: THREE.MeshStandardMaterial[] = [];
+  private animated = true;
   private readonly follower = new PathFollower(0.4);
   private readonly weapon = new Weapon(ENEMY_RIFLE);
   private readonly flash: MuzzleFlash;
@@ -172,18 +186,18 @@ export class Enemy implements Damageable {
 
     this.root = new THREE.Group();
     const visual = model.instantiate({ castShadow: true, receiveShadow: true });
+    this.visual = visual;
     visual.position.y = -OPERATOR.height / 2;
-    // A darker tint so enemies read apart from the operator and the range dummies.
-    const tinted: THREE.Material[] = [];
+    // A darker tint so enemies read apart from the operator and the range dummies; it bloodies as health drops.
     visual.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
       const m = (mesh.material as THREE.MeshStandardMaterial).clone();
-      m.color.setHex(0x3a1f2a);
+      m.color.setHex(BASE_TINT);
       m.emissive.setHex(0xff2040);
       m.emissiveIntensity = 0.12;
       mesh.material = m;
-      tinted.push(m);
+      this.tinted.push(m);
     });
     this.root.add(visual);
     scene.add(this.root);
@@ -191,12 +205,49 @@ export class Enemy implements Damageable {
     animation.attach(this.eid, visual, model.animations, ENEMY_GRAPH, { rootMotion: { mode: 'none' } });
     labels.attach(this.eid, { kind: 'healthbar', text: spec.name, offsetY: 2.05 });
     this.flash = new MuzzleFlash(deps, ENEMY_RIFLE.muzzle.flashColor, ENEMY_RIFLE.muzzle.flashIntensity);
-    this.disposeTinted = () => {
-      for (const m of tinted) m.dispose();
-    };
   }
 
-  private disposeTinted: () => void;
+  private applyTint(): void {
+    const t = 1 - this.health / MAX_HEALTH;
+    const base = new THREE.Color(BASE_TINT);
+    const blood = new THREE.Color(BLOOD_TINT);
+    for (const m of this.tinted) {
+      m.color.lerpColors(base, blood, t * 0.85);
+      m.emissiveIntensity = 0.12 * (1 - t);
+    }
+  }
+
+  /** The ragdoll owns the bones from here; the animator lets go so nothing fights it. */
+  private startRagdoll(now: number, impact: Impact | undefined): void {
+    const { ragdolls, animation, gore } = this.deps;
+    const velocity = impact ? { x: impact.direction.x * 2.2, y: 0.6, z: impact.direction.z * 2.2 } : { x: 0, y: 0, z: 0 };
+    const activation = impact
+      ? { velocity, impulse: { point: { x: impact.point.x, y: impact.point.y, z: impact.point.z }, direction: { x: impact.direction.x, y: impact.direction.y, z: impact.direction.z }, strength: KILL_IMPULSE } }
+      : { velocity };
+    const ragdoll = ragdolls.create(this.eid, this.visual, MANNEQUIN_RAGDOLL, { blendSeconds: 0.12, activation });
+    if (this.animated) {
+      animation.detach(this.eid);
+      this.animated = false;
+    }
+    const hips = new THREE.Vector3();
+    gore.corpse(() => {
+      const p = ragdoll.rootPosition({ x: 0, y: 0, z: 0 });
+      return hips.set(p.x, p.y, p.z);
+    });
+    void now;
+  }
+
+  /** Drop the ragdoll bodies; bones keep their last pose until the next reset re-animates them. */
+  retireRagdoll(): void {
+    this.deps.ragdolls.remove(this.eid);
+  }
+
+  private reanimate(): void {
+    const { animation, model } = this.deps;
+    if (this.animated) return;
+    animation.attach(this.eid, this.visual, model.animations, ENEMY_GRAPH, { rootMotion: { mode: 'none' } });
+    this.animated = true;
+  }
 
   private addBody(): void {
     const halfHeight = OPERATOR.height / 2 - OPERATOR.radius;
@@ -222,20 +273,20 @@ export class Enemy implements Damageable {
     return Math.hypot(this.velocity.x, this.velocity.z);
   }
 
-  hit(zone: HitZone, damage: number, now: number): boolean {
+  hit(zone: HitZone, damage: number, now: number, impact?: Impact): boolean {
     if (this.dead) return false;
     const { animation, labels } = this.deps;
     this.health = Math.max(0, this.health - damage);
     labels.setValue(this.eid, this.health / MAX_HEALTH);
+    this.applyTint();
     // Being shot is the loudest possible tell.
     this.becomeAlert(now);
     if (this.health === 0) {
       this.dead = true;
-      animation.setParam(this.eid, 'dead', 1);
-      animation.setTrigger(this.eid, 'die');
       this.controller.detach(this.eid);
       this.deps.physics.removeBody(this.eid);
       this.velocity.set(0, 0, 0);
+      this.startRagdoll(now, impact);
       return true;
     }
     animation.setTrigger(this.eid, 'hit');
@@ -278,11 +329,14 @@ export class Enemy implements Damageable {
     const t = entities.store(Transform);
     if (this.dead) {
       this.dead = false;
+      this.retireRagdoll();
+      this.reanimate();
       this.addBody();
       this.controller.attach(this.eid);
       animation.setParam(this.eid, 'dead', 0);
       animation.setTrigger(this.eid, 'respawn');
     }
+    this.applyTint();
     t.x[this.eid] = spawn.x;
     t.y[this.eid] = spawn.y + OPERATOR.height / 2;
     t.z[this.eid] = spawn.z;
@@ -291,6 +345,7 @@ export class Enemy implements Damageable {
     ch.vy[this.eid] = 0;
     this.health = MAX_HEALTH;
     labels.setValue(this.eid, 1);
+    this.applyTint();
     this.state = 'unaware';
     this.awareness = 0;
     this.routeIndex = 0;
@@ -410,10 +465,10 @@ export class Enemy implements Damageable {
 
   // ---- perception helpers ------------------------------------------------------
 
-  private sense(player: OperatorView): { visible: boolean; distance: number; inCone: boolean; stance: Stance; speed: number } {
+  private sense(player: OperatorView): { visible: boolean; distance: number; inCone: boolean; stance: Stance; speed: number; lit: number } {
     this.toPlayer.copy(this.playerFeet).sub(this.feetPos);
     const distance = Math.hypot(this.toPlayer.x, this.toPlayer.z);
-    if (player.dead || distance > AWARENESS.sightRange) return { visible: false, distance, inCone: false, stance: player.stance, speed: player.speed };
+    if (player.dead || distance > AWARENESS.sightRange) return { visible: false, distance, inCone: false, stance: player.stance, speed: player.speed, lit: player.lit };
     const bearing = Math.atan2(this.toPlayer.x, this.toPlayer.z);
     const inCone = Math.abs(wrapAngle(bearing - this.facing)) <= THREE.MathUtils.degToRad(AWARENESS.fovDeg / 2);
     // Line of sight: eye to chest, blocked by the world only.
@@ -425,7 +480,7 @@ export class Enemy implements Damageable {
     const len = this.tmpB.length();
     const hit = this.deps.physics.raycast(this.eye, this.tmpB, len, { layers: 'world', excludeEid: this.eid });
     const visible = hit === null;
-    return { visible, distance, inCone, stance: player.stance, speed: player.speed };
+    return { visible, distance, inCone, stance: player.stance, speed: player.speed, lit: player.lit };
   }
 
   private becomeAlert(now: number): void {
@@ -539,14 +594,15 @@ export class Enemy implements Damageable {
   dispose(): void {
     const { entities, animation, scene, labels, physics } = this.deps;
     labels.detach(this.eid);
-    animation.detach(this.eid);
+    this.retireRagdoll();
+    if (this.animated) animation.detach(this.eid);
+    for (const m of this.tinted) m.dispose();
     if (!this.dead) {
       this.controller.detach(this.eid);
       physics.removeBody(this.eid);
     }
     this.controller.dispose();
     this.flash.dispose();
-    this.disposeTinted();
     scene.remove(this.root);
     entities.destroy(this.eid);
   }

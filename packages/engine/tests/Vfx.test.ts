@@ -69,7 +69,7 @@ describe('resolveEmitterDescriptor', () => {
   });
 
   it('accepts every preset', () => {
-    expect(PARTICLE_PRESET_NAMES).toEqual(['rain', 'sparks', 'smoke', 'steam', 'embers', 'muzzleFlash']);
+    expect(PARTICLE_PRESET_NAMES).toEqual(['rain', 'sparks', 'smoke', 'steam', 'embers', 'blood', 'muzzleFlash']);
     for (const name of PARTICLE_PRESET_NAMES) {
       expect(isParticlePresetName(name)).toBe(true);
       const d = resolveEmitterDescriptor(PARTICLE_PRESETS[name]);

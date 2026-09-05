@@ -141,6 +141,7 @@ export {
   type ShoulderCameraOptions,
   type ShoulderCameraPreset,
 } from './rendering/ShoulderCamera';
+export { distanceFalloff, illuminanceAt, lightRecord, litness, spotFactor, type IlluminanceLight, type IlluminanceOptions } from './rendering/Illuminance';
 export { applyRoomEnvironment, applySceneEnvironment, loadHDREnvironment } from './rendering/Environment';
 // ---- rendering (Milestone 7) ----
 export {

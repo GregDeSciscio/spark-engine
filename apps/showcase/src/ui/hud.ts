@@ -16,6 +16,8 @@ export interface OperatorHud {
   setAmmo(ammo: number, reserve: number, reloading: boolean, reloadProgress: number): void;
   /** 0..1 health and 0..1 vignette strength. */
   setHealth(health: number, hurt: number): void;
+  /** 0..1 how lit the operator is: the stealth meter. */
+  setVisibility(lit: number): void;
   setAlert(level: 'undetected' | 'suspicious' | 'alert'): void;
   setStatus(stance: Stance, speed: number, grounded: boolean): void;
   setScore(hits: number, kills: number, enemiesLeft: number): void;
@@ -103,7 +105,8 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
     pointerEvents: 'none',
   } satisfies Partial<CSSStyleDeclaration>);
   const health = createBar({ label: 'health', color: '#ff5a5a' });
-  healthWrap.appendChild(health.element);
+  const visibility = createBar({ label: 'visibility', color: '#dfe6ff' });
+  healthWrap.append(visibility.element, health.element);
 
   const alert = document.createElement('div');
   Object.assign(alert.style, {
@@ -269,6 +272,9 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
     setHealth(value, hurt) {
       health.set(value);
       vignette.style.opacity = hurt.toFixed(3);
+    },
+    setVisibility(lit) {
+      visibility.set(lit);
     },
     setAlert(level) {
       if (level === lastAlert) return;

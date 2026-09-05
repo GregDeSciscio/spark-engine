@@ -139,6 +139,29 @@ export const PARTICLE_PRESETS = {
   },
 
   /** Muzzle flash: one-shot burst of a few large, very short additive sprites. `burst()` it. */
+  /** Blood: short alpha-blended droplets thrown from a hit, falling fast and fading. Dark reds, never additive. */
+  blood: {
+    capacity: 512,
+    rate: 0,
+    lifetime: [0.25, 0.6],
+    shape: { kind: 'cone', radius: 0.03, angle: 0.5 },
+    space: 'world',
+    direction: 'shape',
+    speed: [1.5, 6.5],
+    spread: 0.3,
+    gravity: -12,
+    drag: 1.2,
+    size: [0.04, 0.11],
+    sizeOverLife: [[0, 0.6], [0.3, 1.0], [1, 0.75]],
+    colorOverLife: [
+      [0, 0.55, 0.02, 0.03, 1],
+      [0.6, 0.35, 0.01, 0.02, 0.9],
+      [1, 0.18, 0.0, 0.01, 0],
+    ],
+    render: { kind: 'sprite', blend: 'alpha', shape: 'disc', fog: true, depthWrite: false },
+    seed: 91,
+  },
+
   muzzleFlash: {
     capacity: 64,
     rate: 0,

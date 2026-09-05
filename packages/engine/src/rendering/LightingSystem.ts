@@ -1,4 +1,5 @@
 import * as THREE from 'three/webgpu';
+import { illuminanceAt, lightRecord, type IlluminanceLight, type IlluminanceOptions } from './Illuminance';
 import type { Disposable } from '../core/Disposable';
 import { Logger } from '../core/Logger';
 import { defineComponentType } from '../ecs/Component';
@@ -125,6 +126,7 @@ interface LightingHost {
 
 const _cameraPosition = new THREE.Vector3();
 const _lightPosition = new THREE.Vector3();
+const _illumScratch = { position: new THREE.Vector3(), direction: new THREE.Vector3() };
 
 export class LightingSystem implements System, Disposable {
   readonly name = 'Lighting';
@@ -151,6 +153,7 @@ export class LightingSystem implements System, Disposable {
   private stats: LightingStats;
   private computeMs: number | null = null;
 
+  private readonly illumLights: IlluminanceLight[] = [];
   // Scratch for the selection, reused across frames.
   private candidates: Entry[] = [];
   private importance: number[] = [];
@@ -271,6 +274,23 @@ export class LightingSystem implements System, Disposable {
   /** Whether local lights are clustered (WebGPU with a scene attached). */
   get clustered(): boolean {
     return this.node !== null;
+  }
+
+  /**
+   * CPU estimate of the light arriving at `point` from every registered local
+   * light (see `Illuminance.ts`). Directional and hemisphere light are not
+   * registered here; pass them as `ambient`. Records are rebuilt per call, so
+   * query a few points per frame, not hundreds.
+   */
+  illuminanceAt(point: THREE.Vector3, options: IlluminanceOptions = {}): number {
+    this.illumLights.length = 0;
+    for (const light of this.entries.keys()) {
+      if (!light.visible) continue;
+      const rec = lightRecord(light, { position: new THREE.Vector3(), direction: new THREE.Vector3() });
+      if (rec) this.illumLights.push(rec);
+    }
+    void _illumScratch;
+    return illuminanceAt(this.illumLights, point, options);
   }
 
   getStats(): LightingStats {

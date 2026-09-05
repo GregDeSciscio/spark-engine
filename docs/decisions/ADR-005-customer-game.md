@@ -27,7 +27,7 @@ Task Unit is a SOCOM-style over-the-shoulder tactical shooter (Demolition, small
 - Milestone 10 is the Task Unit sequel's vertical slice: one mission, three objectives, 8 to 12 enemies, extraction.
 - Milestone 5 demonstrates the operator, one enemy with the full awareness model, a Reach and a Plant objective, and a checkpoint reload.
 - Feature priority follows that game's needs, not the feature lists in the kickoff doc.
-- Enemy AI (perception, awareness, nav, cover, weapon-role behaviour) becomes the biggest gameplay system, since enemies are the entire opposition. Lighting becomes a gameplay input, so the lighting system needs a cheap "how lit is this point" query.
+- Enemy AI (perception, awareness, nav, cover, weapon-role behaviour) becomes the biggest gameplay system, since enemies are the entire opposition. Lighting becomes a gameplay input, so the lighting system needs a cheap "how lit is this point" query (added 2026-09-04: `LightingSystem.illuminanceAt`, with a physics raycast as the shadow test; enemy sight gain scales with it and the HUD shows it as a visibility meter).
 - The dark, bloody cyberpunk direction confirms the lighting and wet-surface work already on the roadmap (clustered lights, SSR for floors and puddles) and adds blood, ragdoll, and wound rendering as first-class features.
 
 ## Status
