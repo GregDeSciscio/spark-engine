@@ -16,6 +16,8 @@ export interface CaptureAPI {
   snapshot(): DebugSnapshot | null;
   /** Logger records at warn or above plus uncaught errors. */
   logs(): LogRecord[];
+  /** Game-specific probe surface an app may hang here (scripted QA, capture tools). Untyped by design. */
+  game?: unknown;
   /** Force a resolve of pending GPU timestamps before reading a snapshot. */
   flushGpuTimers(): Promise<void>;
 }

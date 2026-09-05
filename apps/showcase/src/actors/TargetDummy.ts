@@ -85,6 +85,12 @@ export class TargetDummy implements Damageable {
     labels.attach(this.eid, { kind: 'healthbar', text: name, offsetY: 2.05 });
   }
 
+  /** Feet position in world space. */
+  feet(out: THREE.Vector3): THREE.Vector3 {
+    const t = this.deps.entities.store(Transform);
+    return out.set(t.x[this.eid] ?? 0, this.feetY, t.z[this.eid] ?? 0);
+  }
+
   /** Height of a world-space hit as a fraction of the standing height. */
   heightFraction(y: number): number {
     return (y - this.feetY) / OPERATOR.height;

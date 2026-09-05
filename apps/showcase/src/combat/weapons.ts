@@ -81,7 +81,7 @@ export const RIFLE_BASELINE: WeaponDefinition = {
     stanceSpreadMults: { stand: 1, crouch: 0.72, prone: 0.5 },
     movingSpreadDeg: 0.6,
     airborneSpreadDeg: 1.02,
-    hipSpreadDeg: 0.9,
+    hipSpreadDeg: 0.25,
     bloomPerShotDeg: 0.19,
     maxBloomDeg: 1.02,
     bloomRecoveryDegPerSecond: 1.35,

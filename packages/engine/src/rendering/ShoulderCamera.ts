@@ -43,8 +43,8 @@ export const SHOULDER_PRESET: ShoulderCameraPreset = {
   sideOffset: 0.55,
   shoulderRatio: 1.3 / 1.8,
   fov: 60,
-  aimDistance: 1.4,
-  aimSideOffset: 0.45,
+  aimDistance: 1.55,
+  aimSideOffset: 0.6,
   aimFov: 42,
   aimRate: 12,
   sensitivity: 0.0022,
@@ -78,6 +78,8 @@ export function shoulderFrame(yaw: number, pitch: number, forward: THREE.Vector3
   forward.set(-Math.sin(yaw) * cp, -Math.sin(pitch), -Math.cos(yaw) * cp);
   right.set(Math.cos(yaw), 0, -Math.sin(yaw));
 }
+
+const _tmpRight = new THREE.Vector3();
 
 /** Frame-rate independent exponential damping (same curve as `CameraRig`'s `damp`). */
 function damp(current: number, target: number, rate: number, dt: number): number {
@@ -156,6 +158,32 @@ export class ShoulderCamera {
   /** Full view direction including pitch and recoil (for aim rays). Valid after `update()` / `snap()`. */
   viewForward(out: THREE.Vector3): THREE.Vector3 {
     return out.copy(this.forward);
+  }
+
+  /**
+   * View direction with an extra angular offset on top of look and recoil:
+   * the reticle's own kick (the part of recoil the camera did not follow).
+   */
+  directionFor(yawOffset: number, pitchOffset: number, out: THREE.Vector3): THREE.Vector3 {
+    shoulderFrame(this.effectiveYaw() + yawOffset, clampPitch(this.effectivePitch() + pitchOffset, this.preset), out, _tmpRight);
+    return out;
+  }
+
+  /**
+   * Where an angular offset from the view centre lands on screen, in CSS
+   * pixels from the centre for a viewport of `viewportHeight`. Positive yaw
+   * (turning left) moves left, positive pitch (looking down) moves down.
+   */
+  projectAngleOffset(yawOffset: number, pitchOffset: number, viewportHeight: number, out: { x: number; y: number }): { x: number; y: number } {
+    const k = viewportHeight / 2 / Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));
+    out.x = -Math.tan(yawOffset) * k;
+    out.y = Math.tan(pitchOffset) * k;
+    return out;
+  }
+
+  /** Screen radius in CSS pixels of a cone half-angle, for spread reticles. */
+  projectAngleRadius(angle: number, viewportHeight: number): number {
+    return (Math.tan(angle) / Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2))) * (viewportHeight / 2);
   }
 
   /** Effective yaw this frame: look plus recoil. */

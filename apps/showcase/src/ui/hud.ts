@@ -11,8 +11,10 @@ import type { Stance } from '../actors/Operator';
 export interface OperatorHud {
   setLocked(locked: boolean): void;
   setAiming(aiming: boolean): void;
-  /** Crosshair spread, degrees of cone half-angle. */
-  setSpread(spreadDeg: number): void;
+  /** Crosshair spread ring radius in CSS pixels (the scene projects the cone through the camera). */
+  setSpread(radiusPx: number): void;
+  /** Reticle position in CSS pixels from the centre (recoil), and whether the barrel is blocked. */
+  setReticle(dx: number, dy: number, blocked: boolean): void;
   setAmmo(ammo: number, reserve: number, reloading: boolean, reloadProgress: number): void;
   /** 0..1 health and 0..1 vignette strength. */
   setHealth(health: number, hurt: number): void;
@@ -29,9 +31,7 @@ export interface OperatorHud {
 }
 
 const MONO = 'ui-monospace, Consolas, monospace';
-/** Ring radius in px per degree of spread, on top of the base radius. */
-const PX_PER_DEGREE = 26;
-const RING_BASE_PX = 10;
+const RING_MIN_PX = 6;
 
 const ALERT_STYLE = {
   undetected: { text: 'undetected', color: '#8fd3a5' },
@@ -244,6 +244,13 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
 
   let lastRadius = -1;
   let lastAlert = '';
+  let lastX = 0;
+  let lastY = 0;
+  let aimingNow = false;
+  let blockedNow = false;
+  const applyRingColor = (): void => {
+    ring.style.borderColor = blockedNow ? 'rgba(255,90,90,0.9)' : aimingNow ? 'rgba(255,214,102,0.8)' : 'rgba(255,255,255,0.55)';
+  };
   return {
     setLocked(locked) {
       prompt.hidden = locked;
@@ -252,10 +259,27 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
       ring.style.opacity = opacity;
     },
     setAiming(aiming) {
-      ring.style.borderColor = aiming ? 'rgba(255,214,102,0.8)' : 'rgba(255,255,255,0.55)';
+      aimingNow = aiming;
+      applyRingColor();
     },
-    setSpread(spreadDeg) {
-      const radius = Math.round(RING_BASE_PX + spreadDeg * PX_PER_DEGREE);
+    setReticle(dx, dy, blocked) {
+      const x = Math.round(dx);
+      const y = Math.round(dy);
+      if (x !== lastX || y !== lastY) {
+        lastX = x;
+        lastY = y;
+        const t = `translate(${x}px, ${y}px)`;
+        dot.style.transform = t;
+        ring.style.transform = t;
+      }
+      if (blocked !== blockedNow) {
+        blockedNow = blocked;
+        applyRingColor();
+        dot.style.background = blocked ? 'rgba(255,90,90,0.95)' : 'rgba(255,255,255,0.9)';
+      }
+    },
+    setSpread(radiusPx) {
+      const radius = Math.max(RING_MIN_PX, Math.round(radiusPx));
       if (radius === lastRadius) return;
       lastRadius = radius;
       const size = `${radius * 2}px`;

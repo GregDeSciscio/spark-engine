@@ -13,8 +13,12 @@ import { ZONE_MULTIPLIER, applySpread, damageAt, hitZoneAt, type WeaponDefinitio
  * audio, the recoil handed to the camera, and a shot event for anyone who
  * can hear. Weapon rules live in `weapons.ts` and `Weapon.ts`.
  *
- * A barrel-obstruction check (Task Unit's aim-blocked indicator) is still to
- * come; until then the ray is exactly what the crosshair promises.
+ * Aiming is Task Unit's two-ray scheme: a ray from the camera through the
+ * reticle finds what the player is looking at, then the bullet travels from
+ * the shoulder toward that point, so cover the camera sees over still stops
+ * the shot and the HUD can say the barrel is blocked. Recoil is split: the
+ * reticle carries most of the kick on screen and bullets follow the reticle,
+ * while the camera follows only a fraction (Task Unit's cameraFollowRatio).
  */
 export interface GunplayDeps extends EffectsDeps {
   readonly physics: PhysicsWorld;
@@ -40,6 +44,10 @@ export interface GunplayStats {
 
 /** How far an unsuppressed rifle report carries. */
 const RIFLE_LOUDNESS = 55;
+/** Task Unit's cameraFollowRatio: the camera takes this much of the recoil kick; the reticle carries the rest. */
+const CAMERA_FOLLOW = 0.25;
+/** The barrel counts as blocked when the weapon ray stops this far short of the aim point. */
+const BLOCK_SLACK = 0.3;
 
 export class Gunplay {
   readonly weapon: Weapon;
@@ -51,6 +59,14 @@ export class Gunplay {
   private readonly flash: MuzzleFlash;
   private readonly muzzle: THREE.Object3D;
   private now = 0;
+  /** The reticle's share of recoil, radians (negative pitch is up). */
+  private reticlePitch = 0;
+  private reticleYaw = 0;
+  /** True while something sits between the shoulder and what the reticle is over. */
+  aimBlocked = false;
+  private readonly aimDir = new THREE.Vector3();
+  private readonly aimPoint = new THREE.Vector3();
+  private readonly camOrigin = new THREE.Vector3();
 
   private readonly origin = new THREE.Vector3();
   private readonly direction = new THREE.Vector3();
@@ -82,9 +98,51 @@ export class Gunplay {
     const state = { stance: operator.stance, speed: operator.speed, grounded: operator.grounded, aiming: operator.aiming };
     const shots = operator.dead ? [] : this.weapon.fixedUpdate(dt, state, random);
     for (const shot of shots) this.fire(shot.spreadDeg);
-    camera.recoilPitch = -THREE.MathUtils.degToRad(this.weapon.recoilPitch);
-    camera.recoilYaw = THREE.MathUtils.degToRad(this.weapon.recoilYaw);
+    // Recoil: up is negative pitch; a positive yaw kick goes right, which is negative camera yaw.
+    const pitch = -THREE.MathUtils.degToRad(this.weapon.recoilPitch);
+    const yaw = -THREE.MathUtils.degToRad(this.weapon.recoilYaw);
+    camera.recoilPitch = pitch * CAMERA_FOLLOW;
+    camera.recoilYaw = yaw * CAMERA_FOLLOW;
+    this.reticlePitch = pitch * (1 - CAMERA_FOLLOW);
+    this.reticleYaw = yaw * (1 - CAMERA_FOLLOW);
+    this.aimBlocked = !operator.dead && this.resolveAim() && this.barrelBlocked();
     this.flash.fixedUpdate(this.now);
+  }
+
+  /** Where the reticle sits on screen this tick, CSS pixels from the centre. */
+  reticleOffset(viewportHeight: number, out: { x: number; y: number }): { x: number; y: number } {
+    return this.deps.camera.projectAngleOffset(this.reticleYaw, this.reticlePitch, viewportHeight, out);
+  }
+
+  /**
+   * Camera ray: from the camera through the reticle to the first thing it
+   * meets (or the range limit). Fills `aimPoint`/`aimDir`; returns true when
+   * something was hit.
+   */
+  private resolveAim(): boolean {
+    const { physics, camera, operator } = this.deps;
+    const range = this.weapon.def.range;
+    camera.directionFor(this.reticleYaw, this.reticlePitch, this.aimDir);
+    this.camOrigin.copy(camera.camera.position);
+    const seen = physics.raycast(this.camOrigin, this.aimDir, range + 6, { layers: ['world', 'target', 'enemy'], excludeEid: operator.eid, solid: false });
+    if (seen) {
+      this.aimPoint.set(seen.point.x, seen.point.y, seen.point.z);
+      return true;
+    }
+    this.aimPoint.copy(this.camOrigin).addScaledVector(this.aimDir, range + 6);
+    return false;
+  }
+
+  /** Weapon ray from the shoulder toward the aim point stops well short of it. */
+  private barrelBlocked(): boolean {
+    const { physics, camera, operator } = this.deps;
+    this.origin.copy(camera.pivot);
+    this.direction.copy(this.aimPoint).sub(this.origin);
+    const toAim = this.direction.length();
+    if (toAim < 1e-3) return false;
+    this.direction.divideScalar(toAim);
+    const hit = physics.raycast(this.origin, this.direction, toAim, { layers: ['world', 'target', 'enemy'], excludeEid: operator.eid, solid: false });
+    return hit !== null && hit.distance < toAim - BLOCK_SLACK;
   }
 
   /** Crosshair spread for the HUD, degrees. */
@@ -104,8 +162,10 @@ export class Gunplay {
     const def = this.weapon.def;
     this.stats.shots += 1;
 
+    // Two rays: what the reticle is over, then the bullet from the shoulder toward it.
+    this.resolveAim();
     this.origin.copy(camera.pivot);
-    camera.viewForward(this.direction);
+    this.direction.copy(this.aimPoint).sub(this.origin).normalize();
     applySpread(this.direction, spreadDeg, random, this.right, this.up);
 
     this.muzzle.getWorldPosition(this.muzzlePos);
@@ -113,7 +173,7 @@ export class Gunplay {
     if (shotSound) audio.playAt(shotSound, operator.eid, { spatial: { refDistance: 4, rolloff: 1, maxDistance: 80 } });
     onShot?.(this.muzzlePos, RIFLE_LOUDNESS);
 
-    const hit = physics.raycast(this.origin, this.direction, def.range, { layers: ['world', 'target', 'enemy'], excludeEid: operator.eid });
+    const hit = physics.raycast(this.origin, this.direction, def.range, { layers: ['world', 'target', 'enemy'], excludeEid: operator.eid, solid: false });
     if (!hit) return;
     this.hitPoint.set(hit.point.x, hit.point.y, hit.point.z);
     this.hitNormal.set(hit.normal.x, hit.normal.y, hit.normal.z);

@@ -80,6 +80,20 @@ describe('ShoulderCamera', () => {
     expect(f1.distanceTo(f0)).toBeCloseTo(0);
   });
 
+  it('projects angular offsets to pixels and directions consistently', () => {
+    const cam = new ShoulderCamera();
+    cam.snap();
+    const px = cam.projectAngleOffset(0, -0.05, 720, { x: 0, y: 0 });
+    expect(px.x).toBeCloseTo(0);
+    expect(px.y).toBeLessThan(0);
+    const left = cam.projectAngleOffset(0.05, 0, 720, { x: 0, y: 0 });
+    expect(left.x).toBeLessThan(0);
+    expect(cam.projectAngleRadius(THREE.MathUtils.degToRad(1), 720)).toBeCloseTo((Math.tan(THREE.MathUtils.degToRad(1)) / Math.tan(THREE.MathUtils.degToRad(SHOULDER_PRESET.fov / 2))) * 360);
+    const d = cam.directionFor(0, -0.3, new THREE.Vector3());
+    const f = cam.viewForward(new THREE.Vector3());
+    expect(d.y).toBeGreaterThan(f.y);
+  });
+
   it('look() turns left for rightward pointer motion and clamps pitch', () => {
     const cam = new ShoulderCamera();
     cam.look(100, 0);

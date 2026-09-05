@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { DisposeBag, RagdollWorld, RenderSync, ShoulderCamera, initNavigation, litness, renderAllPlaceholders, type SceneDefinition, type SceneInstance } from '@spark/engine';
+import { DisposeBag, RagdollWorld, RenderSync, ShoulderCamera, initNavigation, litness, renderAllPlaceholders, type CaptureAPI, type SceneDefinition, type SceneInstance } from '@spark/engine';
 import { Enemy } from '../actors/Enemy';
 import { OPERATOR_MAX_HEALTH, Operator } from '../actors/Operator';
 import { TargetDummy } from '../actors/TargetDummy';
@@ -225,6 +225,65 @@ export const missionScene: SceneDefinition = {
     bag.add(() => ctx.config.container.removeEventListener('pointerdown', onPointerDown));
 
     // Checkpoint reload: back to the last completed objective; dead hostiles stay dead, the rest reset.
+    const reticle = { x: 0, y: 0 };
+
+    // ---- QA hook (`window.__spark.game`) for scripted probes, like Task Unit's render_game_to_text ----
+    let autoFire = 0;
+    let shotsSeen = 0;
+    const qaTarget = new THREE.Vector3();
+    const qaTo = new THREE.Vector3();
+    const qa = {
+      /** Aim the shot line through a world point. Iterates, since the shoulder pivot moves with the yaw. */
+      lookAt(x: number, y: number, z: number): void {
+        qaTarget.set(x, y, z);
+        for (let i = 0; i < 4; i++) {
+          qaTo.copy(qaTarget).sub(camera.pivot);
+          camera.setLook(Math.atan2(-qaTo.x, -qaTo.z), -Math.atan2(qaTo.y, Math.hypot(qaTo.x, qaTo.z)));
+          syncCamera();
+          camera.snap(occluder);
+        }
+      },
+      /** Hold the trigger until this many rounds have left the gun. */
+      fire(rounds: number): void {
+        autoFire = rounds;
+      },
+      aim(on: boolean): void {
+        operator.aiming = on;
+        qaAim = on;
+      },
+      pivot: () => camera.pivot.toArray(),
+      cameraPos: () => camera.camera.position.toArray(),
+      viewForward: () => camera.viewForward(new THREE.Vector3()).toArray(),
+      /** Raw physics ray between two world points, for probing what a shot line meets. */
+      ray(from: [number, number, number], to: [number, number, number], solid = false) {
+        const o = new THREE.Vector3(...from);
+        const d = new THREE.Vector3(...to).sub(o);
+        const len = d.length();
+        const hit = physics.raycast(o, d, len, { layers: ['world', 'target', 'enemy'], excludeEid: operator.eid, solid });
+        return hit ? { eid: hit.eid, distance: hit.distance, point: [hit.point.x, hit.point.y, hit.point.z], len } : { eid: null, len };
+      },
+      stats: () => ({
+        shots: gunplay.stats.shots,
+        hits: gunplay.stats.hits,
+        kills: gunplay.stats.kills,
+        ammo: gunplay.weapon.ammo,
+        reloading: gunplay.weapon.reloading,
+        aimBlocked: gunplay.aimBlocked,
+        spreadDeg: gunplay.spreadNow(),
+        health: operator.health,
+        lit: operator.lit,
+        feet: operator.feet(new THREE.Vector3()).toArray(),
+        targets: dummies.map((d) => ({ name: d.name, health: d.health, dead: d.dead, feet: d.feet(new THREE.Vector3()).toArray() })),
+        enemies: enemies.map((e) => ({ name: e.name, state: e.state, health: e.health, dead: e.dead, feet: e.feet(new THREE.Vector3()).toArray() })),
+      }),
+    };
+    let qaAim = false;
+    const capture = (globalThis as { __spark?: CaptureAPI }).__spark;
+    if (capture) capture.game = qa;
+    bag.add(() => {
+      if (capture && capture.game === qa) capture.game = undefined;
+    });
+
     const retry = (): void => {
       const cp = mission.checkpoint;
       operator.respawn(cp.position, cp.yaw);
@@ -249,15 +308,19 @@ export const missionScene: SceneDefinition = {
           camera.look(d.x, d.y);
         }
         operator.update(input, camera);
+        if (qaAim) operator.aiming = true;
         if (input.wasPressed('F4')) navLines.visible = !navLines.visible;
         if (operator.dead && input.wasPressed('Enter')) retry();
         interactHeld = !operator.dead && input.isDown('KeyF');
         // The click that takes control must not also fire.
-        gunplay.update(locked && input.isButtonDown(0), locked && input.wasButtonPressed(0), input.wasPressed('KeyR'));
+        gunplay.update((locked && input.isButtonDown(0)) || autoFire > 0, (locked && input.wasButtonPressed(0)) || autoFire > 0, input.wasPressed('KeyR') || (autoFire > 0 && gunplay.weapon.ammo === 0));
         const weapon = gunplay.weapon;
         hud.setLocked(locked);
         hud.setAiming(operator.aiming);
-        hud.setSpread(gunplay.spreadNow());
+        const viewportHeight = ctx.config.container.clientHeight || 720;
+        hud.setSpread(camera.projectAngleRadius(THREE.MathUtils.degToRad(gunplay.spreadNow()), viewportHeight));
+        gunplay.reticleOffset(viewportHeight, reticle);
+        hud.setReticle(reticle.x, reticle.y, gunplay.aimBlocked);
         hud.setAmmo(weapon.ammo, weapon.reserve, weapon.reloading, weapon.reloadProgress);
         hud.setHealth(operator.health / OPERATOR_MAX_HEALTH, Math.max(0, 1 - (now - operator.lastHitAt) / HURT_FADE) * (operator.dead ? 1 : 0.85));
         hud.setVisibility(operator.lit);
@@ -275,6 +338,10 @@ export const missionScene: SceneDefinition = {
         now += fixedDt;
         operator.fixedUpdate(fixedDt);
         gunplay.fixedUpdate(fixedDt);
+        if (autoFire > 0) {
+          autoFire = Math.max(0, autoFire - (gunplay.stats.shots - shotsSeen));
+        }
+        shotsSeen = gunplay.stats.shots;
         for (const d of dummies) d.fixedUpdate(now);
         sampleLit();
         for (const e of enemies) e.fixedUpdate(fixedDt, now, operator, onAlert);

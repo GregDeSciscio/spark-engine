@@ -112,6 +112,7 @@ export class Operator {
   private facing = 0;
   private jumpQueued = false;
   private readonly rifleParts: readonly { dispose(): void }[];
+  private readonly rifle: THREE.Group;
 
   constructor(deps: OperatorDeps, spawn: THREE.Vector3, yaw: number) {
     this.deps = deps;
@@ -138,22 +139,20 @@ export class Operator {
     renderSync.attach(entities, this.eid, this.root);
     animation.attach(this.eid, visual, model.animations, OPERATOR_GRAPH, { rootMotion: { mode: 'none' } });
 
-    // A placeholder rifle on the right forearm, until a real weapon model and aim pose exist.
-    const rifle = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.62, 0.06), new THREE.MeshStandardMaterial({ color: 0x1a1c22, roughness: 0.5, metalness: 0.6 }));
-    body.position.y = 0.42;
+    // A placeholder rifle at the right shoulder that points where the camera looks
+    // (the body already faces the camera yaw; pitch is applied per frame), until a
+    // real weapon model and an aim pose with arm IK exist.
+    this.rifle = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.06, 0.62), new THREE.MeshStandardMaterial({ color: 0x7a808c, roughness: 0.45, metalness: 0.7 }));
+    body.position.z = 0.34;
     body.castShadow = true;
-    rifle.add(body);
+    this.rifle.add(body);
     this.rifleParts = [body.geometry, body.material as THREE.Material];
     this.muzzle = new THREE.Object3D();
-    this.muzzle.position.y = 0.76;
-    rifle.add(this.muzzle);
-    const hand = visual.getObjectByName('lowerArm_R');
-    if (hand) hand.add(rifle);
-    else {
-      rifle.position.set(0.3, 1.3, 0.4);
-      this.root.add(rifle);
-    }
+    this.muzzle.position.z = 0.68;
+    this.rifle.add(this.muzzle);
+    this.rifle.position.set(0.26, 1.32 - OPERATOR.height / 2, 0.12);
+    this.root.add(this.rifle);
   }
 
   /** Current stance height, for the camera pivot. */
@@ -238,6 +237,9 @@ export class Operator {
     if (this.wish.lengthSq() > 1) this.wish.normalize();
     // Face where the camera looks. The mannequin's forward is +Z at yaw 0, the camera's is -Z.
     this.facing = camera.getYaw() + Math.PI;
+    // The rifle's +Z is the body's forward; tilt it to the view pitch (positive looks down).
+    this.rifle.rotation.x = camera.effectivePitch();
+    this.rifle.position.y = (this.height * 0.73) - OPERATOR.height / 2;
   }
 
   fixedUpdate(dt: number): void {
