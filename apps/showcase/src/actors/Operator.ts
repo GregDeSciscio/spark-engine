@@ -49,8 +49,8 @@ export const OPERATOR = {
 const UP = new THREE.Vector3(0, 1, 0);
 /** How fast the upper-body layer fades in and out (per second). */
 const UPPER_FADE = 10;
-/** The chest flinch lives on the base layer; drop the upper override this long so it shows. */
-const HIT_UPPER_SECONDS = 0.35;
+/** Rapier reports grounded per step and it flickers on flat ground while moving; only this long in the air counts. */
+const AIRBORNE_SECONDS = 0.12;
 const RELOAD_CLIP_SECONDS = 1.67;
 /** Operator colours: dark grey kit, deep-teal jacket panels with a faint glow. */
 const OPERATOR_MAIN = 0x2a2d33;
@@ -58,9 +58,10 @@ const OPERATOR_ACCENT = 0x1f4a55;
 
 /**
  * Base layer: stand / crouch locomotion on horizontal speed, an airborne
- * loop, hit and death by trigger. Layer 1 overrides the upper body with the
- * weapon-ready pose, or the aim poses blended on view pitch while aiming.
- * Root motion off: the controller owns the transform.
+ * loop, death by trigger. Layer 1 overrides the upper body with the
+ * weapon-ready pose, or the aim poses blended on view pitch while aiming;
+ * layer 2 adds the hit flinch. Root motion off: the controller owns the
+ * transform.
  */
 const OPERATOR_GRAPH: AnimationGraphDef = {
   params: { speed: 0, dead: 0, crouch: 0, air: 0, aim: 0, pitch: 0, reload: 0 },
@@ -97,13 +98,9 @@ const OPERATOR_GRAPH: AnimationGraphDef = {
           transitions: [{ to: 'locomotion', conditions: [{ param: 'crouch', op: '==', value: 0 }], duration: 0.2 }],
         },
         { name: 'air', clip: 'jump', transitions: [{ to: 'locomotion', conditions: [{ param: 'air', op: '==', value: 0 }], duration: 0.15 }] },
-        { name: 'hit', clip: 'hit', transitions: [{ to: 'locomotion', exitTime: 1, duration: 0.15 }] },
         { name: 'death', clip: 'death', transitions: [{ to: 'locomotion', conditions: [{ trigger: 'respawn' }], duration: 0.3 }] },
       ],
-      anyState: [
-        { to: 'death', conditions: [{ trigger: 'die' }], duration: 0.1 },
-        { to: 'hit', conditions: [{ trigger: 'hit' }, { param: 'dead', op: '==', value: 0 }], duration: 0.08, allowSelf: true },
-      ],
+      anyState: [{ to: 'death', conditions: [{ trigger: 'die' }], duration: 0.1 }],
     },
     {
       name: 'upper',
@@ -128,6 +125,14 @@ const OPERATOR_GRAPH: AnimationGraphDef = {
         { name: 'reload', clip: 'reload', speed: RELOAD_CLIP_SECONDS / RIFLE_BASELINE.reloadTime, transitions: [{ to: 'ready', conditions: [{ param: 'reload', op: '==', value: 0 }], duration: 0.15 }] },
       ],
       anyState: [{ to: 'reload', conditions: [{ param: 'reload', op: '==', value: 1 }], duration: 0.1 }],
+    },
+    {
+      // Hit reactions ride on top of everything as a delta from the clip's first
+      // frame, so a flinch never pulls a crouched or aiming body out of its pose.
+      name: 'flinch',
+      entry: 'none',
+      states: [{ name: 'none' }, { name: 'hit', clip: 'hit', transitions: [{ to: 'none', exitTime: 1, duration: 0.1 }] }],
+      anyState: [{ to: 'hit', conditions: [{ trigger: 'hit' }, { param: 'dead', op: '==', value: 0 }], duration: 0.05, allowSelf: true }],
     },
   ],
 };
@@ -174,8 +179,10 @@ export class Operator {
   private readonly materials: readonly THREE.Material[];
   /** Current weight of the upper-body layer, chased toward its target every frame. */
   private upperWeight = 1;
-  private hitUntil = -1;
+  private airTime = 0;
   private pitch = 0;
+  /** Scripted movement for probes (`window.__spark.game.move`): replaces the WASD axes while set. */
+  autoMove: { forward: number; strafe: number } | null = null;
   /** Height of the current collider; the entity transform sits at half of it. */
   private bodyHeight: number = OPERATOR.height;
   private readonly feetScratch = new THREE.Vector3();
@@ -287,7 +294,6 @@ export class Operator {
     if (this.dead) return false;
     this.health = Math.max(0, this.health - damage);
     this.lastHitAt = now;
-    this.hitUntil = now + HIT_UPPER_SECONDS;
     if (this.health === 0) {
       this.dead = true;
       this.aiming = false;
@@ -316,7 +322,7 @@ export class Operator {
     this.facing = yaw + Math.PI;
     this.health = OPERATOR_MAX_HEALTH;
     this.stance = 'stand';
-    this.hitUntil = -1;
+    this.airTime = 0;
     if (this.dead) {
       this.dead = false;
       animation.setParam(this.eid, 'dead', 0);
@@ -338,8 +344,8 @@ export class Operator {
     if (input.wasPressed('KeyX')) this.setStance(this.stance === 'prone' ? 'stand' : 'prone');
     if (input.wasPressed('Space') && this.stance === 'stand') this.jumpQueued = true;
     this.aiming = input.isButtonDown(2);
-    const forward = input.axis('KeyS', 'KeyW');
-    const strafe = input.axis('KeyA', 'KeyD');
+    const forward = this.autoMove ? this.autoMove.forward : input.axis('KeyS', 'KeyW');
+    const strafe = this.autoMove ? this.autoMove.strafe : input.axis('KeyA', 'KeyD');
     this.sprinting = input.isDown('ShiftLeft') && forward > 0 && this.stance === 'stand' && !this.aiming;
 
     camera.groundForward(this.tmpF);
@@ -351,8 +357,9 @@ export class Operator {
     // The rifle's +Z is the body's forward; tilt it to the view pitch (positive looks down).
     this.pitch = camera.effectivePitch();
     this.rifle.update(this.pitch);
-    // The upper-body layer stands down while sprinting (arms pump) and for a beat after a hit (the flinch shows).
-    this.fadeUpper(this.sprinting || now < this.hitUntil ? 0 : 1, dt);
+    // The upper-body layer stands down while sprinting so the arms pump.
+    this.fadeUpper(this.sprinting ? 0 : 1, dt);
+    void now;
   }
 
   private fadeUpper(target: number, dt: number): void {
@@ -392,9 +399,10 @@ export class Operator {
     t.qy[this.eid] = Math.sin(this.facing / 2);
     t.qw[this.eid] = Math.cos(this.facing / 2);
 
+    this.airTime = this.grounded ? 0 : this.airTime + dt;
     animation.setParam(this.eid, 'speed', this.speed);
     animation.setParam(this.eid, 'crouch', this.stance === 'stand' ? 0 : 1);
-    animation.setParam(this.eid, 'air', this.grounded ? 0 : 1);
+    animation.setParam(this.eid, 'air', this.airTime > AIRBORNE_SECONDS ? 1 : 0);
     animation.setParam(this.eid, 'aim', this.aiming ? 1 : 0);
     animation.setParam(this.eid, 'reload', this.reloading ? 1 : 0);
     animation.setParam(this.eid, 'pitch', THREE.MathUtils.radToDeg(this.pitch));

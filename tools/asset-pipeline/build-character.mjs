@@ -10,7 +10,9 @@
  *   cyberpunk (default)  Quaternius' Cyberpunk Game Kit character with the
  *                        library's clips retargeted onto it by Blender
  *                        (tools/level-authoring/character.py; `--retarget` runs
- *                        it, else the last export is used) → operator.glb
+ *                        it, else the last export is used). Blender writes one
+ *                        GLB per clip into cyberpunk/retargeted/; they are
+ *                        merged here → operator.glb
  *   ual                  the library's own mannequin → operator_ual.glb
  *
  * Either way this keeps the clips the showcase graphs use, renames them to the
@@ -23,7 +25,7 @@
  * The rig's bone names, masks and ragdoll shape live in
  * apps/showcase/src/actors/rig.ts; the two must agree.
  */
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { NodeIO } from '@gltf-transform/core';
@@ -36,7 +38,8 @@ const repoRoot = path.resolve(here, '..', '..');
 const CHARACTERS = path.join(repoRoot, 'assets', 'source', 'characters');
 const UAL = path.join(CHARACTERS, 'ual', 'AnimationLibrary_Godot_Standard.gltf');
 const KIT_CHARACTER = path.join(CHARACTERS, 'cyberpunk', 'SK_Character.usda');
-const RETARGETED = path.join(CHARACTERS, 'cyberpunk', 'SK_Character.retargeted.glb');
+/** One GLB per retargeted clip (Blender 5.1 flattens multi-action exports; see character.py). */
+const RETARGETED = path.join(CHARACTERS, 'cyberpunk', 'retargeted');
 const RETARGET_SCRIPT = path.join(repoRoot, 'tools', 'level-authoring', 'character.py');
 const OUT_DIR = CHARACTERS;
 const PUBLIC = path.join(repoRoot, 'apps', 'showcase', 'public', 'models');
@@ -78,7 +81,7 @@ export async function buildCharacter({ log = console.log, rig = 'cyberpunk', ret
   }
   const OUT = path.join(OUT_DIR, `${spec.out}.glb`);
   const io = new NodeIO().registerExtensions(ALL_EXTENSIONS);
-  const doc = await io.read(spec.src);
+  const doc = spec.src.endsWith('.gltf') || spec.src.endsWith('.glb') ? await io.read(spec.src) : await mergeClipFiles(io, spec.src, log);
   const root = doc.getRoot();
 
   // Blender suffixes a retargeted action with .001 when the source action holds the plain name.
@@ -89,6 +92,9 @@ export async function buildCharacter({ log = console.log, rig = 'cyberpunk', ret
     const anim = byName.get(clip.from);
     if (!anim) throw new Error(`clip "${clip.from}" (for ${name}) not in ${path.relative(repoRoot, spec.src)}`);
     anim.setName(name).setExtras({ 'spark.loop': clip.loop, 'spark.source': clip.from });
+    // A clip whose every channel has one key is a pose, not an animation: the retarget export lost its keys.
+    const keys = Math.max(0, ...anim.listSamplers().map((s) => s.getInput()?.getCount() ?? 0));
+    if (keys < 2) throw new Error(`clip "${clip.from}" (for ${name}) has ${keys} key(s) per channel; the export is static`);
   }
 
   // Rigify names carry dots (DEF-spine.001, DEF-hand.R); three's glTF loader strips
@@ -122,6 +128,39 @@ export async function buildCharacter({ log = console.log, rig = 'cyberpunk', ret
   const ok = await runPipeline({ src: OUT_DIR, out: PUBLIC, only: spec.out, budget: 'enemy', verbose, log });
   if (!ok) throw new Error('asset pipeline failed');
   return path.join(PUBLIC, `${spec.out}.glb`);
+}
+
+/**
+ * Read a folder of single-clip GLBs of the same model and return one document
+ * carrying every clip: the first file is the model, each file's one animation
+ * is copied over by re-targeting its channels onto nodes of the same name.
+ */
+export async function mergeClipFiles(io, dir, log) {
+  const files = (await readdir(dir)).filter((n) => n.endsWith('.glb')).sort();
+  if (files.length === 0) throw new Error(`no clip files in ${path.relative(repoRoot, dir)}; run with --retarget`);
+  const base = await io.read(path.join(dir, files[0]));
+  for (const anim of base.getRoot().listAnimations()) anim.dispose();
+  const nodes = new Map(base.getRoot().listNodes().map((n) => [n.getName(), n]));
+  const buffer = base.getRoot().listBuffers()[0] ?? base.createBuffer();
+  for (const file of files) {
+    const clipDoc = await io.read(path.join(dir, file));
+    const source = clipDoc.getRoot().listAnimations()[0];
+    if (!source) throw new Error(`${file}: no animation`);
+    const anim = base.createAnimation(path.basename(file, '.glb'));
+    for (const channel of source.listChannels()) {
+      const target = nodes.get(channel.getTargetNode()?.getName() ?? '');
+      if (!target) continue;
+      const s = channel.getSampler();
+      const input = base.createAccessor().setType('SCALAR').setArray(s.getInput().getArray().slice()).setBuffer(buffer);
+      const output = base.createAccessor().setType(s.getOutput().getType()).setArray(s.getOutput().getArray().slice()).setBuffer(buffer);
+      if (s.getOutput().getNormalized()) output.setNormalized(true);
+      const sampler = base.createAnimationSampler().setInput(input).setOutput(output).setInterpolation(s.getInterpolation());
+      const ch = base.createAnimationChannel().setTargetNode(target).setTargetPath(channel.getTargetPath()).setSampler(sampler);
+      anim.addSampler(sampler).addChannel(ch);
+    }
+  }
+  log(`merged ${files.length} clip file(s) from ${path.relative(repoRoot, dir)}`);
+  return base;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

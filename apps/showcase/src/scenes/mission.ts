@@ -277,6 +277,23 @@ export const missionScene: SceneDefinition = {
         operator.aiming = on;
         qaAim = on;
       },
+      /** Hold a movement direction (camera-relative, -1..1 each) until called with zeros. */
+      move(forward: number, strafe: number): void {
+        operator.autoMove = forward === 0 && strafe === 0 ? null : { forward, strafe };
+      },
+      /** Change stance the way the C / X keys do. */
+      stance: (next: 'stand' | 'crouch' | 'prone') => operator.setStance(next),
+      /** Take damage as if an enemy round landed. */
+      hurt: (damage: number) => operator.takeDamage(damage, 'torso', now),
+      /** Current animation state per layer, plus the blend parameters. */
+      anim: () => ({
+        base: animation.getState(operator.eid),
+        upper: animation.getState(operator.eid, 1),
+        flinch: animation.getState(operator.eid, 2),
+        stance: operator.stance,
+        speed: operator.speed,
+        grounded: operator.grounded,
+      }),
       pivot: () => camera.pivot.toArray(),
       cameraPos: () => camera.camera.position.toArray(),
       viewForward: () => camera.viewForward(new THREE.Vector3()).toArray(),

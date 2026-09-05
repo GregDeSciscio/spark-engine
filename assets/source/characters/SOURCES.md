@@ -4,7 +4,7 @@
 | --- | --- | --- | --- |
 | `ual/AnimationLibrary_Godot_Standard.gltf` + `.bin` | Quaternius, Universal Animation Library (standard / free tier): one 1.83 m mannequin on a Rigify DEF- skeleton, 46 clips | CC0 1.0 | https://github.com/J-Ponzo/gltf-universal-animation-library (glTF mirror of https://quaternius.itch.io/universal-animation-library) |
 | `cyberpunk/SK_Character.usda` | Quaternius, Cyberpunk Game Kit: the player character, 1.37 m, 34 bones, no animations | CC0 1.0 | https://github.com/weftspun/quaternius-stage (USD mirror of https://quaternius.com) |
-| `cyberpunk/SK_Character.retargeted.glb` | the kit character scaled to 1.8 m with 16 library clips retargeted onto its skeleton by `tools/level-authoring/character.py` (Blender, headless); the kit's sword mesh dropped | CC0 1.0 | `pnpm character:retarget` |
+| `cyberpunk/retargeted/<Clip>.glb` | the kit character scaled to 1.8 m with one library clip per file, retargeted onto its skeleton by `tools/level-authoring/character.py` (Blender, headless; one file per clip because Blender 5.1's multi-action export modes flatten baked actions); the kit's sword mesh dropped | CC0 1.0 | `pnpm character:retarget` |
 | `operator.glb` | the retargeted character with clips renamed to the engine's conventions and `spark.*` extras; the showcase serves the pipeline output as `apps/showcase/public/models/operator.glb` | CC0 1.0 | `pnpm character:build` |
 | `operator_ual.glb` (optional) | the library's own mannequin, same clip set; `pnpm character:build --rig=ual` | CC0 1.0 | `tools/asset-pipeline/build-character.mjs` |
 

@@ -3,7 +3,7 @@ Retarget the Universal Animation Library clips onto Quaternius' Cyberpunk Game
 Kit character, headless:
 
     blender --background --python tools/level-authoring/character.py -- \
-        <ual.gltf> <SK_Character.usda> <out.glb> [Clip1,Clip2,...]
+        <ual.gltf> <SK_Character.usda> <out-dir> [Clip1,Clip2,...]
 
 Both rigs rest in a T-pose. For every mapped target bone the retarget takes
 the source bone's rotation *delta from its rest* and applies it to the target
@@ -18,11 +18,16 @@ offset) so they follow the legs in the engine's ragdoll as well as here.
 
 The target is scaled to `TARGET_HEIGHT` (the kit character is 1.37 m) with the
 scale applied, so the export carries no node scale (the engine's ragdoll
-assumes unit-scaled bone chains). Output clips keep the library's names; the
-node build (`tools/asset-pipeline/build-character.mjs --rig=cyberpunk`)
-renames them and adds the `spark.*` extras.
+assumes unit-scaled bone chains). Each clip is exported as its own GLB,
+`<out-dir>/<ClipName>.glb`, with the action active and the scene range set to
+it: in Blender 5.1 the NLA-track and per-action export modes flatten actions
+baked from Python to a single key per channel. The node build
+(`tools/asset-pipeline/build-character.mjs --rig=cyberpunk`) merges the files
+into one model, renames the clips and adds the `spark.*` extras.
 """
 
+import os
+import shutil
 import sys
 
 import bpy
@@ -261,46 +266,49 @@ def bake(src, tgt, actions, wanted, rt):
                 pb.keyframe_insert('rotation_quaternion', frame=f)
                 if name == HIPS:
                     pb.keyframe_insert('location', frame=f)
-        out.append((new, start, end))
+        out.append((new, start, end, act.name))
         log(f'baked {act.name}: frames {start}-{end}')
-    # Park every clip on its own NLA track so the exporter writes one animation per clip.
-    ad = tgt.animation_data
-    ad.action = None
-    for new, start, end in out:
-        track = ad.nla_tracks.new()
-        track.name = new.name
-        track.strips.new(new.name, start, new)
     src.animation_data.action = None
     return out
 
 
-def export(tgt, meshes, path):
+def export(tgt, meshes, out_dir, baked):
+    if os.path.isdir(out_dir):
+        shutil.rmtree(out_dir)
+    os.makedirs(out_dir, exist_ok=True)
     bpy.ops.object.select_all(action='DESELECT')
     tgt.select_set(True)
     for m in meshes:
         m.select_set(True)
     bpy.context.view_layer.objects.active = tgt
-    bpy.ops.export_scene.gltf(
-        filepath=path,
-        export_format='GLB',
-        use_selection=True,
-        export_extras=True,
-        export_apply=True,
-        export_yup=True,
-        export_materials='EXPORT',
-        export_animations=True,
-        export_animation_mode='NLA_TRACKS',
-        export_force_sampling=True,
-        export_frame_range=True,
-        export_optimize_animation_size=False,
-        export_rest_position_armature=True,
-        export_skins=True,
-        export_def_bones=False,
-        export_normals=True,
-        export_tangents=False,
-        export_lights=False,
-    )
-    log(f'wrote {path}')
+    scene = bpy.context.scene
+    for new, start, end, name in baked:
+        assign_action(tgt, new)
+        scene.frame_start = start
+        scene.frame_end = end
+        scene.frame_set(start)
+        bpy.ops.export_scene.gltf(
+            filepath=os.path.join(out_dir, f'{name}.glb'),
+            export_format='GLB',
+            use_selection=True,
+            export_extras=True,
+            export_apply=True,
+            export_yup=True,
+            export_materials='EXPORT',
+            export_animations=True,
+            export_animation_mode='SCENE',
+            export_force_sampling=True,
+            export_frame_range=False,
+            export_optimize_animation_size=False,
+            export_rest_position_armature=True,
+            export_skins=True,
+            export_def_bones=False,
+            export_normals=True,
+            export_tangents=False,
+            export_lights=False,
+        )
+    tgt.animation_data.action = None
+    log(f'wrote {len(baked)} clip file(s) to {out_dir}')
 
 
 def main(argv):
@@ -321,7 +329,7 @@ def main(argv):
     baked = bake(src, tgt, actions, wanted, rt)
     if not baked:
         raise RuntimeError('no clips baked')
-    export(tgt, meshes, out)
+    export(tgt, meshes, out, baked)
 
 
 if __name__ == '__main__':

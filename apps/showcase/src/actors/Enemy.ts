@@ -120,14 +120,13 @@ const KILL_IMPULSE = 90;
 const BASE_TINT = 0x3a1f2a;
 const BLOOD_TINT = 0x2a0408;
 const ACCENT_TINT = 0x6e1624;
-/** The chest flinch lives on the base layer; drop the upper override this long so it shows. */
-const HIT_UPPER_SECONDS = 0.35;
 const UPPER_FADE = 10;
 
 /**
- * Base layer: locomotion on speed, a crouch while holding cover, hit and death
- * by trigger. Layer 1 overrides the upper body with the weapon-ready pose, or
- * the aim poses on pitch toward the player while engaging.
+ * Base layer: locomotion on speed, a crouch while holding cover, death by
+ * trigger. Layer 1 overrides the upper body with the weapon-ready pose, or
+ * the aim poses on pitch toward the player while engaging; layer 2 adds the
+ * hit flinch.
  */
 const ENEMY_GRAPH: AnimationGraphDef = {
   params: { speed: 0, dead: 0, crouch: 0, aim: 0, pitch: 0 },
@@ -159,13 +158,9 @@ const ENEMY_GRAPH: AnimationGraphDef = {
           },
           transitions: [{ to: 'locomotion', conditions: [{ param: 'crouch', op: '==', value: 0 }], duration: 0.2 }],
         },
-        { name: 'hit', clip: 'hit', transitions: [{ to: 'locomotion', exitTime: 1, duration: 0.15 }] },
         { name: 'death', clip: 'death', transitions: [{ to: 'locomotion', conditions: [{ trigger: 'respawn' }], duration: 0.3 }] },
       ],
-      anyState: [
-        { to: 'death', conditions: [{ trigger: 'die' }], duration: 0.1 },
-        { to: 'hit', conditions: [{ trigger: 'hit' }, { param: 'dead', op: '==', value: 0 }], duration: 0.08, allowSelf: true },
-      ],
+      anyState: [{ to: 'death', conditions: [{ trigger: 'die' }], duration: 0.1 }],
     },
     {
       name: 'upper',
@@ -187,6 +182,14 @@ const ENEMY_GRAPH: AnimationGraphDef = {
           transitions: [{ to: 'ready', conditions: [{ param: 'aim', op: '==', value: 0 }], duration: 0.2 }],
         },
       ],
+    },
+    {
+      // Hit reactions ride on top of everything as a delta from the clip's first
+      // frame, so a flinch never pulls a crouched or aiming body out of its pose.
+      name: 'flinch',
+      entry: 'none',
+      states: [{ name: 'none' }, { name: 'hit', clip: 'hit', transitions: [{ to: 'none', exitTime: 1, duration: 0.1 }] }],
+      anyState: [{ to: 'hit', conditions: [{ trigger: 'hit' }, { param: 'dead', op: '==', value: 0 }], duration: 0.05, allowSelf: true }],
     },
   ],
 };
@@ -210,7 +213,6 @@ export class Enemy implements Damageable {
   private readonly rifle: RifleProp;
   private animated = true;
   private upperWeight = 1;
-  private hitUntil = -1;
   private aimPitch = 0;
   private aiming = false;
   private readonly nav: NavAgent;
@@ -362,7 +364,6 @@ export class Enemy implements Damageable {
     this.health = Math.max(0, this.health - damage);
     labels.setValue(this.eid, this.health / MAX_HEALTH);
     this.applyTint();
-    this.hitUntil = now + HIT_UPPER_SECONDS;
     // Being shot is the loudest possible tell.
     this.becomeAlert(now);
     if (this.health === 0) {
@@ -445,7 +446,6 @@ export class Enemy implements Damageable {
     this.velocity.set(0, 0, 0);
     this.nav.clear();
     this.weapon.ammo = ENEMY_RIFLE.magazineSize;
-    this.hitUntil = -1;
     this.aiming = false;
     this.aimPitch = 0;
   }
@@ -559,7 +559,7 @@ export class Enemy implements Damageable {
     }
     animation.setParam(this.eid, 'aim', this.aiming ? 1 : 0);
     animation.setParam(this.eid, 'pitch', THREE.MathUtils.radToDeg(this.aimPitch));
-    this.fadeUpper(now < this.hitUntil ? 0 : 1, dt);
+    this.fadeUpper(1, dt);
     this.rifle.update(this.aimPitch);
     this.flash.fixedUpdate(now);
   }
