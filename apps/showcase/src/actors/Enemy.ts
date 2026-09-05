@@ -92,6 +92,22 @@ const BOT_SPREAD_DEG = 1.6;
 const BOT_SPREAD_UNSETTLED_DEG = 4.5;
 /** Seconds after going alert before the first burst: the tell the player gets. */
 const REACTION_SECONDS = 0.45;
+/** Cover search: candidates sampled on the navmesh within this radius of the enemy. */
+const COVER_SEARCH_RADIUS = 7;
+const COVER_SAMPLES = 14;
+/** A cover point must keep this much distance from the player, and not be absurdly far. */
+const COVER_MIN_PLAYER_DIST = 5;
+const COVER_MAX_PLAYER_DIST = 30;
+/** Re-pick cover after this long, or when the player has moved this far since it was chosen. */
+const COVER_REFRESH_SECONDS = 6;
+const COVER_STALE_PLAYER_MOVE = 8;
+/** Cover is abandoned when the player gets this close to it. */
+const COVER_ABANDON_DIST = 4;
+const COVER_ARRIVE = 0.6;
+/** Peeking: step this far sideways out of cover, for a beat, then back. */
+const PEEK_OFFSET = 1.1;
+const PEEK_WAIT: readonly [number, number] = [0.8, 1.8];
+const PEEK_SECONDS: readonly [number, number] = [1.0, 1.8];
 
 const WALK_ANIM = 1.2;
 const RUN_ANIM = 4.0;
@@ -159,6 +175,17 @@ export class Enemy implements Damageable {
   private lookUntil = -1;
   private burstUntil = -1;
   private nextBurstAt = 0;
+  private readonly cover = new THREE.Vector3();
+  private hasCover = false;
+  private inCover = false;
+  private peeking = false;
+  private coverChosenAt = -100;
+  private readonly coverPlayerPos = new THREE.Vector3();
+  private readonly peekPoint = new THREE.Vector3();
+  private peekAt = 0;
+  private peekUntil = 0;
+  private readonly candidate = { x: 0, y: 0, z: 0 };
+  private readonly playerEye = new THREE.Vector3();
   private readonly lastKnown = new THREE.Vector3();
   private readonly pathTarget = new THREE.Vector3();
   private readonly velocity = new THREE.Vector3();
@@ -275,6 +302,11 @@ export class Enemy implements Damageable {
     return Math.hypot(this.velocity.x, this.velocity.z);
   }
 
+  /** Where the enemy stands in its cover cycle, for probes and the debug HUD. */
+  coverState(): { hasCover: boolean; inCover: boolean; peeking: boolean; cover: [number, number, number] | null } {
+    return { hasCover: this.hasCover, inCover: this.inCover, peeking: this.peeking, cover: this.hasCover ? [this.cover.x, this.cover.y, this.cover.z] : null };
+  }
+
   hit(zone: HitZone, damage: number, now: number, impact?: Impact): boolean {
     if (this.dead) return false;
     const { animation, labels } = this.deps;
@@ -357,6 +389,9 @@ export class Enemy implements Damageable {
     this.burstUntil = -1;
     this.lastSeenAt = -100;
     this.alertSince = -100;
+    this.hasCover = false;
+    this.inCover = false;
+    this.peeking = false;
     this.velocity.set(0, 0, 0);
     this.follower.clear();
     this.weapon.ammo = ENEMY_RIFLE.magazineSize;
@@ -411,21 +446,14 @@ export class Enemy implements Damageable {
           this.lookUntil = -1;
           break;
         }
-        if (now - this.lastSeenAt <= AWARENESS.loseAfter) {
-          faceTarget = this.playerFeet;
-          if (sample.visible && sample.distance <= ENGAGE_RANGE) {
-            wantsMove = false;
-            this.follower.clear();
-            this.shoot(sample, player, now);
-          } else {
-            moveSpeed = CHASE_SPEED;
-            wantsMove = this.pathTo(this.lastKnown, now);
-          }
-        } else {
+        if (now - this.lastSeenAt > AWARENESS.loseAfter) {
           this.state = 'searching';
           this.lookUntil = -1;
           this.repathAt = 0;
+          break;
         }
+        faceTarget = this.playerFeet;
+        ({ moveSpeed, wantsMove } = this.engage(sample, player, now));
         break;
       case 'searching':
         moveSpeed = INVESTIGATE_SPEED;
@@ -486,11 +514,142 @@ export class Enemy implements Damageable {
     return { visible, distance, inCone, stance: player.stance, speed: player.speed, lit: player.lit };
   }
 
+  /**
+   * Alert behaviour with the player seen recently: get to cover that blocks
+   * the player's line of sight, fire while moving if the player is in view,
+   * then hold cover and peek out sideways for bursts. Without usable cover,
+   * or when the player closes in, stand and fight or chase the last known
+   * position. Returns the movement intent for this tick.
+   */
+  private engage(sample: { visible: boolean; distance: number }, player: OperatorView, now: number): { moveSpeed: number; wantsMove: boolean } {
+    const { random } = this.deps;
+    const visible = sample.visible && sample.distance <= ENGAGE_RANGE;
+    if (!this.hasCover || now - this.coverChosenAt > COVER_REFRESH_SECONDS || this.coverPlayerPos.distanceTo(this.playerFeet) > COVER_STALE_PLAYER_MOVE) {
+      this.chooseCover(now, player);
+    }
+    const usable = this.hasCover && this.cover.distanceTo(this.playerFeet) >= COVER_ABANDON_DIST && sample.distance <= COVER_MAX_PLAYER_DIST + 5;
+    if (!usable) {
+      this.inCover = false;
+      this.peeking = false;
+      if (visible) {
+        this.follower.clear();
+        this.shoot(sample, player, now);
+        return { moveSpeed: 0, wantsMove: false };
+      }
+      return { moveSpeed: CHASE_SPEED, wantsMove: this.pathTo(this.lastKnown, now) };
+    }
+
+    if (this.peeking) {
+      if (now < this.peekUntil) {
+        // Out at the peek point: fire if the player is in view, else keep stepping out.
+        if (visible) {
+          this.follower.clear();
+          this.shoot(sample, player, now);
+          return { moveSpeed: 0, wantsMove: false };
+        }
+        return { moveSpeed: INVESTIGATE_SPEED, wantsMove: this.pathTo(this.peekPoint, now) };
+      }
+      // Back into cover.
+      const moving = this.pathTo(this.cover, now);
+      if (!moving || this.feetPos.distanceTo(this.cover) < COVER_ARRIVE) {
+        this.peeking = false;
+        this.inCover = true;
+        this.follower.clear();
+        this.peekAt = now + random.range(PEEK_WAIT[0], PEEK_WAIT[1]);
+        return { moveSpeed: 0, wantsMove: false };
+      }
+      return { moveSpeed: INVESTIGATE_SPEED, wantsMove: moving };
+    }
+
+    if (!this.inCover) {
+      // On the way to cover: shoot on the move when the player is in view (moving spread applies).
+      if (visible) this.shoot(sample, player, now);
+      const moving = this.pathTo(this.cover, now);
+      if (!moving || this.feetPos.distanceTo(this.cover) < COVER_ARRIVE) {
+        this.inCover = true;
+        this.follower.clear();
+        this.peekAt = now + random.range(PEEK_WAIT[0], PEEK_WAIT[1]);
+        return { moveSpeed: 0, wantsMove: false };
+      }
+      return { moveSpeed: CHASE_SPEED, wantsMove: moving };
+    }
+
+    // Holding cover. If the player is in view from here the cover is not doing its job: fire anyway.
+    if (visible) {
+      this.shoot(sample, player, now);
+      return { moveSpeed: 0, wantsMove: false };
+    }
+    if (now >= this.peekAt) this.startPeek(now);
+    return { moveSpeed: 0, wantsMove: false };
+  }
+
+  /** Sample navmesh points near the enemy and keep the closest one the player cannot see into. */
+  private chooseCover(now: number, player: OperatorView): void {
+    const { navigation, physics, random } = this.deps;
+    this.coverChosenAt = now;
+    this.coverPlayerPos.copy(this.playerFeet);
+    this.hasCover = false;
+    this.inCover = false;
+    this.peeking = false;
+    this.playerEye.copy(this.playerFeet);
+    this.playerEye.y += Math.min(EYE_HEIGHT, player.colliderHeight * 0.9);
+    let bestScore = Infinity;
+    for (let i = 0; i < COVER_SAMPLES; i++) {
+      const c = navigation.randomPointAround(this.feetPos, COVER_SEARCH_RADIUS, random, this.candidate);
+      if (!c) continue;
+      const dPlayer = Math.hypot(c.x - this.playerFeet.x, c.z - this.playerFeet.z);
+      if (dPlayer < COVER_MIN_PLAYER_DIST || dPlayer > COVER_MAX_PLAYER_DIST) continue;
+      // The player's eye must not see the candidate's chest.
+      this.tmpA.set(c.x, c.y + CHEST_HEIGHT * 0.8, c.z);
+      this.tmpB.copy(this.tmpA).sub(this.playerEye);
+      const len = this.tmpB.length();
+      const blocked = physics.raycast(this.playerEye, this.tmpB, len, { layers: 'world' }) !== null;
+      if (!blocked) continue;
+      const dSelf = Math.hypot(c.x - this.feetPos.x, c.z - this.feetPos.z);
+      const score = dSelf + Math.abs(dPlayer - 14) * 0.3;
+      if (score < bestScore) {
+        bestScore = score;
+        this.cover.set(c.x, c.y, c.z);
+        this.hasCover = true;
+      }
+    }
+  }
+
+  /** Step sideways out of cover, perpendicular to the player, onto the navmesh. */
+  private startPeek(now: number): void {
+    const { navigation, random } = this.deps;
+    const dx = this.playerFeet.x - this.cover.x;
+    const dz = this.playerFeet.z - this.cover.z;
+    const len = Math.hypot(dx, dz) || 1;
+    const px = -dz / len;
+    const pz = dx / len;
+    const first = random.next() < 0.5 ? 1 : -1;
+    for (const side of [first, -first]) {
+      this.candidate.x = this.cover.x + px * PEEK_OFFSET * side;
+      this.candidate.y = this.cover.y;
+      this.candidate.z = this.cover.z + pz * PEEK_OFFSET * side;
+      const snapped = navigation.nearestPoint(this.candidate, this.candidate);
+      if (!snapped) continue;
+      if (Math.hypot(snapped.x - this.cover.x, snapped.z - this.cover.z) < PEEK_OFFSET * 0.5) continue;
+      this.peekPoint.set(snapped.x, snapped.y, snapped.z);
+      this.peeking = true;
+      this.inCover = false;
+      this.peekUntil = now + random.range(PEEK_SECONDS[0], PEEK_SECONDS[1]);
+      this.repathAt = 0;
+      return;
+    }
+    // Nowhere to peek from: wait and try again.
+    this.peekAt = now + 1;
+  }
+
   private becomeAlert(now: number): void {
     if (this.dead) return;
     if (this.state !== 'alert') {
       this.alertSince = now;
       this.nextBurstAt = now + REACTION_SECONDS;
+      this.hasCover = false;
+      this.inCover = false;
+      this.peeking = false;
     }
     this.state = 'alert';
     this.awareness = 1;
