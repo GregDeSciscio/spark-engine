@@ -46,6 +46,8 @@ export interface OperatorView {
   readonly speed: number;
   /** 0..1 how lit the operator is. */
   readonly lit: number;
+  /** Height of the operator's current collider: stance shrinks it, and enemies aim and look accordingly. */
+  readonly colliderHeight: number;
   feet(out: THREE.Vector3): THREE.Vector3;
   /** Apply damage. Returns true when it killed the operator. */
   takeDamage(damage: number, zone: HitZone, now: number): boolean;
@@ -474,8 +476,9 @@ export class Enemy implements Damageable {
     // Line of sight: eye to chest, blocked by the world only.
     this.eye.copy(this.feetPos);
     this.eye.y += EYE_HEIGHT;
+    // Line of sight to the centre of whatever the player currently is: chest standing, lower when crouched or prone.
     this.tmpA.copy(this.playerFeet);
-    this.tmpA.y += CHEST_HEIGHT;
+    this.tmpA.y += Math.min(CHEST_HEIGHT, player.colliderHeight * 0.65);
     this.tmpB.copy(this.tmpA).sub(this.eye);
     const len = this.tmpB.length();
     const hit = this.deps.physics.raycast(this.eye, this.tmpB, len, { layers: 'world', excludeEid: this.eid });
@@ -569,7 +572,7 @@ export class Enemy implements Damageable {
       this.eye.copy(this.feetPos);
       this.eye.y += EYE_HEIGHT;
       this.shotDir.copy(this.playerFeet);
-      this.shotDir.y += CHEST_HEIGHT;
+      this.shotDir.y += Math.min(CHEST_HEIGHT, player.colliderHeight * 0.65);
       this.shotDir.sub(this.eye).normalize();
       applySpread(this.shotDir, spreadDeg, random, this.tmpA, this.tmpB);
       this.tmpA.copy(this.eye).addScaledVector(this.shotDir, 0.6);
@@ -580,7 +583,7 @@ export class Enemy implements Damageable {
       if (hit.eid === player.eid) {
         this.tmpA.set(hit.point.x, hit.point.y, hit.point.z);
         player.feet(this.tmpB);
-        const zone = hitZoneAt((this.tmpA.y - this.tmpB.y) / OPERATOR.height);
+        const zone = hitZoneAt((this.tmpA.y - this.tmpB.y) / player.colliderHeight);
         player.takeDamage(Math.round(damageAt(ENEMY_RIFLE, hit.distance)), zone, now);
       } else {
         this.tmpA.set(hit.point.x, hit.point.y, hit.point.z);

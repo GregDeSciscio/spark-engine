@@ -275,6 +275,8 @@ export const missionScene: SceneDefinition = {
         spreadDeg: gunplay.spreadNow(),
         health: operator.health,
         lit: operator.lit,
+        stance: operator.stance,
+        colliderHeight: operator.colliderHeight,
         feet: operator.feet(new THREE.Vector3()).toArray(),
         targets: dummies.map((d) => ({ name: d.name, health: d.health, dead: d.dead, feet: d.feet(new THREE.Vector3()).toArray() })),
         enemies: enemies.map((e) => ({ name: e.name, state: e.state, health: e.health, dead: e.dead, feet: e.feet(new THREE.Vector3()).toArray() })),

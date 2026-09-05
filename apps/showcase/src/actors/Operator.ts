@@ -43,6 +43,7 @@ export const OPERATOR = {
   stanceHeight: { stand: 1.8, crouch: 1.25, prone: 0.6 } as const satisfies Record<Stance, number>,
 } as const;
 
+const UP = new THREE.Vector3(0, 1, 0);
 const WALK_ANIM = 1.2;
 const RUN_ANIM = 4.0;
 
@@ -113,27 +114,26 @@ export class Operator {
   private jumpQueued = false;
   private readonly rifleParts: readonly { dispose(): void }[];
   private readonly rifle: THREE.Group;
+  private readonly visual: THREE.Object3D;
+  /** Height of the current collider; the entity transform sits at half of it. */
+  private bodyHeight: number = OPERATOR.height;
+  private readonly feetScratch = new THREE.Vector3();
 
   constructor(deps: OperatorDeps, spawn: THREE.Vector3, yaw: number) {
     this.deps = deps;
     const { entities, physics, animation, renderSync, scene, model } = deps;
-    const halfHeight = OPERATOR.height / 2 - OPERATOR.radius;
     const centerY = spawn.y + OPERATOR.height / 2;
     this.facing = yaw + Math.PI;
     this.eid = entities.create([Transform, { x: spawn.x, y: centerY, z: spawn.z, qy: Math.sin(this.facing / 2), qw: Math.cos(this.facing / 2) }], Character);
-    physics.addBody(this.eid, {
-      type: 'kinematicPosition',
-      shape: { kind: 'capsule', halfHeight, radius: OPERATOR.radius },
-      layer: 'player',
-      collidesWith: ['world', 'enemy'],
-    });
+    this.addBody(OPERATOR.height);
     this.controller = new CharacterController(physics, { stepHeight: 0.4, snapToGround: 0.3, characterMass: 80, gravity: OPERATOR.gravity });
     this.controller.attach(this.eid);
 
     // The entity transform is the capsule centre; the skinned mesh stands on its feet below it.
     this.root = new THREE.Group();
     const visual = model.instantiate({ castShadow: true, receiveShadow: true });
-    visual.position.y = -OPERATOR.height / 2;
+    this.visual = visual;
+    visual.position.y = -this.bodyHeight / 2;
     this.root.add(visual);
     scene.add(this.root);
     renderSync.attach(entities, this.eid, this.root);
@@ -151,8 +151,47 @@ export class Operator {
     this.muzzle = new THREE.Object3D();
     this.muzzle.position.z = 0.68;
     this.rifle.add(this.muzzle);
-    this.rifle.position.set(0.26, 1.32 - OPERATOR.height / 2, 0.12);
+    this.rifle.position.set(0.26, 1.32 - this.bodyHeight / 2, 0.12);
     this.root.add(this.rifle);
+  }
+
+  /** A capsule for a stance height, centred on the entity transform. Prone is short enough to need a thinner radius. */
+  private addBody(height: number): void {
+    const radius = Math.min(OPERATOR.radius, height / 2 - 0.02);
+    const halfHeight = Math.max(0.01, height / 2 - radius);
+    this.deps.physics.addBody(this.eid, {
+      type: 'kinematicPosition',
+      shape: { kind: 'capsule', halfHeight, radius },
+      layer: 'player',
+      collidesWith: ['world', 'enemy'],
+    });
+    this.bodyHeight = height;
+  }
+
+  /**
+   * Change stance, rebuilding the collider to the stance height so crouching
+   * and going prone really shrink the hitbox. Refused when standing up would
+   * push into a ceiling.
+   */
+  setStance(next: Stance): boolean {
+    if (next === this.stance) return true;
+    const { entities, physics } = this.deps;
+    const height = OPERATOR.stanceHeight[next];
+    this.feet(this.feetScratch);
+    if (height > this.bodyHeight) {
+      this.tmpF.set(this.feetScratch.x, this.feetScratch.y + this.bodyHeight - 0.05, this.feetScratch.z);
+      const above = physics.raycast(this.tmpF, UP, height - this.bodyHeight + 0.05, { layers: 'world' });
+      if (above) return false;
+    }
+    this.controller.detach(this.eid);
+    physics.removeBody(this.eid);
+    const t = entities.store(Transform);
+    t.y[this.eid] = this.feetScratch.y + height / 2;
+    this.addBody(height);
+    this.controller.attach(this.eid);
+    this.visual.position.y = -height / 2;
+    this.stance = next;
+    return true;
   }
 
   /** Current stance height, for the camera pivot. */
@@ -163,7 +202,12 @@ export class Operator {
   /** Feet position in world space. */
   feet(out: THREE.Vector3): THREE.Vector3 {
     const t = this.deps.entities.store(Transform);
-    return out.set(t.x[this.eid] ?? 0, (t.y[this.eid] ?? 0) - OPERATOR.height / 2, t.z[this.eid] ?? 0);
+    return out.set(t.x[this.eid] ?? 0, (t.y[this.eid] ?? 0) - this.bodyHeight / 2, t.z[this.eid] ?? 0);
+  }
+
+  /** Height of the current collider (the stance height once the stance change went through). */
+  get colliderHeight(): number {
+    return this.bodyHeight;
   }
 
   get grounded(): boolean {
@@ -182,7 +226,6 @@ export class Operator {
     this.lastHitAt = now;
     if (this.health === 0) {
       this.dead = true;
-      this.stance = 'stand';
       this.aiming = false;
       this.deps.animation.setParam(this.eid, 'dead', 1);
       this.deps.animation.setTrigger(this.eid, 'die');
@@ -196,6 +239,13 @@ export class Operator {
   /** Back to a spawn with full health: a checkpoint reload. */
   respawn(spawn: THREE.Vector3, yaw: number): void {
     const { entities, physics, animation } = this.deps;
+    if (this.stance !== 'stand') {
+      this.controller.detach(this.eid);
+      physics.removeBody(this.eid);
+      this.addBody(OPERATOR.height);
+      this.controller.attach(this.eid);
+      this.visual.position.y = -OPERATOR.height / 2;
+    }
     const centerY = spawn.y + OPERATOR.height / 2;
     const t = entities.store(Transform);
     t.x[this.eid] = spawn.x;
@@ -223,8 +273,8 @@ export class Operator {
       this.aiming = false;
       return;
     }
-    if (input.wasPressed('KeyC')) this.stance = this.stance === 'crouch' ? 'stand' : 'crouch';
-    if (input.wasPressed('KeyX')) this.stance = this.stance === 'prone' ? 'stand' : 'prone';
+    if (input.wasPressed('KeyC')) this.setStance(this.stance === 'crouch' ? 'stand' : 'crouch');
+    if (input.wasPressed('KeyX')) this.setStance(this.stance === 'prone' ? 'stand' : 'prone');
     if (input.wasPressed('Space') && this.stance === 'stand') this.jumpQueued = true;
     this.aiming = input.isButtonDown(2);
     const forward = input.axis('KeyS', 'KeyW');
@@ -239,7 +289,7 @@ export class Operator {
     this.facing = camera.getYaw() + Math.PI;
     // The rifle's +Z is the body's forward; tilt it to the view pitch (positive looks down).
     this.rifle.rotation.x = camera.effectivePitch();
-    this.rifle.position.y = (this.height * 0.73) - OPERATOR.height / 2;
+    this.rifle.position.y = this.height * 0.73 - this.bodyHeight / 2;
   }
 
   fixedUpdate(dt: number): void {
