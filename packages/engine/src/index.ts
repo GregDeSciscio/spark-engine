@@ -167,6 +167,8 @@ export {
   VolumeFogSettings,
   intersectRayBox,
   DEFAULT_VOLUME_FOG,
+  MAX_VOLUME_FOG_SPOTS,
+  type VolumeFogSpotUniforms,
   type VolumeFogParams,
   type VolumeFogSpot,
 } from './rendering/VolumeFog';

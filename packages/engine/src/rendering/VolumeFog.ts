@@ -75,8 +75,28 @@ export interface VolumeFogParams {
   readonly noiseStrength: number;
   /** Henyey-Greenstein anisotropy for the spot, 0 isotropic, 0.3-0.6 forward scattering. */
   readonly anisotropy: number;
+  /** One spot cone (kept for the single-spot API); `spots` adds more. */
   readonly spot: VolumeFogSpot | null;
+  /** Up to `MAX_VOLUME_FOG_SPOTS` cones. The slot count is fixed at construction (a shader variant). */
+  readonly spots?: readonly VolumeFogSpot[] | undefined;
 }
+
+/** Cone slots compiled into the march at most; each slot costs a few instructions per step. */
+export const MAX_VOLUME_FOG_SPOTS = 4;
+
+function spotUniforms() {
+  return {
+    position: uniform(new THREE.Vector3()),
+    direction: uniform(new THREE.Vector3(0, -1, 0)),
+    cone: uniform(new THREE.Vector2(0, 1)),
+    color: uniform(new THREE.Color()),
+    intensity: uniform(0),
+    range: uniform(1),
+  };
+}
+
+/** Per-slot uniforms for one cone: position, direction, (cos outer, cos inner), colour, intensity, range. */
+export type VolumeFogSpotUniforms = ReturnType<typeof spotUniforms>;
 
 export const DEFAULT_VOLUME_FOG: VolumeFogParams = {
   bounds: { min: new THREE.Vector3(-10, 0, -10), max: new THREE.Vector3(10, 8, 10) },
@@ -135,20 +155,50 @@ export class VolumeFogSettings {
   readonly noiseDrift = uniform(new THREE.Vector3());
   readonly noiseStrength = uniform(0);
   readonly anisotropy = uniform(0);
-  readonly spotPosition = uniform(new THREE.Vector3());
-  readonly spotDirection = uniform(new THREE.Vector3(0, -1, 0));
-  /** (cos outer, cos inner) */
-  readonly spotCone = uniform(new THREE.Vector2(0, 1));
-  readonly spotColor = uniform(new THREE.Color());
-  readonly spotIntensity = uniform(0);
-  readonly spotRange = uniform(1);
-  /** Whether the spot term is compiled in. Fixed at construction (a shader variant). */
+  /** Cone slots, `spotSlots` of them, fixed at construction. Slot 0 is the single-spot API's spot. */
+  readonly spots: readonly VolumeFogSpotUniforms[];
+  /** Whether any spot term is compiled in. Fixed at construction (a shader variant). */
   readonly hasSpot: boolean;
 
   constructor(params: Partial<VolumeFogParams> = {}) {
     const p = { ...DEFAULT_VOLUME_FOG, ...params };
-    this.hasSpot = p.spot !== null;
+    const wanted = Math.max(p.spot ? 1 : 0, p.spots?.length ?? 0);
+    const count = Math.min(MAX_VOLUME_FOG_SPOTS, wanted);
+    const slots: VolumeFogSpotUniforms[] = [];
+    for (let i = 0; i < count; i++) slots.push(spotUniforms());
+    this.spots = slots;
+    this.hasSpot = count > 0;
     this.set(p);
+  }
+
+  get spotSlots(): number {
+    return this.spots.length;
+  }
+
+  // Slot 0 under the original names, so existing callers and tests keep working.
+  get spotPosition(): VolumeFogSpotUniforms['position'] {
+    return this.slot(0).position;
+  }
+  get spotDirection(): VolumeFogSpotUniforms['direction'] {
+    return this.slot(0).direction;
+  }
+  get spotCone(): VolumeFogSpotUniforms['cone'] {
+    return this.slot(0).cone;
+  }
+  get spotColor(): VolumeFogSpotUniforms['color'] {
+    return this.slot(0).color;
+  }
+  get spotIntensity(): VolumeFogSpotUniforms['intensity'] {
+    return this.slot(0).intensity;
+  }
+  get spotRange(): VolumeFogSpotUniforms['range'] {
+    return this.slot(0).range;
+  }
+
+  private slot(index: number): VolumeFogSpotUniforms {
+    const s = this.spots[index];
+    if (!s) throw new Error(`VolumeFogSettings: no spot slot ${index} (${this.spots.length} compiled in)`);
+    return s;
   }
 
   set(params: Partial<VolumeFogParams>): void {
@@ -164,20 +214,30 @@ export class VolumeFogSettings {
     if (params.noiseDrift !== undefined) this.noiseDrift.value.copy(params.noiseDrift);
     if (params.noiseStrength !== undefined) this.noiseStrength.value = params.noiseStrength;
     if (params.anisotropy !== undefined) this.anisotropy.value = params.anisotropy;
-    if (params.spot) this.setSpot(params.spot);
+    if (params.spot) this.setSpot(params.spot, 0);
+    if (params.spots) params.spots.forEach((spot, i) => this.setSpot(spot, i));
   }
 
-  setSpot(spot: Partial<VolumeFogSpot>): void {
-    if (spot.position) this.spotPosition.value.copy(spot.position);
-    if (spot.direction) this.spotDirection.value.copy(spot.direction).normalize();
+  /** Write one cone's uniforms. Slots beyond those compiled in are ignored. */
+  setSpot(spot: Partial<VolumeFogSpot>, index = 0): void {
+    const u = this.spots[index];
+    if (!u) return;
+    if (spot.position) u.position.value.copy(spot.position);
+    if (spot.direction) u.direction.value.copy(spot.direction).normalize();
     if (spot.angle !== undefined || spot.penumbra !== undefined) {
-      const angle = spot.angle ?? Math.acos(this.spotCone.value.x);
-      const penumbra = spot.penumbra ?? 1 - Math.acos(this.spotCone.value.y) / Math.max(angle, 1e-6);
-      this.spotCone.value.set(Math.cos(angle), Math.cos(angle * (1 - Math.max(0, Math.min(1, penumbra)))));
+      const angle = spot.angle ?? Math.acos(u.cone.value.x);
+      const penumbra = spot.penumbra ?? 1 - Math.acos(u.cone.value.y) / Math.max(angle, 1e-6);
+      u.cone.value.set(Math.cos(angle), Math.cos(angle * (1 - Math.max(0, Math.min(1, penumbra)))));
     }
-    if (spot.color !== undefined) this.spotColor.value.set(spot.color);
-    if (spot.intensity !== undefined) this.spotIntensity.value = spot.intensity;
-    if (spot.range !== undefined) this.spotRange.value = Math.max(1e-3, spot.range);
+    if (spot.color !== undefined) u.color.value.set(spot.color);
+    if (spot.intensity !== undefined) u.intensity.value = spot.intensity;
+    if (spot.range !== undefined) u.range.value = Math.max(1e-3, spot.range);
+  }
+
+  /** Switch a slot off without rebuilding anything. */
+  clearSpot(index: number): void {
+    const u = this.spots[index];
+    if (u) u.intensity.value = 0;
   }
 }
 
@@ -282,8 +342,6 @@ export class VolumeFogNode extends THREE.TempNode {
         const dt = exit.sub(enter).div(stepsF).toVar();
         const jitter = interleavedGradientNoise(screenCoordinate.xy);
         const drift = s.noiseDrift.mul(time);
-        const cosOuter = s.spotCone.x;
-        const cosInner = s.spotCone.y;
         const g = s.anisotropy;
         const g2 = g.mul(g);
 
@@ -297,16 +355,17 @@ export class VolumeFogNode extends THREE.TempNode {
           const density = s.density.mul(heightWeight).mul(wisps).toVar();
 
           const light = s.color.mul(s.ambient).toVar();
-          if (s.hasSpot) {
-            const toP = p.sub(s.spotPosition);
+          // One cone term per compiled slot, unrolled: slots are a shader variant, their values are uniforms.
+          for (const spot of s.spots) {
+            const toP = p.sub(spot.position);
             const d = length(toP).toVar();
             const l = toP.div(max(d, 1e-4));
-            const cone = smoothstep(cosOuter, cosInner, dot(l, s.spotDirection));
-            const falloff = smoothstep(s.spotRange, s.spotRange.mul(0.35), d).div(d.mul(d).mul(0.06).add(1.0));
+            const cone = smoothstep(spot.cone.x, spot.cone.y, dot(l, spot.direction));
+            const falloff = smoothstep(spot.range, spot.range.mul(0.35), d).div(d.mul(d).mul(0.06).add(1.0));
             // Henyey-Greenstein toward the camera: light travels along l, scatters back along -dir.
             const cosTheta = dot(l, dir.negate());
             const phase = g2.oneMinus().div(g2.add(1.0).sub(g.mul(2.0).mul(cosTheta)).pow(1.5).mul(12.566));
-            light.addAssign(s.spotColor.mul(s.spotIntensity).mul(cone).mul(falloff).mul(phase.mul(4.0).add(0.15)));
+            light.addAssign(spot.color.mul(spot.intensity).mul(cone).mul(falloff).mul(phase.mul(4.0).add(0.15)));
           }
 
           const extinction = density.mul(dt);

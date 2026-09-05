@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { DisposeBag, Navigation, SurfaceLibrary, Transform, TriangleSoup, type Entity, type EntityWorld, type PhysicsWorld, type Random } from '@spark/engine';
 import type { ObjectiveDef } from '../mission/Objectives';
-import type { MissionLevel } from './MissionLevel';
+import { STREET_BOUNDS, type MissionLevel } from './MissionLevel';
 
 /**
  * A grey-box night street built in code: the fallback level (`?level=blockout`)
@@ -163,6 +163,8 @@ export function buildBlockout(scene: THREE.Scene, entities: EntityWorld, physics
     objectives,
     navigation,
     vfx: [],
+    lights: neonLights,
+    bounds: STREET_BOUNDS,
     dispose: () => bag.dispose(),
   };
 }

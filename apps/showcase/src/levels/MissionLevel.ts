@@ -9,6 +9,7 @@ import {
   type Entity,
   type EntityWorld,
   type LevelEntityDescriptor,
+  type LightingSystem,
   type Logger,
   type PhysicsWorld,
   type QualitySettings,
@@ -40,8 +41,15 @@ export interface MissionLevel {
   readonly navigation: Navigation;
   /** Authored particle sources: steam vents and the like (`spark.type=vfx`). */
   readonly vfx: readonly VfxSpot[];
+  /** The level's local lights (neon), for volumetric cones and light meters. */
+  readonly lights: readonly THREE.PointLight[];
+  /** The playable extents, for fog volumes and rain. */
+  readonly bounds: { readonly min: THREE.Vector3; readonly max: THREE.Vector3 };
   dispose(): void;
 }
+
+/** The street's playable box; both levels are built to it. */
+export const STREET_BOUNDS = { min: new THREE.Vector3(-14, 0, -76), max: new THREE.Vector3(14, 12, 46) };
 
 export interface VfxSpot {
   readonly preset: 'steam' | 'smoke' | 'embers';
@@ -50,7 +58,7 @@ export interface VfxSpot {
 }
 
 /** Night sky, moon, fog: the scene-level look every level shares until levels carry their own lighting rigs. */
-export function applyAtmosphere(scene: THREE.Scene, quality: QualitySettings): { dispose(): void } {
+export function applyAtmosphere(scene: THREE.Scene, quality: QualitySettings): { readonly moon: THREE.DirectionalLight; dispose(): void } {
   scene.background = new THREE.Color(0x05060a);
   // Fog reaches full opacity around 120 m: the level's own sightline limit (ADR-004).
   const fog = createHeightFog({ color: 0x0a0e1c, density: 0.014, groundY: 0, falloff: 5, groundBoost: 1.0 });
@@ -72,6 +80,7 @@ export function applyAtmosphere(scene: THREE.Scene, quality: QualitySettings): {
   const hemi = new THREE.HemisphereLight(0x2a3a66, 0x0e0b08, 1.4);
   scene.add(moon, moon.target, hemi);
   return {
+    moon,
     dispose() {
       scene.remove(moon, moon.target, hemi);
       moon.dispose();
@@ -84,6 +93,7 @@ export function applyAtmosphere(scene: THREE.Scene, quality: QualitySettings): {
 export interface StreetLevelDeps {
   readonly entities: EntityWorld;
   readonly physics: PhysicsWorld;
+  readonly lighting: LightingSystem;
   readonly assets: AssetManager;
   readonly renderSync: RenderSync;
   readonly scene: THREE.Scene;
@@ -107,7 +117,7 @@ function str(v: unknown, fallback: string): string {
  * pipeline and sits beside the GLB.
  */
 export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/street.glb'): Promise<MissionLevel> {
-  const { entities, physics, assets, renderSync, scene, logger } = deps;
+  const { entities, physics, assets, renderSync, scene, logger, lighting } = deps;
   const bag = new DisposeBag();
 
   const navUrl = url.replace(/\.glb$/i, '.navmesh.bin');
@@ -188,6 +198,11 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
 
   const spawnPoint = level.spawn('player');
   if (!spawnPoint) throw new Error('street: no spark.type=spawn with team=player');
+  const lights: THREE.PointLight[] = [];
+  for (const eid of level.lights) {
+    const light = lighting.lights.get(eid) as THREE.PointLight | undefined;
+    if (light?.isPointLight) lights.push(light);
+  }
   objectives.sort((a, b) => a.order - b.order);
   const patrols: PatrolSpec[] = [...routes.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
@@ -208,6 +223,8 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
     objectives: objectives.map(({ order: _order, ...o }) => o),
     navigation,
     vfx,
+    lights,
+    bounds: STREET_BOUNDS,
     dispose: () => bag.dispose(),
   };
 }

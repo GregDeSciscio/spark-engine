@@ -10,6 +10,7 @@ import { Impacts } from '../combat/effects';
 import { Gore } from '../combat/gore';
 import { Gunplay } from '../combat/Gunplay';
 import { RIFLE_BASELINE } from '../combat/weapons';
+import { createAtmosphere } from '../levels/atmosphere';
 import { buildBlockout } from '../levels/blockout';
 import { applyAtmosphere, loadStreetLevel, type MissionLevel } from '../levels/MissionLevel';
 import { MissionRunner } from '../mission/Objectives';
@@ -65,20 +66,23 @@ export const missionScene: SceneDefinition = {
     // ---- level ----------------------------------------------------------------
     const renderSync = new RenderSync(entities);
     bag.add(entities.addSystem(renderSync));
-    bag.add(applyAtmosphere(scene, quality));
+    const sky = applyAtmosphere(scene, quality);
+    bag.add(sky);
     await initNavigation();
     let level: MissionLevel;
     if (LEVEL === 'blockout') {
       level = buildBlockout(scene, entities, physics, random.fork());
     } else {
       try {
-        level = await loadStreetLevel({ entities, physics, assets, renderSync, scene, logger }, STREET_URL);
+        level = await loadStreetLevel({ entities, physics, assets, renderSync, scene, logger, lighting: ctx.lighting }, STREET_URL);
       } catch (error) {
         logger.warn(`mission: street level failed (${error instanceof Error ? error.message : String(error)}); falling back to the blockout`);
         level = buildBlockout(scene, entities, physics, random.fork());
       }
     }
     bag.add(level);
+    const weather = createAtmosphere({ entities, vfx, scene, quality, pipeline: ctx.renderer.pipeline, gpu: ctx.renderer.capabilities.backend === 'webgpu' }, level, sky.moon);
+    bag.add(weather);
     const navigation = level.navigation;
     const navLines = new THREE.LineSegments(
       new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(navigation.debugLines(), 3)),
@@ -370,6 +374,7 @@ export const missionScene: SceneDefinition = {
       lateUpdate(dt) {
         syncCamera();
         camera.update(dt, occluder);
+        weather.update(feet);
       },
       resize(width, height) {
         camera.setAspect(width / height);
