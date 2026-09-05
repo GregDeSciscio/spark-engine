@@ -151,6 +151,8 @@ interface EmitterRuntime {
 }
 
 const _quat = new THREE.Quaternion();
+const _aim = new THREE.Vector3();
+const _yAxis = new THREE.Vector3(0, 1, 0);
 
 /**
  * GPU-simulated particle emitters (Milestone 8, kickoff §11). WebGPU only:
@@ -237,6 +239,28 @@ export class ParticleSystem implements System {
     if (descriptor.prewarm) runtime.live.record(0, descriptor.capacity, descriptor.lifetime[1]);
     this.log.debug(`emitter ${eid}: capacity=${descriptor.capacity} render=${descriptor.render.kind}`);
     return { eid, object: runtime.object, descriptor };
+  }
+
+  /**
+   * Move an emitter to `position`, aim its local +Y (the presets' emission
+   * axis) along `direction`, and queue `count` spawns. The one-liner for
+   * muzzle flashes, impacts and hits. `direction` need not be unit length.
+   */
+  burstAt(eid: Entity, position: { x: number; y: number; z: number }, direction: { x: number; y: number; z: number }, count: number): void {
+    if (!this.emitters.has(eid)) return;
+    const t = this.world.store(Transform);
+    _aim.set(direction.x, direction.y, direction.z);
+    if (_aim.lengthSq() < 1e-12) _aim.set(0, 1, 0);
+    _aim.normalize();
+    _quat.setFromUnitVectors(_yAxis, _aim);
+    t.x[eid] = position.x;
+    t.y[eid] = position.y;
+    t.z[eid] = position.z;
+    t.qx[eid] = _quat.x;
+    t.qy[eid] = _quat.y;
+    t.qz[eid] = _quat.z;
+    t.qw[eid] = _quat.w;
+    this.burst(eid, count);
   }
 
   /** Queue `count` immediate spawns for the next dispatch. No-op when unavailable. */

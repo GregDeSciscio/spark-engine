@@ -155,10 +155,14 @@ export class Operator {
     this.root.add(this.rifle);
   }
 
-  /** A capsule for a stance height, centred on the entity transform. Prone is short enough to need a thinner radius. */
-  private addBody(height: number): void {
+  /** Capsule dimensions for a stance height. Prone is short enough to need a thinner radius. */
+  private static capsuleFor(height: number): { halfHeight: number; radius: number } {
     const radius = Math.min(OPERATOR.radius, height / 2 - 0.02);
-    const halfHeight = Math.max(0.01, height / 2 - radius);
+    return { halfHeight: Math.max(0.01, height / 2 - radius), radius };
+  }
+
+  private addBody(height: number): void {
+    const { halfHeight, radius } = Operator.capsuleFor(height);
     this.deps.physics.addBody(this.eid, {
       type: 'kinematicPosition',
       shape: { kind: 'capsule', halfHeight, radius },
@@ -168,6 +172,19 @@ export class Operator {
     this.bodyHeight = height;
   }
 
+  /** Resize the capsule to a stance height in place, keeping the feet where they are. */
+  private resizeBody(height: number): void {
+    const { entities, physics } = this.deps;
+    this.feet(this.feetScratch);
+    const { halfHeight, radius } = Operator.capsuleFor(height);
+    physics.setCapsule(this.eid, halfHeight, radius);
+    const t = entities.store(Transform);
+    t.y[this.eid] = this.feetScratch.y + height / 2;
+    physics.setPose(this.eid, { x: t.x[this.eid] ?? 0, y: t.y[this.eid] ?? 0, z: t.z[this.eid] ?? 0 }, { x: 0, y: t.qy[this.eid] ?? 0, z: 0, w: t.qw[this.eid] ?? 1 });
+    this.bodyHeight = height;
+    this.visual.position.y = -height / 2;
+  }
+
   /**
    * Change stance, rebuilding the collider to the stance height so crouching
    * and going prone really shrink the hitbox. Refused when standing up would
@@ -175,7 +192,7 @@ export class Operator {
    */
   setStance(next: Stance): boolean {
     if (next === this.stance) return true;
-    const { entities, physics } = this.deps;
+    const { physics } = this.deps;
     const height = OPERATOR.stanceHeight[next];
     this.feet(this.feetScratch);
     if (height > this.bodyHeight) {
@@ -183,13 +200,7 @@ export class Operator {
       const above = physics.raycast(this.tmpF, UP, height - this.bodyHeight + 0.05, { layers: 'world' });
       if (above) return false;
     }
-    this.controller.detach(this.eid);
-    physics.removeBody(this.eid);
-    const t = entities.store(Transform);
-    t.y[this.eid] = this.feetScratch.y + height / 2;
-    this.addBody(height);
-    this.controller.attach(this.eid);
-    this.visual.position.y = -height / 2;
+    this.resizeBody(height);
     this.stance = next;
     return true;
   }
@@ -239,13 +250,7 @@ export class Operator {
   /** Back to a spawn with full health: a checkpoint reload. */
   respawn(spawn: THREE.Vector3, yaw: number): void {
     const { entities, physics, animation } = this.deps;
-    if (this.stance !== 'stand') {
-      this.controller.detach(this.eid);
-      physics.removeBody(this.eid);
-      this.addBody(OPERATOR.height);
-      this.controller.attach(this.eid);
-      this.visual.position.y = -OPERATOR.height / 2;
-    }
+    if (this.bodyHeight !== OPERATOR.height) this.resizeBody(OPERATOR.height);
     const centerY = spawn.y + OPERATOR.height / 2;
     const t = entities.store(Transform);
     t.x[this.eid] = spawn.x;

@@ -81,8 +81,6 @@ export interface StreetLevelDeps {
   readonly logger: Logger;
 }
 
-const COL_PREFIX = 'COL_';
-
 function num(v: unknown, fallback: number): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }
@@ -127,8 +125,8 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
   for (const d of level.descriptors) {
     if (d.kind === 'collider') {
       const eid = level.colliders[colliderIndex++];
-      const twin = level.root.getObjectByName(d.node.name.slice(COL_PREFIX.length)) as THREE.Mesh | undefined;
-      if (eid !== undefined && twin?.isMesh) meshes.set(eid, twin);
+      const twin = eid !== undefined ? level.renderTwin(eid) : null;
+      if (eid !== undefined && twin) meshes.set(eid, twin);
       continue;
     }
     if (d.kind === 'spawn') {

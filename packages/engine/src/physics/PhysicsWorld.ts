@@ -306,6 +306,20 @@ export class PhysicsWorld implements Disposable {
   }
 
   /**
+   * Resize a capsule collider in place (stances, growth) without rebuilding
+   * the body or re-attaching a character controller. The body pose is the
+   * capsule centre, so callers move the transform when the feet must stay put.
+   */
+  setCapsule(eid: Entity, halfHeight: number, radius: number): void {
+    this.assertLive();
+    const collider = this.colliders.get(eid);
+    if (!collider) throw new Error(`PhysicsWorld.setCapsule: entity ${eid} has no collider`);
+    if (collider.shape.type !== RAPIER.ShapeType.Capsule) throw new Error(`PhysicsWorld.setCapsule: entity ${eid} is not a capsule`);
+    collider.setHalfHeight(Math.max(0, halfHeight));
+    collider.setRadius(Math.max(0.001, radius));
+  }
+
+  /**
    * Connect two bodies with an impulse joint. Returns a handle for
    * `removeJoint`; joints also go away with either body.
    */

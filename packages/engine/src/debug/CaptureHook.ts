@@ -55,11 +55,18 @@ export function exposeForCapture(engine: Engine, sceneName: string | null): Capt
       }
     },
     stepFrames(n: number): void {
-      let t = performance.now();
+      // A running loop would interleave wall-clock frames with these synthetic
+      // ones and, once the synthetic timestamps ran ahead of the wall clock,
+      // produce zero fixed steps per real frame until it caught up. Pause it.
+      const wasRunning = engine.state === 'running';
+      if (wasRunning) engine.stop();
+      let t = engine.clock.lastTimeMs ?? performance.now();
       for (let i = 0; i < n; i++) {
         t += 1000 / 60;
         engine.step(t);
       }
+      engine.clock.resync();
+      if (wasRunning) engine.start();
     },
     snapshot(): DebugSnapshot | null {
       return engine.stats?.snapshot() ?? null;

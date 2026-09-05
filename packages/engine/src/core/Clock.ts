@@ -33,6 +33,21 @@ export class Clock {
     return this.deltaSeconds;
   }
 
+  /** The timestamp of the last tick, or null before the first (and after `resync`). */
+  get lastTimeMs(): number | null {
+    return this.lastTime;
+  }
+
+  /**
+   * Forget the last timestamp without touching elapsed time or the frame
+   * count, so the next tick measures no delta instead of a jump. Used after
+   * synthetic stepping (`stepFrames`) fed the clock timestamps ahead of the
+   * wall clock, which would otherwise freeze real frames until it caught up.
+   */
+  resync(): void {
+    this.lastTime = null;
+  }
+
   /** Seconds since the previous tick, clamped. */
   get delta(): number {
     return this.deltaSeconds;

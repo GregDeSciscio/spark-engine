@@ -24,22 +24,6 @@ export interface EffectsDeps {
   readonly scene: THREE.Scene;
 }
 
-const Y_AXIS = new THREE.Vector3(0, 1, 0);
-const _quat = new THREE.Quaternion();
-
-/** Emitter presets fire along local +Y; aim that at `direction` from `position`. */
-export function placeEmitter(entities: EntityWorld, eid: Entity, position: THREE.Vector3, direction: THREE.Vector3): void {
-  const t = entities.store(Transform);
-  _quat.setFromUnitVectors(Y_AXIS, direction);
-  t.x[eid] = position.x;
-  t.y[eid] = position.y;
-  t.z[eid] = position.z;
-  t.qx[eid] = _quat.x;
-  t.qy[eid] = _quat.y;
-  t.qz[eid] = _quat.z;
-  t.qw[eid] = _quat.w;
-}
-
 function spawnEmitter(deps: EffectsDeps, bag: DisposeBag, preset: 'muzzleFlash' | 'sparks', overrides?: { capacity?: number }): Entity | null {
   const { entities, vfx, scene } = deps;
   const eid = entities.create(Transform);
@@ -76,10 +60,7 @@ export class MuzzleFlash {
   fire(position: THREE.Vector3, direction: THREE.Vector3, now: number): void {
     this.light.position.copy(position);
     this.flashUntil = now + FLASH_SECONDS;
-    if (this.eid !== null) {
-      placeEmitter(this.deps.entities, this.eid, position, direction);
-      this.deps.vfx.burst(this.eid, 18);
-    }
+    if (this.eid !== null) this.deps.vfx.burstAt(this.eid, position, direction, 18);
   }
 
   fixedUpdate(now: number): void {
@@ -139,10 +120,7 @@ export class Impacts {
         material: this.material,
       });
     }
-    if (this.sparksEid !== null) {
-      placeEmitter(this.deps.entities, this.sparksEid, point, normal);
-      vfx.burst(this.sparksEid, 10);
-    }
+    if (this.sparksEid !== null) vfx.burstAt(this.sparksEid, point, normal, 10);
     if (hitSound) audio.playAt(hitSound, { x: point.x, y: point.y, z: point.z }, { volume: 0.35 });
   }
 

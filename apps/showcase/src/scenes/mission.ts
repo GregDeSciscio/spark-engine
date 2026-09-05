@@ -65,8 +65,6 @@ export const missionScene: SceneDefinition = {
     // ---- level ----------------------------------------------------------------
     const renderSync = new RenderSync(entities);
     bag.add(entities.addSystem(renderSync));
-    // Every layer any body will reference, before the first body exists, so the bit layout never depends on load order.
-    physics.layers.define('world', 'player', 'target', 'enemy', 'trigger', 'ragdoll');
     bag.add(applyAtmosphere(scene, quality));
     await initNavigation();
     let level: MissionLevel;

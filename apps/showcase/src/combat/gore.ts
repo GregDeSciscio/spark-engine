@@ -1,7 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { float, length, mx_noise_float, smoothstep, uv, vec2, vec3 } from 'three/tsl';
 import { Decals, DisposeBag, Transform, prepareDecalMaterial, type Entity, type EntityWorld, type ParticleSystem, type PhysicsWorld, type Random } from '@spark/engine';
-import { placeEmitter } from './effects';
 
 /**
  * Gore tier one (docs/design/gore-scope.md): blood sprays from hits as GPU
@@ -93,11 +92,8 @@ export class Gore {
 
   /** A bullet went into a character at `point` travelling along `direction`. */
   characterHit(point: THREE.Vector3, direction: THREE.Vector3, heavy = false): void {
-    const { entities, vfx, physics, random, worldMeshes } = this.deps;
-    if (this.bloodEid !== null) {
-      placeEmitter(entities, this.bloodEid, point, direction);
-      vfx.burst(this.bloodEid, heavy ? 28 : 14);
-    }
+    const { vfx, physics, random, worldMeshes } = this.deps;
+    if (this.bloodEid !== null) vfx.burstAt(this.bloodEid, point, direction, heavy ? 28 : 14);
     // Splatter on what is behind the target, along the shot.
     const behind = physics.raycast(point, direction, SPLATTER_REACH, { layers: 'world' });
     if (behind) {

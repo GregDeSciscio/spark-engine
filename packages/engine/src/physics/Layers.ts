@@ -43,10 +43,12 @@ export class Layers {
   }
 
   /** The single bit for one layer. Throws on an unknown name so typos surface early. */
+  /** The bit for a layer name, defining the layer on first use so declaration order never matters. */
   bit(name: string): number {
-    const bit = this.bits.get(name);
+    let bit = this.bits.get(name);
     if (bit === undefined) {
-      throw new Error(`Layers: unknown layer "${name}". Defined: ${this.names().join(', ') || '(none)'}`);
+      this.define(name);
+      bit = this.bits.get(name) as number;
     }
     return bit;
   }

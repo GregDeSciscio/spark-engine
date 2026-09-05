@@ -45,4 +45,18 @@ describe('Clock', () => {
     expect(clock.elapsed).toBe(0);
     expect(clock.tick(500)).toBe(0);
   });
+
+  it('resync forgets the last timestamp without losing elapsed time', () => {
+    const c = new Clock();
+    c.tick(1000);
+    c.tick(1016);
+    const elapsed = c.elapsed;
+    expect(c.lastTimeMs).toBe(1016);
+    c.resync();
+    expect(c.lastTimeMs).toBeNull();
+    // A tick far in the past (as if synthetic stepping had run ahead) measures nothing instead of freezing.
+    expect(c.tick(500)).toBe(0);
+    expect(c.elapsed).toBe(elapsed);
+    expect(c.tick(516)).toBeCloseTo(0.016);
+  });
 });

@@ -56,8 +56,10 @@ describe('Layers', () => {
     expect(layers.groups('a', ['b', 'c'])).toBe((2 << 16) | 12);
     expect(layers.groups('a', 'all')).toBe(((2 << 16) | 0xffff) >>> 0);
     expect(layers.queryGroups('b')).toBe(((0xffff << 16) | 4) >>> 0);
-    expect(() => layers.bit('nope')).toThrow(/unknown layer/);
-    for (let i = 0; i < 12; i++) layers.define(`l${i}`);
+    // Unknown names define themselves on first use, so declaration order never matters.
+    expect(layers.bit('nope')).toBe(16);
+    expect(layers.has('nope')).toBe(true);
+    for (let i = 0; i < 11; i++) layers.define(`l${i}`);
     expect(() => layers.define('overflow')).toThrow(/at most 16/);
   });
 });
@@ -333,6 +335,25 @@ describe('CharacterController', () => {
     expect(f.controller.isGrounded(f.player)).toBe(true);
     f.controller.dispose();
     expect(f.entities.has(f.player, Character)).toBe(false);
+    f.dispose();
+  });
+});
+
+describe('PhysicsWorld.setCapsule', () => {
+  it('resizes a capsule in place so a ray from above meets the new top', async () => {
+    const f = await fixture();
+    const eid = f.entities.create([Transform, { y: 0.9 }]);
+    f.physics.addBody(eid, { type: 'kinematicPosition', shape: { kind: 'capsule', halfHeight: 0.5, radius: 0.4 }, layer: 'player' });
+    f.tick(1);
+    const before = f.physics.raycast({ x: 0, y: 5, z: 0 }, { x: 0, y: -1, z: 0 }, 10, { layers: 'player' });
+    expect(before?.point.y).toBeCloseTo(1.8, 1);
+    f.physics.setCapsule(eid, 0.05, 0.25);
+    f.tick(1);
+    const after = f.physics.raycast({ x: 0, y: 5, z: 0 }, { x: 0, y: -1, z: 0 }, 10, { layers: 'player' });
+    expect(after?.point.y).toBeCloseTo(0.9 + 0.3, 1);
+    const box = f.entities.create([Transform, { x: 5 }]);
+    f.physics.addBody(box, { type: 'fixed', shape: { kind: 'box', hx: 1, hy: 1, hz: 1 }, layer: 'world' });
+    expect(() => f.physics.setCapsule(box, 1, 1)).toThrow(/not a capsule/);
     f.dispose();
   });
 });

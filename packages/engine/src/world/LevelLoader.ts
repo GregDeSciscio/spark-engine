@@ -258,6 +258,11 @@ export interface LoadedLevel extends Disposable {
   readonly teams: readonly string[];
   /** World position of the first spawn point for a team (any team when omitted), or null. */
   spawn(team?: string): { x: number; y: number; z: number } | null;
+  /**
+   * The render mesh a collider stands in for, by the `COL_<name>` ↔ `<name>`
+   * convention (ADR-008), or null. Decals and hit effects clip against it.
+   */
+  renderTwin(collider: Entity): THREE.Mesh | null;
 }
 
 /**
@@ -320,6 +325,7 @@ export class LevelLoader {
     const triggers: Entity[] = [];
     const lights: Entity[] = [];
     const colliders: Entity[] = [];
+    const twins = new Map<Entity, THREE.Mesh>();
     const teamOf = new Map<Entity, string>();
 
     const rootEntity = entities.create([
@@ -434,6 +440,10 @@ export class LevelLoader {
             },
           ]);
           physics.layers.define(descriptor.layer);
+          if (descriptor.node.name.startsWith(COLLISION_PREFIX)) {
+            const twin = root.getObjectByName(descriptor.node.name.slice(COLLISION_PREFIX.length)) as THREE.Mesh | undefined;
+            if (twin?.isMesh) twins.set(eid, twin);
+          }
           if (descriptor.shape === 'box' || !object || !(object as THREE.Mesh).isMesh) {
             const he = descriptor.halfExtents;
             physics.addBody(eid, { type: 'fixed', shape: { kind: 'box', hx: he[0], hy: he[1], hz: he[2] }, layer: descriptor.layer, events: false });
@@ -471,6 +481,9 @@ export class LevelLoader {
       lights,
       colliders,
       teams,
+      renderTwin(collider: Entity) {
+        return twins.get(collider) ?? null;
+      },
       spawn(team?: string) {
         for (const eid of spawnPoints) {
           if (team !== undefined && teamOf.get(eid) !== team) continue;
