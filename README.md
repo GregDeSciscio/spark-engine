@@ -2,7 +2,7 @@
 
 A WebGPU-first browser game engine on Three.js: renderer and post stack, ECS, Rapier physics, skeletal animation, GPU particles, world streaming, navigation, audio and UI. It ships with a demo game built on it, a launcher of scenes that each show one system, and a starter app to build your own thing from.
 
-Licence: not decided yet. Until a LICENSE file lands, treat the code as all rights reserved and ask before redistributing. The bundled assets are CC0 (Poly Haven, Quaternius) and the sounds were generated for this repo.
+MIT licensed (see `LICENSE`). The bundled assets are CC0 (Poly Haven, Quaternius) and the sounds were generated for this repo.
 
 ---
 
