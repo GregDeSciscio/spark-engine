@@ -7,10 +7,14 @@
  * For every cue in tools/audio/manifest.mjs with raw takes in
  * assets/source/audio/raw/, ffmpeg:
  *
- *   one-shots   trim leading / trailing silence, mono unless `stereo`,
- *               loudness-normalise to the cue's LUFS target, 48 kHz
- *   loops       trim, normalise, then crossfade the tail into the head so the
- *               seam is silent; a loop's length shrinks by the crossfade
+ *   one-shots   normalise first (peak to -1 dBTP under 3 s, where integrated
+ *               loudness is meaningless; two-pass loudnorm to the cue's LUFS
+ *               target from 3 s), then trim leading / trailing silence against
+ *               thresholds that assume the normalised level, mono unless
+ *               `stereo`, 48 kHz
+ *   loops       normalise, never trim (the generator's loop is continuous),
+ *               then crossfade the tail into the head so the seam is silent;
+ *               a loop's length shrinks by the crossfade
  *   voice       the `ganger` style adds a helmet-comms band-pass, a touch of
  *               saturation and a squelch of noise so the barks sit in the mix
  *
@@ -32,9 +36,14 @@ const repoRoot = path.resolve(here, '..', '..');
 export const OUT = path.join(repoRoot, 'apps', 'showcase', 'public', 'audio');
 const SAMPLE_RATE = 48000;
 const LOOP_CROSSFADE = 0.35;
-/** ffmpeg's silence detector: anything under this is "silence" for trimming. */
-const TRIM_DB = -45;
-const TRIM_TAIL_DB = -55;
+/** Silence thresholds for trimming, applied after normalisation so a quiet take is not eaten whole. */
+const TRIM_DB = -50;
+const TRIM_TAIL_DB = -60;
+/** Below this length integrated loudness is meaningless; peak-normalise instead. */
+const LOUDNORM_MIN_SECONDS = 3;
+const PEAK_DBTP = -1;
+/** A one-shot that trims down to less than this was over-trimmed: keep it untrimmed. */
+const MIN_TRIMMED_SECONDS = 0.08;
 
 function parseArgs(argv) {
   const args = { only: null, force: false, verbose: false };
@@ -73,32 +82,62 @@ function measureLoudness(file, target) {
   }
 }
 
-function filtersFor(cue, measured, target) {
+/** Peak level of a file in dBFS (ffmpeg volumedetect), or null. */
+function measurePeak(file) {
+  const r = spawnSync('ffmpeg', ['-hide_banner', '-i', file, '-af', 'volumedetect', '-f', 'null', '-'], { encoding: 'utf8', windowsHide: true });
+  const m = /max_volume:\s*(-?[\d.]+) dB/.exec(r.stderr || '');
+  return m ? Number.parseFloat(m[1]) : null;
+}
+
+/** The normalisation stage: colour first (voice filter), then level. */
+function normaliseFilters(cue, input, target) {
   const chain = [];
-  chain.push(`silenceremove=start_periods=1:start_threshold=${TRIM_DB}dB:start_silence=0.02`);
-  // Trim the tail: reverse, trim the (now leading) silence, reverse back.
-  chain.push('areverse', `silenceremove=start_periods=1:start_threshold=${TRIM_TAIL_DB}dB:start_silence=0.05`, 'areverse');
   if (cue.voiceStyle === 'ganger') {
-    // Helmet comms: band-limited, a little crunch, a floor of static.
-    chain.push('highpass=f=300', 'lowpass=f=3400', 'acompressor=threshold=-18dB:ratio=4:attack=5:release=80', 'volume=1.5', 'alimiter=limit=0.9');
+    // Helmet comms: band-limited, a little crunch.
+    chain.push('highpass=f=300', 'lowpass=f=3400', 'acompressor=threshold=-18dB:ratio=4:attack=5:release=80');
   }
-  if (measured && Number.isFinite(Number(measured.input_i))) {
-    chain.push(
-      `loudnorm=I=${target}:TP=-1.5:LRA=11:measured_I=${measured.input_i}:measured_TP=${measured.input_tp}:measured_LRA=${measured.input_lra}:measured_thresh=${measured.input_thresh}:offset=${measured.target_offset}:linear=true`,
-    );
-  } else {
-    chain.push(`loudnorm=I=${target}:TP=-1.5:LRA=11`);
+  const duration = probeDuration(input);
+  if (duration >= LOUDNORM_MIN_SECONDS) {
+    const measured = measureLoudness(input, target);
+    if (measured && Number.isFinite(Number(measured.input_i)) && Number(measured.input_i) > -70) {
+      chain.push(
+        `loudnorm=I=${target}:TP=-1.5:LRA=11:measured_I=${measured.input_i}:measured_TP=${measured.input_tp}:measured_LRA=${measured.input_lra}:measured_thresh=${measured.input_thresh}:offset=${measured.target_offset}:linear=true`,
+      );
+      return chain;
+    }
   }
-  return chain.join(',');
+  const peak = measurePeak(input);
+  if (peak !== null && Number.isFinite(peak)) chain.push(`volume=${(PEAK_DBTP - peak).toFixed(2)}dB`);
+  chain.push('alimiter=limit=0.94:level=false');
+  return chain;
+}
+
+function trimFilters() {
+  // Head, then the tail by reversing, trimming the (now leading) silence and reversing back.
+  return [
+    `silenceremove=start_periods=1:start_threshold=${TRIM_DB}dB:start_silence=0.02`,
+    'areverse',
+    `silenceremove=start_periods=1:start_threshold=${TRIM_TAIL_DB}dB:start_silence=0.05`,
+    'areverse',
+  ];
 }
 
 /** Master one take to Ogg. Returns the output duration. */
 async function masterTake(input, output, cue, tmp, verbose) {
   const target = cue.lufs ?? (cue.kind === 'voice' ? LUFS.voice : LUFS[cue.bus] ?? LUFS.sfx);
-  const measured = measureLoudness(input, target);
   const channels = cue.stereo ? 2 : 1;
-  const mastered = path.join(tmp, `${path.basename(output, '.ogg')}.wav`);
-  ffmpeg(['-i', input, '-af', filtersFor(cue, measured, target), '-ac', String(channels), '-ar', String(SAMPLE_RATE), mastered], verbose);
+  const base = path.basename(output, '.ogg');
+  // Stage 1: colour and level.
+  const levelled = path.join(tmp, `${base}-level.wav`);
+  ffmpeg(['-i', input, '-af', normaliseFilters(cue, input, target).join(','), '-ac', String(channels), '-ar', String(SAMPLE_RATE), levelled], verbose);
+  // Stage 2: trim one-shots; a loop stays whole.
+  let mastered = levelled;
+  if (!cue.loop) {
+    const trimmed = path.join(tmp, `${base}-trim.wav`);
+    ffmpeg(['-i', levelled, '-af', trimFilters().join(','), trimmed], verbose);
+    if (probeDuration(trimmed) >= MIN_TRIMMED_SECONDS) mastered = trimmed;
+    else if (verbose) console.log(`  ${base}: trim left ${probeDuration(trimmed).toFixed(3)} s, keeping the untrimmed take`);
+  }
   let source = mastered;
   if (cue.loop) {
     // Seamless loop: the last LOOP_CROSSFADE seconds fade into the first, then the head is cut off.

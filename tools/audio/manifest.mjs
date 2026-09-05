@@ -9,10 +9,10 @@
  * reads at scene load (apps/showcase/src/audio/MissionAudio.ts). Names are the
  * contract between this file and the game; change one, change both.
  *
- * Prompt craft for ElevenLabs' text-to-sound model: name the source, the
- * space, the mic distance and the mix intent; say "no music, no voice" on
- * ambiences; ask for "dry" one-shots so the engine's spatialisation adds the
- * room. `influence` is prompt_influence (0.3 default: more creative, 0.6+:
+ * Prompt craft for ElevenLabs' text-to-sound model (its guide: short and
+ * concrete, one sound per prompt, no cinematic words): name the source, the
+ * texture and the mic distance; ask for "dry" one-shots so the engine's
+ * spatialisation adds the room. `influence` is prompt_influence (0.3 default: more creative, 0.6+:
  * literal). Loops are requested with the API's loop flag and still get a
  * crossfaded seam in the build.
  */
@@ -52,7 +52,7 @@ export const CUES = [
   {
     name: 'rifle-shot',
     kind: 'sfx',
-    prompt: 'single suppressed assault rifle gunshot, close mic, tight punchy crack with a short mechanical action click, dry, no reverb tail, no music',
+    prompt: 'single suppressed assault rifle gunshot, close mic, tight punchy crack with a short mechanical action click, dry, no reverb tail',
     seconds: 1.0,
     variants: 4,
     influence: 0.55,
@@ -67,7 +67,7 @@ export const CUES = [
   {
     name: 'rifle-tail',
     kind: 'sfx',
-    prompt: 'gunshot echo tail only, reflecting off wet city street and tall concrete buildings at night, no initial crack, long decaying slapback, no music',
+    prompt: 'gunshot echo tail only, reflecting off wet city street and tall concrete buildings at night, no initial crack, long decaying slapback',
     seconds: 2.2,
     variants: 3,
     influence: 0.5,
@@ -83,7 +83,7 @@ export const CUES = [
   {
     name: 'rifle-distant',
     kind: 'sfx',
-    prompt: 'distant assault rifle gunshot heard from two hundred meters away across a rainy city at night, muffled low thud with echo, no music',
+    prompt: 'distant assault rifle gunshot heard from two hundred meters away across a rainy city at night, muffled low thud with echo',
     seconds: 1.8,
     variants: 3,
     influence: 0.5,
@@ -98,7 +98,7 @@ export const CUES = [
   {
     name: 'rifle-reload',
     kind: 'sfx',
-    prompt: 'assault rifle reload: magazine release click, empty magazine drops, fresh magazine slides in and seats with a solid click, bolt racked, close mic, dry, no music',
+    prompt: 'assault rifle reload: magazine release click, empty magazine drops, fresh magazine slides in and seats with a solid click, bolt racked, close mic, dry',
     seconds: 2.5,
     variants: 2,
     influence: 0.6,
@@ -112,7 +112,7 @@ export const CUES = [
   {
     name: 'rifle-empty',
     kind: 'sfx',
-    prompt: 'dry fire click of an empty assault rifle trigger, small metallic snap, close mic, dry, no music',
+    prompt: 'dry fire click of an empty assault rifle trigger, small metallic snap, close mic, dry',
     seconds: 0.5,
     variants: 2,
     influence: 0.6,
@@ -125,7 +125,7 @@ export const CUES = [
   {
     name: 'aim-in',
     kind: 'sfx',
-    prompt: 'soft quick tactical gear rustle and a faint rifle stock shoulder tap, very short, subtle foley, close mic, dry, no music',
+    prompt: 'soft quick tactical gear rustle and a faint rifle stock shoulder tap, very short, subtle foley, close mic, dry',
     seconds: 0.5,
     variants: 3,
     influence: 0.5,
@@ -139,7 +139,7 @@ export const CUES = [
   {
     name: 'casing',
     kind: 'sfx',
-    prompt: 'single spent brass rifle casing bouncing and rolling on wet concrete, small bright metallic tinks with a tiny splash, close, dry, no music',
+    prompt: 'single spent brass rifle casing bouncing and rolling on wet concrete, small bright metallic tinks with a tiny splash, close, dry',
     seconds: 0.9,
     variants: 4,
     influence: 0.55,
@@ -156,7 +156,7 @@ export const CUES = [
   {
     name: 'impact-concrete',
     kind: 'sfx',
-    prompt: 'bullet impact on concrete wall, sharp crack with stone chips and dust, close, dry, no ricochet whine, no music',
+    prompt: 'bullet impact on concrete wall, sharp crack with stone chips and dust, close, dry, no ricochet whine',
     seconds: 0.7,
     variants: 4,
     influence: 0.55,
@@ -170,7 +170,7 @@ export const CUES = [
   {
     name: 'impact-metal',
     kind: 'sfx',
-    prompt: 'bullet impact on a hollow steel panel, ringing metallic clang with a short ricochet spang, close, dry, no music',
+    prompt: 'bullet impact on a hollow steel panel, ringing metallic clang with a short ricochet spang, close, dry',
     seconds: 0.9,
     variants: 4,
     influence: 0.55,
@@ -184,7 +184,7 @@ export const CUES = [
   {
     name: 'impact-glass',
     kind: 'sfx',
-    prompt: 'bullet hitting a thick window, sharp glass crack and a scatter of small shards, close, dry, no music',
+    prompt: 'bullet hitting a thick window, sharp glass crack and a scatter of small shards, close, dry',
     seconds: 0.9,
     variants: 3,
     influence: 0.55,
@@ -198,7 +198,7 @@ export const CUES = [
   {
     name: 'impact-water',
     kind: 'sfx',
-    prompt: 'bullet hitting a shallow puddle on asphalt, quick sharp splash with a wet slap, close, dry, no music',
+    prompt: 'bullet hitting a shallow puddle on asphalt, quick sharp splash with a wet slap, close, dry',
     seconds: 0.7,
     variants: 3,
     influence: 0.55,
@@ -212,7 +212,7 @@ export const CUES = [
   {
     name: 'impact-flesh',
     kind: 'sfx',
-    prompt: 'bullet hitting a body, wet heavy thud with a fabric puncture, visceral, close, dry, no scream, no music',
+    prompt: 'bullet hitting a body, wet heavy thud with a fabric puncture, visceral, close, dry, no scream',
     seconds: 0.6,
     variants: 4,
     influence: 0.55,
@@ -226,7 +226,7 @@ export const CUES = [
   {
     name: 'impact-head',
     kind: 'sfx',
-    prompt: 'bullet hitting a helmet and skull, hard wet crack with a metallic snap, gory, close, dry, no music',
+    prompt: 'bullet hitting a helmet and skull, hard wet crack with a metallic snap, gory, close, dry',
     seconds: 0.6,
     variants: 3,
     influence: 0.55,
@@ -240,7 +240,7 @@ export const CUES = [
   {
     name: 'whiz',
     kind: 'sfx',
-    prompt: 'bullet passing very close to the listener, fast supersonic whip crack and zip, stereo pass-by, dry, no music',
+    prompt: 'bullet passing very close to the listener, fast supersonic whip crack and zip, stereo pass-by, dry',
     seconds: 0.6,
     variants: 3,
     influence: 0.5,
@@ -258,7 +258,7 @@ export const CUES = [
   {
     name: 'blood-splatter',
     kind: 'sfx',
-    prompt: 'wet blood splatter hitting a concrete wall and dripping, thick liquid splash, close, dry, no music',
+    prompt: 'wet blood splatter hitting a concrete wall and dripping, thick liquid splash, close, dry',
     seconds: 0.9,
     variants: 3,
     influence: 0.5,
@@ -272,7 +272,7 @@ export const CUES = [
   {
     name: 'body-fall',
     kind: 'sfx',
-    prompt: 'a body in tactical gear collapsing onto wet asphalt, heavy dull thud with a splash and gear rattle, close, dry, no voice, no music',
+    prompt: 'a body in tactical gear collapsing onto wet asphalt, heavy dull thud with a splash and gear rattle, close, dry',
     seconds: 1.2,
     variants: 3,
     influence: 0.55,
@@ -288,7 +288,7 @@ export const CUES = [
   {
     name: 'footstep-walk',
     kind: 'sfx',
-    prompt: 'single footstep of a combat boot on wet concrete, soft heel then sole, small water squelch, close mic, dry, no music',
+    prompt: 'single footstep of a combat boot on wet concrete, soft heel then sole, small water squelch, close mic, dry',
     seconds: 0.5,
     variants: 6,
     influence: 0.55,
@@ -302,7 +302,7 @@ export const CUES = [
   {
     name: 'footstep-run',
     kind: 'sfx',
-    prompt: 'single hard running footstep of a combat boot slapping wet asphalt, splash and grit, close mic, dry, no music',
+    prompt: 'single hard running footstep of a combat boot slapping wet asphalt, splash and grit, close mic, dry',
     seconds: 0.5,
     variants: 6,
     influence: 0.55,
@@ -316,7 +316,7 @@ export const CUES = [
   {
     name: 'gear-rustle',
     kind: 'sfx',
-    prompt: 'tactical vest and nylon straps rustling with a soft buckle tick, one short movement, close, dry, no music',
+    prompt: 'tactical vest and nylon straps rustling with a soft buckle tick, one short movement, close, dry',
     seconds: 0.6,
     variants: 4,
     influence: 0.5,
@@ -331,7 +331,7 @@ export const CUES = [
   {
     name: 'land',
     kind: 'sfx',
-    prompt: 'two combat boots landing from a jump onto wet concrete together, heavy thud with a splash and gear rattle, close, dry, no music',
+    prompt: 'two combat boots landing from a jump onto wet concrete together, heavy thud with a splash and gear rattle, close, dry',
     seconds: 0.8,
     variants: 3,
     influence: 0.55,
@@ -347,7 +347,7 @@ export const CUES = [
   {
     name: 'hurt',
     kind: 'sfx',
-    prompt: 'a man grunting sharply in pain through clenched teeth after being shot, short breathy grunt, close, dry, no words, no music',
+    prompt: 'a man grunting sharply in pain through clenched teeth after being shot, short breathy grunt, close, dry, no words',
     seconds: 0.8,
     variants: 4,
     influence: 0.5,
@@ -361,7 +361,7 @@ export const CUES = [
   {
     name: 'death-player',
     kind: 'sfx',
-    prompt: 'a man exhaling a last choked breath and collapsing, heartbeat slowing and stopping, muffled, cinematic, no words, no music',
+    prompt: 'a man exhaling a last choked breath and collapsing, heartbeat slowing and stopping, muffled, cinematic, no words',
     seconds: 3.0,
     variants: 1,
     influence: 0.45,
@@ -373,7 +373,7 @@ export const CUES = [
   {
     name: 'heartbeat',
     kind: 'sfx',
-    prompt: 'slow heavy human heartbeat, deep muffled thumps, steady rhythm around sixty beats per minute, seamless loop, no music',
+    prompt: 'slow heavy human heartbeat, deep muffled thumps, steady rhythm around sixty beats per minute, seamless loop',
     seconds: 4.0,
     loop: true,
     influence: 0.5,
@@ -399,7 +399,7 @@ export const CUES = [
   {
     name: 'rain-bed',
     kind: 'sfx',
-    prompt: 'steady heavy night rain on a city street, rain hitting asphalt and puddles, distant hiss on rooftops, wide stereo, seamless loop, no thunder, no voices, no music',
+    prompt: 'steady heavy night rain on a city street, rain hitting asphalt and puddles, distant hiss on rooftops, wide stereo, seamless loop, no thunder',
     seconds: 22,
     loop: true,
     influence: 0.5,
@@ -411,7 +411,7 @@ export const CUES = [
   {
     name: 'city-bed',
     kind: 'sfx',
-    prompt: 'distant futuristic city at night, low traffic rumble, far off sirens and a passing hover vehicle drone, air conditioning units humming, very distant, wide stereo, seamless loop, no rain, no voices, no music',
+    prompt: 'distant futuristic city at night, low traffic rumble, far off sirens and a passing hover vehicle drone, air conditioning units humming, very distant, wide stereo, seamless loop, no rain',
     seconds: 22,
     loop: true,
     influence: 0.45,
@@ -423,7 +423,7 @@ export const CUES = [
   {
     name: 'neon-buzz',
     kind: 'sfx',
-    prompt: 'neon sign transformer hum and buzz with an occasional electrical flicker crackle, close mic, mono, seamless loop, no music',
+    prompt: 'neon sign transformer hum and buzz with an occasional electrical flicker crackle, close mic, mono, seamless loop',
     seconds: 6,
     loop: true,
     variants: 2,
@@ -437,7 +437,7 @@ export const CUES = [
   {
     name: 'steam-hiss',
     kind: 'sfx',
-    prompt: 'steam venting from a street grate, steady pressurised hiss with soft gurgles, close mic, mono, seamless loop, no music',
+    prompt: 'steam venting from a street grate, steady pressurised hiss with soft gurgles, close mic, mono, seamless loop',
     seconds: 6,
     loop: true,
     variants: 2,
@@ -451,7 +451,7 @@ export const CUES = [
   {
     name: 'drip',
     kind: 'sfx',
-    prompt: 'single water drop falling from a fire escape into a puddle, small clean plink with a tiny splash, close, dry, no music',
+    prompt: 'single water drop falling from a fire escape into a puddle, small clean plink with a tiny splash, close, dry',
     seconds: 0.6,
     variants: 5,
     influence: 0.55,
@@ -466,7 +466,7 @@ export const CUES = [
   {
     name: 'thunder',
     kind: 'sfx',
-    prompt: 'distant rolling thunder over a city, long low rumble without a sharp crack, far away, wide stereo, no rain, no music',
+    prompt: 'distant rolling thunder over a city, long low rumble without a sharp crack, far away, wide stereo, no rain',
     seconds: 6,
     variants: 3,
     influence: 0.5,
@@ -482,7 +482,7 @@ export const CUES = [
   {
     name: 'drone-pass',
     kind: 'sfx',
-    prompt: 'a small surveillance drone flying past overhead in the rain, rotor whine with doppler pitch drop, stereo pass-by, no music',
+    prompt: 'a small surveillance drone flying past overhead in the rain, rotor whine with doppler pitch drop, stereo pass-by',
     seconds: 5,
     variants: 2,
     influence: 0.5,
@@ -499,7 +499,7 @@ export const CUES = [
   {
     name: 'ui-hitmarker',
     kind: 'sfx',
-    prompt: 'tiny sharp digital tick confirming a hit, very short clean high click, UI sound, no music',
+    prompt: 'tiny sharp digital tick confirming a hit, very short clean high click, UI sound',
     seconds: 0.5,
     variants: 1,
     influence: 0.6,
@@ -511,7 +511,7 @@ export const CUES = [
   {
     name: 'ui-headshot',
     kind: 'sfx',
-    prompt: 'short bright two-tone digital confirmation chime, glassy, UI sound, no music',
+    prompt: 'short bright two-tone digital confirmation chime, glassy, UI sound',
     seconds: 0.6,
     variants: 1,
     influence: 0.6,
@@ -523,7 +523,7 @@ export const CUES = [
   {
     name: 'ui-objective',
     kind: 'sfx',
-    prompt: 'tactical HUD objective complete notification, a short rising three-note synth confirmation with a soft digital sweep, no music',
+    prompt: 'tactical HUD objective complete notification, a short rising three-note synth confirmation with a soft digital sweep',
     seconds: 1.5,
     variants: 1,
     influence: 0.55,
@@ -535,7 +535,7 @@ export const CUES = [
   {
     name: 'ui-checkpoint',
     kind: 'sfx',
-    prompt: 'subtle low digital pulse confirming a save, a single soft warm tone with a brief shimmer, no music',
+    prompt: 'subtle low digital pulse confirming a save, a single soft warm tone with a brief shimmer',
     seconds: 1.0,
     variants: 1,
     influence: 0.55,
@@ -546,7 +546,7 @@ export const CUES = [
   {
     name: 'ui-plant-loop',
     kind: 'sfx',
-    prompt: 'demolition charge being armed: rhythmic electronic beeps accelerating slightly with a keypad tapping and a device hum, seamless loop, no music',
+    prompt: 'demolition charge being armed: rhythmic electronic beeps accelerating slightly with a keypad tapping and a device hum, seamless loop',
     seconds: 3.0,
     loop: true,
     influence: 0.55,
@@ -557,7 +557,7 @@ export const CUES = [
   {
     name: 'ui-plant-done',
     kind: 'sfx',
-    prompt: 'demolition charge armed confirmation, a firm electronic lock click followed by a long descending beep, no music',
+    prompt: 'demolition charge armed confirmation, a firm electronic lock click followed by a long descending beep',
     seconds: 1.5,
     variants: 1,
     influence: 0.6,
@@ -594,7 +594,7 @@ export const CUES = [
   {
     name: 'ui-alert',
     kind: 'sfx',
-    prompt: 'short tense low synth hit, a single dark pulse announcing detection, subtle, no music',
+    prompt: 'short tense low synth hit, a single dark pulse announcing detection, subtle',
     seconds: 1.2,
     variants: 1,
     influence: 0.5,

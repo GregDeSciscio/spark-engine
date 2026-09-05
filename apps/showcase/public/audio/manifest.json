@@ -1,5 +1,5 @@
 {
-  "generated": "2026-09-05T19:03:03.432Z",
+  "generated": "2026-09-05T19:24:01.305Z",
   "sampleRate": 48000,
   "cues": [
     {
@@ -12,7 +12,24 @@
       "pitchVariance": 1.2,
       "cooldownMs": 30,
       "maxInstances": 6,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/rifle-shot-01.ogg",
+          "duration": 0.458
+        },
+        {
+          "url": "/audio/rifle-shot-02.ogg",
+          "duration": 1
+        },
+        {
+          "url": "/audio/rifle-shot-03.ogg",
+          "duration": 1
+        },
+        {
+          "url": "/audio/rifle-shot-04.ogg",
+          "duration": 1
+        }
+      ]
     },
     {
       "name": "rifle-tail",
@@ -24,7 +41,20 @@
       "pitchVariance": 0.8,
       "cooldownMs": 60,
       "maxInstances": 4,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/rifle-tail-01.ogg",
+          "duration": 2.2
+        },
+        {
+          "url": "/audio/rifle-tail-02.ogg",
+          "duration": 1.587
+        },
+        {
+          "url": "/audio/rifle-tail-03.ogg",
+          "duration": 1.84
+        }
+      ]
     },
     {
       "name": "rifle-distant",
@@ -36,7 +66,20 @@
       "pitchVariance": 1.5,
       "cooldownMs": 60,
       "maxInstances": 6,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/rifle-distant-01.ogg",
+          "duration": 1.43
+        },
+        {
+          "url": "/audio/rifle-distant-02.ogg",
+          "duration": 1.653
+        },
+        {
+          "url": "/audio/rifle-distant-03.ogg",
+          "duration": 1.668
+        }
+      ]
     },
     {
       "name": "rifle-reload",
@@ -48,7 +91,16 @@
       "pitchVariance": 0.5,
       "cooldownMs": 500,
       "maxInstances": 2,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/rifle-reload-01.ogg",
+          "duration": 0.529
+        },
+        {
+          "url": "/audio/rifle-reload-02.ogg",
+          "duration": 1.783
+        }
+      ]
     },
     {
       "name": "rifle-empty",
@@ -60,7 +112,16 @@
       "pitchVariance": 0.8,
       "cooldownMs": 120,
       "maxInstances": 1,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/rifle-empty-01.ogg",
+          "duration": 0.296
+        },
+        {
+          "url": "/audio/rifle-empty-02.ogg",
+          "duration": 0.378
+        }
+      ]
     },
     {
       "name": "aim-in",
@@ -72,7 +133,20 @@
       "pitchVariance": 1,
       "cooldownMs": 150,
       "maxInstances": 1,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/aim-in-01.ogg",
+          "duration": 0.48
+        },
+        {
+          "url": "/audio/aim-in-02.ogg",
+          "duration": 0.48
+        },
+        {
+          "url": "/audio/aim-in-03.ogg",
+          "duration": 0.48
+        }
+      ]
     },
     {
       "name": "casing",
@@ -84,7 +158,24 @@
       "pitchVariance": 2,
       "cooldownMs": 80,
       "maxInstances": 4,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/casing-01.ogg",
+          "duration": 0.825
+        },
+        {
+          "url": "/audio/casing-02.ogg",
+          "duration": 0.618
+        },
+        {
+          "url": "/audio/casing-03.ogg",
+          "duration": 0.801
+        },
+        {
+          "url": "/audio/casing-04.ogg",
+          "duration": 0.718
+        }
+      ]
     },
     {
       "name": "impact-concrete",
@@ -96,7 +187,24 @@
       "pitchVariance": 2,
       "cooldownMs": 30,
       "maxInstances": 6,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/impact-concrete-01.ogg",
+          "duration": 0.68
+        },
+        {
+          "url": "/audio/impact-concrete-02.ogg",
+          "duration": 0.68
+        },
+        {
+          "url": "/audio/impact-concrete-03.ogg",
+          "duration": 0.68
+        },
+        {
+          "url": "/audio/impact-concrete-04.ogg",
+          "duration": 0.68
+        }
+      ]
     },
     {
       "name": "impact-metal",
@@ -108,7 +216,24 @@
       "pitchVariance": 2,
       "cooldownMs": 30,
       "maxInstances": 6,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/impact-metal-01.ogg",
+          "duration": 0.412
+        },
+        {
+          "url": "/audio/impact-metal-02.ogg",
+          "duration": 0.425
+        },
+        {
+          "url": "/audio/impact-metal-03.ogg",
+          "duration": 0.88
+        },
+        {
+          "url": "/audio/impact-metal-04.ogg",
+          "duration": 0.368
+        }
+      ]
     },
     {
       "name": "impact-glass",
@@ -120,7 +245,20 @@
       "pitchVariance": 1.5,
       "cooldownMs": 30,
       "maxInstances": 4,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/impact-glass-01.ogg",
+          "duration": 0.858
+        },
+        {
+          "url": "/audio/impact-glass-02.ogg",
+          "duration": 0.856
+        },
+        {
+          "url": "/audio/impact-glass-03.ogg",
+          "duration": 0.88
+        }
+      ]
     },
     {
       "name": "impact-water",
@@ -132,7 +270,20 @@
       "pitchVariance": 2,
       "cooldownMs": 30,
       "maxInstances": 4,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/impact-water-01.ogg",
+          "duration": 0.68
+        },
+        {
+          "url": "/audio/impact-water-02.ogg",
+          "duration": 0.588
+        },
+        {
+          "url": "/audio/impact-water-03.ogg",
+          "duration": 0.62
+        }
+      ]
     },
     {
       "name": "impact-flesh",
@@ -144,7 +295,24 @@
       "pitchVariance": 1.5,
       "cooldownMs": 30,
       "maxInstances": 4,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/impact-flesh-01.ogg",
+          "duration": 0.6
+        },
+        {
+          "url": "/audio/impact-flesh-02.ogg",
+          "duration": 0.573
+        },
+        {
+          "url": "/audio/impact-flesh-03.ogg",
+          "duration": 0.505
+        },
+        {
+          "url": "/audio/impact-flesh-04.ogg",
+          "duration": 0.6
+        }
+      ]
     },
     {
       "name": "impact-head",
@@ -156,7 +324,20 @@
       "pitchVariance": 1,
       "cooldownMs": 30,
       "maxInstances": 3,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/impact-head-01.ogg",
+          "duration": 0.6
+        },
+        {
+          "url": "/audio/impact-head-02.ogg",
+          "duration": 0.459
+        },
+        {
+          "url": "/audio/impact-head-03.ogg",
+          "duration": 0.369
+        }
+      ]
     },
     {
       "name": "whiz",
@@ -168,7 +349,20 @@
       "pitchVariance": 2,
       "cooldownMs": 90,
       "maxInstances": 3,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/whiz-01.ogg",
+          "duration": 0.401
+        },
+        {
+          "url": "/audio/whiz-02.ogg",
+          "duration": 0.283
+        },
+        {
+          "url": "/audio/whiz-03.ogg",
+          "duration": 0.288
+        }
+      ]
     },
     {
       "name": "blood-splatter",
@@ -180,7 +374,20 @@
       "pitchVariance": 1.5,
       "cooldownMs": 60,
       "maxInstances": 3,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/blood-splatter-01.ogg",
+          "duration": 0.88
+        },
+        {
+          "url": "/audio/blood-splatter-02.ogg",
+          "duration": 0.88
+        },
+        {
+          "url": "/audio/blood-splatter-03.ogg",
+          "duration": 0.88
+        }
+      ]
     },
     {
       "name": "body-fall",
@@ -192,7 +399,20 @@
       "pitchVariance": 1,
       "cooldownMs": 200,
       "maxInstances": 3,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/body-fall-01.ogg",
+          "duration": 0.888
+        },
+        {
+          "url": "/audio/body-fall-02.ogg",
+          "duration": 0.698
+        },
+        {
+          "url": "/audio/body-fall-03.ogg",
+          "duration": 0.646
+        }
+      ]
     },
     {
       "name": "footstep-walk",
@@ -204,7 +424,32 @@
       "pitchVariance": 1.5,
       "cooldownMs": 90,
       "maxInstances": 6,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/footstep-walk-01.ogg",
+          "duration": 0.48
+        },
+        {
+          "url": "/audio/footstep-walk-02.ogg",
+          "duration": 0.373
+        },
+        {
+          "url": "/audio/footstep-walk-03.ogg",
+          "duration": 0.48
+        },
+        {
+          "url": "/audio/footstep-walk-04.ogg",
+          "duration": 0.48
+        },
+        {
+          "url": "/audio/footstep-walk-05.ogg",
+          "duration": 0.48
+        },
+        {
+          "url": "/audio/footstep-walk-06.ogg",
+          "duration": 0.386
+        }
+      ]
     },
     {
       "name": "footstep-run",
@@ -216,7 +461,32 @@
       "pitchVariance": 1.5,
       "cooldownMs": 90,
       "maxInstances": 6,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/footstep-run-01.ogg",
+          "duration": 0.48
+        },
+        {
+          "url": "/audio/footstep-run-02.ogg",
+          "duration": 0.48
+        },
+        {
+          "url": "/audio/footstep-run-03.ogg",
+          "duration": 0.48
+        },
+        {
+          "url": "/audio/footstep-run-04.ogg",
+          "duration": 0.409
+        },
+        {
+          "url": "/audio/footstep-run-05.ogg",
+          "duration": 0.41
+        },
+        {
+          "url": "/audio/footstep-run-06.ogg",
+          "duration": 0.48
+        }
+      ]
     },
     {
       "name": "gear-rustle",
@@ -228,7 +498,24 @@
       "pitchVariance": 1.5,
       "cooldownMs": 150,
       "maxInstances": 3,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/gear-rustle-01.ogg",
+          "duration": 0.224
+        },
+        {
+          "url": "/audio/gear-rustle-02.ogg",
+          "duration": 0.6
+        },
+        {
+          "url": "/audio/gear-rustle-03.ogg",
+          "duration": 0.6
+        },
+        {
+          "url": "/audio/gear-rustle-04.ogg",
+          "duration": 0.6
+        }
+      ]
     },
     {
       "name": "land",
@@ -240,7 +527,20 @@
       "pitchVariance": 1,
       "cooldownMs": 300,
       "maxInstances": 2,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/land-01.ogg",
+          "duration": 0.75
+        },
+        {
+          "url": "/audio/land-02.ogg",
+          "duration": 0.557
+        },
+        {
+          "url": "/audio/land-03.ogg",
+          "duration": 0.602
+        }
+      ]
     },
     {
       "name": "hurt",
@@ -252,7 +552,24 @@
       "pitchVariance": 1,
       "cooldownMs": 250,
       "maxInstances": 1,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/hurt-01.ogg",
+          "duration": 0.779
+        },
+        {
+          "url": "/audio/hurt-02.ogg",
+          "duration": 0.577
+        },
+        {
+          "url": "/audio/hurt-03.ogg",
+          "duration": 0.633
+        },
+        {
+          "url": "/audio/hurt-04.ogg",
+          "duration": 0.578
+        }
+      ]
     },
     {
       "name": "death-player",
@@ -264,7 +581,12 @@
       "pitchVariance": 0,
       "cooldownMs": 0,
       "maxInstances": 1,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/death-player-01.ogg",
+          "duration": 2.86
+        }
+      ]
     },
     {
       "name": "heartbeat",
@@ -276,7 +598,12 @@
       "pitchVariance": 0,
       "cooldownMs": 0,
       "maxInstances": null,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/heartbeat-01.ogg",
+          "duration": 3.65
+        }
+      ]
     },
     {
       "name": "bark-suspicious",
@@ -288,7 +615,12 @@
       "pitchVariance": 0,
       "cooldownMs": 1500,
       "maxInstances": 2,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/bark-suspicious-01.ogg",
+          "duration": 2.232
+        }
+      ]
     },
     {
       "name": "bark-suspicious-2",
@@ -300,7 +632,12 @@
       "pitchVariance": 0,
       "cooldownMs": 1500,
       "maxInstances": 2,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/bark-suspicious-2-01.ogg",
+          "duration": 1.111
+        }
+      ]
     },
     {
       "name": "bark-alert",
@@ -312,7 +649,12 @@
       "pitchVariance": 0,
       "cooldownMs": 800,
       "maxInstances": 2,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/bark-alert-01.ogg",
+          "duration": 1.521
+        }
+      ]
     },
     {
       "name": "bark-alert-2",
@@ -324,7 +666,12 @@
       "pitchVariance": 0,
       "cooldownMs": 800,
       "maxInstances": 2,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/bark-alert-2-01.ogg",
+          "duration": 2.127
+        }
+      ]
     },
     {
       "name": "bark-alert-3",
@@ -336,7 +683,12 @@
       "pitchVariance": 0,
       "cooldownMs": 800,
       "maxInstances": 2,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/bark-alert-3-01.ogg",
+          "duration": 2.433
+        }
+      ]
     },
     {
       "name": "bark-search",
@@ -348,7 +700,12 @@
       "pitchVariance": 0,
       "cooldownMs": 1500,
       "maxInstances": 2,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/bark-search-01.ogg",
+          "duration": 2.947
+        }
+      ]
     },
     {
       "name": "bark-search-2",
@@ -360,7 +717,12 @@
       "pitchVariance": 0,
       "cooldownMs": 1500,
       "maxInstances": 2,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/bark-search-2-01.ogg",
+          "duration": 1.818
+        }
+      ]
     },
     {
       "name": "bark-reload",
@@ -372,7 +734,12 @@
       "pitchVariance": 0,
       "cooldownMs": 1500,
       "maxInstances": 2,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/bark-reload-01.ogg",
+          "duration": 1.496
+        }
+      ]
     },
     {
       "name": "bark-hit",
@@ -384,7 +751,16 @@
       "pitchVariance": 0,
       "cooldownMs": 300,
       "maxInstances": 3,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/bark-hit-01.ogg",
+          "duration": 2.156
+        },
+        {
+          "url": "/audio/bark-hit-02.ogg",
+          "duration": 0.998
+        }
+      ]
     },
     {
       "name": "bark-death",
@@ -396,7 +772,16 @@
       "pitchVariance": 0,
       "cooldownMs": 300,
       "maxInstances": 3,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/bark-death-01.ogg",
+          "duration": 3.26
+        },
+        {
+          "url": "/audio/bark-death-02.ogg",
+          "duration": 2.533
+        }
+      ]
     },
     {
       "name": "rain-bed",
@@ -408,7 +793,12 @@
       "pitchVariance": 0,
       "cooldownMs": 0,
       "maxInstances": null,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/rain-bed-01.ogg",
+          "duration": 21.65
+        }
+      ]
     },
     {
       "name": "city-bed",
@@ -420,7 +810,12 @@
       "pitchVariance": 0,
       "cooldownMs": 0,
       "maxInstances": null,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/city-bed-01.ogg",
+          "duration": 21.65
+        }
+      ]
     },
     {
       "name": "neon-buzz",
@@ -432,7 +827,16 @@
       "pitchVariance": 1,
       "cooldownMs": 0,
       "maxInstances": null,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/neon-buzz-01.ogg",
+          "duration": 5.65
+        },
+        {
+          "url": "/audio/neon-buzz-02.ogg",
+          "duration": 5.65
+        }
+      ]
     },
     {
       "name": "steam-hiss",
@@ -444,7 +848,16 @@
       "pitchVariance": 1,
       "cooldownMs": 0,
       "maxInstances": null,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/steam-hiss-01.ogg",
+          "duration": 5.65
+        },
+        {
+          "url": "/audio/steam-hiss-02.ogg",
+          "duration": 5.65
+        }
+      ]
     },
     {
       "name": "drip",
@@ -456,7 +869,28 @@
       "pitchVariance": 3,
       "cooldownMs": 200,
       "maxInstances": 4,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/drip-01.ogg",
+          "duration": 0.6
+        },
+        {
+          "url": "/audio/drip-02.ogg",
+          "duration": 0.6
+        },
+        {
+          "url": "/audio/drip-03.ogg",
+          "duration": 0.531
+        },
+        {
+          "url": "/audio/drip-04.ogg",
+          "duration": 0.6
+        },
+        {
+          "url": "/audio/drip-05.ogg",
+          "duration": 0.537
+        }
+      ]
     },
     {
       "name": "thunder",
@@ -468,7 +902,20 @@
       "pitchVariance": 1,
       "cooldownMs": 15000,
       "maxInstances": 1,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/thunder-01.ogg",
+          "duration": 5.797
+        },
+        {
+          "url": "/audio/thunder-02.ogg",
+          "duration": 5.396
+        },
+        {
+          "url": "/audio/thunder-03.ogg",
+          "duration": 5.184
+        }
+      ]
     },
     {
       "name": "drone-pass",
@@ -480,7 +927,16 @@
       "pitchVariance": 1.5,
       "cooldownMs": 20000,
       "maxInstances": 1,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/drone-pass-01.ogg",
+          "duration": 1.71
+        },
+        {
+          "url": "/audio/drone-pass-02.ogg",
+          "duration": 2.154
+        }
+      ]
     },
     {
       "name": "ui-hitmarker",
@@ -492,7 +948,12 @@
       "pitchVariance": 0,
       "cooldownMs": 40,
       "maxInstances": 3,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/ui-hitmarker-01.ogg",
+          "duration": 0.48
+        }
+      ]
     },
     {
       "name": "ui-headshot",
@@ -504,7 +965,12 @@
       "pitchVariance": 0,
       "cooldownMs": 100,
       "maxInstances": 2,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/ui-headshot-01.ogg",
+          "duration": 0.6
+        }
+      ]
     },
     {
       "name": "ui-objective",
@@ -516,7 +982,12 @@
       "pitchVariance": 0,
       "cooldownMs": 0,
       "maxInstances": 1,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/ui-objective-01.ogg",
+          "duration": 1.48
+        }
+      ]
     },
     {
       "name": "ui-checkpoint",
@@ -528,7 +999,12 @@
       "pitchVariance": 0,
       "cooldownMs": 0,
       "maxInstances": 1,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/ui-checkpoint-01.ogg",
+          "duration": 0.722
+        }
+      ]
     },
     {
       "name": "ui-plant-loop",
@@ -540,7 +1016,12 @@
       "pitchVariance": 0,
       "cooldownMs": 0,
       "maxInstances": null,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/ui-plant-loop-01.ogg",
+          "duration": 2.65
+        }
+      ]
     },
     {
       "name": "ui-plant-done",
@@ -552,7 +1033,12 @@
       "pitchVariance": 0,
       "cooldownMs": 0,
       "maxInstances": 1,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/ui-plant-done-01.ogg",
+          "duration": 1.48
+        }
+      ]
     },
     {
       "name": "ui-complete",
@@ -564,7 +1050,12 @@
       "pitchVariance": 0,
       "cooldownMs": 0,
       "maxInstances": 1,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/ui-complete-01.ogg",
+          "duration": 3.991
+        }
+      ]
     },
     {
       "name": "ui-failed",
@@ -576,7 +1067,12 @@
       "pitchVariance": 0,
       "cooldownMs": 0,
       "maxInstances": 1,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/ui-failed-01.ogg",
+          "duration": 3.603
+        }
+      ]
     },
     {
       "name": "ui-alert",
@@ -588,7 +1084,12 @@
       "pitchVariance": 0,
       "cooldownMs": 4000,
       "maxInstances": 1,
-      "files": []
+      "files": [
+        {
+          "url": "/audio/ui-alert-01.ogg",
+          "duration": 1.2
+        }
+      ]
     }
   ]
 }

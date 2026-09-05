@@ -16,9 +16,20 @@ pnpm audio:generate           ElevenLabs text-to-sound-effects (and text-to-spee
 pnpm audio:build              ffmpeg: trim, mono/stereo, LUFS normalise, loop seams, comms filter → apps/showcase/public/audio/<cue>-NN.ogg + manifest.json
 ```
 
-- **Credentials.** `ELEVENLABS_API_KEY` in the environment or in `.env` at the
-  repo root (git-ignored). Optional `ELEVENLABS_VOICE_ID` pins the bark voice;
-  otherwise the account's voices are searched for a deep, rough male.
+- **Two ways in.** The first full set (2026-09-05) was generated through the
+  ElevenLabs Creative connector onto one canvas, `tools/audio/elevenlabs-flow.json`
+  records the flow and the node per cue, and the takes were pulled into
+  `assets/source/audio/raw/` by name. `pnpm audio:generate` is the scripted
+  path for re-runs: `ELEVENLABS_API_KEY` in the environment or in `.env` at the
+  repo root (git-ignored); optional `ELEVENLABS_VOICE_ID` pins the bark voice,
+  otherwise the account's voices are searched for a deep, rough male. The
+  barks use "Libra - Deep, intense, masculine, bold" with `eleven_v3` delivery
+  tags such as `[shouting]`.
+- **Mastering levels.** One-shots under 3 s are peak-normalised to -1 dBTP
+  (integrated loudness means nothing at that length) and the manifest gains
+  carry the balance; anything from 3 s up, including every bed and loop, is
+  two-pass loudnorm to the bus target. Trimming runs after normalisation so a
+  quiet take is not eaten whole; loops are never trimmed.
 - **Cost.** `pnpm audio:generate --dry-run` prints the plan and a credit
   estimate before anything is spent. The full set is 113 takes, roughly
   19k credits at the published sound-effects rate. `--only=<cue>` and
@@ -27,9 +38,10 @@ pnpm audio:build              ffmpeg: trim, mono/stereo, LUFS normalise, loop se
 - **Round robin.** Variants are separate takes of the same prompt; the engine
   now takes `urls: [...]` on a sound definition and never plays the same
   variant twice in a row.
-- **Loudness.** Takes are normalised to a LUFS target per bus (sfx −18, ui
-  −20, ambience −26, voice −19), so the manifest's `volume` values are mix
-  decisions rather than corrections for how loud a take came out.
+- **Loudness.** LUFS targets per bus (sfx −18, ui −20, ambience −26, voice
+  −19) apply to takes long enough to measure; short one-shots are peak
+  normalised. Either way the manifest's `volume` values are mix decisions
+  rather than corrections for how loud a take came out.
 - **Loops.** Requested with the API's loop flag and still given a 0.35 s
   crossfaded seam in the build, because "seamless" from a generator is a hope.
 
