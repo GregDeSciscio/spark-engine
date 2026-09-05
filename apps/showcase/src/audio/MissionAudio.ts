@@ -46,7 +46,7 @@ const SPATIAL: Record<'gun' | 'gunFar' | 'body' | 'foot' | 'voice' | 'emitter' |
   body: { refDistance: 2.5, rolloff: 1.1, maxDistance: 45 },
   foot: { refDistance: 2, rolloff: 1.3, maxDistance: 30 },
   voice: { refDistance: 4, rolloff: 1, maxDistance: 60 },
-  emitter: { refDistance: 1.8, rolloff: 1.5, maxDistance: 24 },
+  emitter: { refDistance: 2, rolloff: 1.4, maxDistance: 30 },
   drip: { refDistance: 2, rolloff: 1.4, maxDistance: 18 },
 };
 
@@ -66,7 +66,7 @@ const SHOT_NEAR_GONE = 55;
 const SHOT_FAR_START = 8;
 const SHOT_FAR_FULL = 40;
 /** Point loops: how many neon / steam emitters sound at once, and how often the nearest set is re-picked. */
-const MAX_POINT_LOOPS = 6;
+const MAX_POINT_LOOPS = 8;
 const POINT_LOOP_REPICK = 1.5;
 /** Low-health heartbeat comes in below this health fraction. */
 const HEARTBEAT_BELOW = 0.35;
@@ -98,6 +98,10 @@ export class MissionAudio {
   private nextThunder = 20;
   private nextDrone = 35;
   private unbindFootsteps: (() => void) | null = null;
+  private readonly lastListener = { x: 0, y: 0, z: 0 };
+  /** Light emitters are read on the second frame: entity-driven lights only get their Object3D position from the render sync. */
+  private pendingLights: (() => { neon: THREE.Vector3[]; lamps: THREE.Vector3[] }) | null = null;
+  private framesSeen = 0;
   private disposed = false;
 
   private constructor(deps: MissionAudioDeps, manifest: AudioManifest | null) {
@@ -142,6 +146,29 @@ export class MissionAudio {
 
   has(name: string): boolean {
     return this.available.has(name);
+  }
+
+  /** What the ambience layer is doing, for probes. */
+  stats(): { cues: number; beds: number; emitters: number; emittersPlaying: number; nearestEmitter: number | null; nearestAt: number[] | null; listener: number[]; heartbeat: boolean; plantLoop: boolean } {
+    let nearest: number | null = null;
+    let nearestAt: number[] | null = null;
+    for (const loop of this.loops) {
+      if (nearest === null || loop.distance < nearest) {
+        nearest = loop.distance;
+        nearestAt = [loop.position.x, loop.position.y, loop.position.z].map((v) => Math.round(v * 10) / 10);
+      }
+    }
+    return {
+      nearestAt,
+      listener: [this.lastListener.x, this.lastListener.y, this.lastListener.z].map((v) => Math.round(v * 10) / 10),
+      cues: this.available.size,
+      beds: this.beds.filter((b) => b.isPlaying()).length,
+      emitters: this.loops.length,
+      emittersPlaying: this.loops.filter((l) => l.voice?.isPlaying()).length,
+      nearestEmitter: nearest === null ? null : Math.round(nearest * 10) / 10,
+      heartbeat: this.heartbeat !== null,
+      plantLoop: this.plantLoop !== null,
+    };
   }
 
   /** Flat one-shot; a silent no-op for cues without takes. */
@@ -333,24 +360,61 @@ export class MissionAudio {
   // ---- ambience ------------------------------------------------------------------------------
 
   /**
-   * Start the beds and register the point emitters (neon lights, steam vents).
+   * Start the beds and register the point emitters: neon signs hum, street
+   * lamps get the same hum lower and quieter (a ballast), steam vents hiss.
    * Only the nearest `MAX_POINT_LOOPS` emitters sound at a time; `update`
    * re-picks them as the listener moves.
    */
-  startAmbience(neon: readonly THREE.Vector3[], steam: readonly THREE.Vector3[]): void {
+  startAmbience(emitters: { readonly lights: () => { neon: THREE.Vector3[]; lamps: THREE.Vector3[] }; readonly steam: readonly THREE.Vector3[] }): void {
     const { audio, random } = this.deps;
     for (const bed of ['rain-bed', 'city-bed']) {
       if (this.has(bed)) this.beds.push(audio.play(bed, { loop: true, fadeIn: 2.5 }));
     }
-    if (this.has('neon-buzz')) for (const p of neon) this.loops.push({ position: p, sound: 'neon-buzz', pitch: random.range(0.94, 1.06), volume: random.range(0.7, 1), voice: null, distance: 0 });
-    if (this.has('steam-hiss')) for (const p of steam) this.loops.push({ position: p, sound: 'steam-hiss', pitch: random.range(0.9, 1.1), volume: random.range(0.8, 1), voice: null, distance: 0 });
+    if (this.has('steam-hiss')) for (const p of emitters.steam) this.loops.push({ position: p, sound: 'steam-hiss', pitch: random.range(0.9, 1.1), volume: random.range(0.8, 1), voice: null, distance: 0 });
+    this.pendingLights = this.has('neon-buzz') ? emitters.lights : null;
+    this.framesSeen = 0;
     this.repickIn = 0;
+  }
+
+  private registerLights(): void {
+    if (!this.pendingLights) return;
+    const { random } = this.deps;
+    const { neon, lamps } = this.pendingLights();
+    this.pendingLights = null;
+    for (const p of neon) this.loops.push({ position: p, sound: 'neon-buzz', pitch: random.range(0.94, 1.06), volume: random.range(0.7, 1), voice: null, distance: 0 });
+    for (const p of lamps) this.loops.push({ position: p, sound: 'neon-buzz', pitch: random.range(0.82, 0.9), volume: random.range(0.35, 0.5), voice: null, distance: 0 });
+    this.repickIn = 0;
+  }
+
+  /**
+   * The level's static point lights as emitter positions: saturated colours
+   * are neon signs, warm near-white ones are street lamps. Dim or unlit lights
+   * (muzzle flashes at rest) are skipped. Call it after a frame has run:
+   * entity-driven lights sit at the origin until the render sync places them.
+   */
+  static emittersFromScene(scene: THREE.Object3D): { neon: THREE.Vector3[]; lamps: THREE.Vector3[] } {
+    const neon: THREE.Vector3[] = [];
+    const lamps: THREE.Vector3[] = [];
+    scene.traverse((o) => {
+      const light = o as THREE.PointLight;
+      if (!light.isPointLight || light.intensity < 5) return;
+      const c = light.color;
+      const saturation = Math.max(c.r, c.g, c.b) - Math.min(c.r, c.g, c.b);
+      const position = light.getWorldPosition(light.position.clone());
+      (saturation > 0.5 ? neon : lamps).push(position);
+    });
+    return { neon, lamps };
   }
 
   /** Per-frame ambience housekeeping: emitter selection, drips, distant thunder, a drone pass. */
   update(dt: number, listener: Vec3): void {
     if (this.disposed) return;
     const { audio, random } = this.deps;
+    this.lastListener.x = listener.x;
+    this.lastListener.y = listener.y;
+    this.lastListener.z = listener.z;
+    this.framesSeen += 1;
+    if (this.pendingLights && this.framesSeen >= 2) this.registerLights();
     this.repickIn -= dt;
     if (this.repickIn <= 0 && this.loops.length > 0) {
       this.repickIn = POINT_LOOP_REPICK;

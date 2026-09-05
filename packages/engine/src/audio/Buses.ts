@@ -43,5 +43,6 @@ export const DEFAULT_MAX_VOICES: Readonly<Record<BusName, number>> = {
   music: 4,
   sfx: 24,
   ui: 8,
-  ambience: 8,
+  // Two stereo beds, up to eight point emitters and a handful of one-shots (drips, thunder) at once: a wet street needs the room.
+  ambience: 16,
 };

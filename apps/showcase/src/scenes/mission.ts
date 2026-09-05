@@ -149,11 +149,8 @@ export const missionScene: SceneDefinition = {
       return enemy;
     });
     const targets: Damageable[] = [...dummies, ...enemies];
-    // Beds, neon and steam emitters, and every footstep marker in the level.
-    sfx.startAmbience(
-      level.lights.map((l) => l.position),
-      level.vfx.filter((v) => v.preset === 'steam').map((v) => v.position),
-    );
+    // Beds, neon and lamp hums at the level's lights, steam at the authored vents, and every footstep marker in the level.
+    sfx.startAmbience({ lights: () => MissionAudio.emittersFromScene(scene), steam: level.vfx.filter((v) => v.preset === 'steam').map((v) => v.position) });
     sfx.bindFootsteps((eid) => (eid === operator.eid ? 1 : 0.85));
 
     // ---- camera --------------------------------------------------------------
@@ -232,6 +229,7 @@ export const missionScene: SceneDefinition = {
     bag.add(mission);
     let interactHeld = false;
     let wasAlert = false;
+    const listenerPos = new THREE.Vector3();
 
     // ---- HUD and pointer lock ------------------------------------------------
     const hud = createOperatorHud(ui);
@@ -280,6 +278,8 @@ export const missionScene: SceneDefinition = {
       stance: (next: 'stand' | 'crouch' | 'prone') => operator.setStance(next),
       /** Take damage as if an enemy round landed. */
       hurt: (damage: number) => operator.takeDamage(damage, 'torso', now),
+      /** The audio layer: cue count, beds, emitters in range and playing. */
+      audio: () => sfx.stats(),
       /** Current animation state per layer, plus the blend parameters. */
       anim: () => ({
         base: animation.getState(operator.eid),
@@ -415,7 +415,7 @@ export const missionScene: SceneDefinition = {
         syncCamera();
         camera.update(dt, occluder);
         weather.update(feet);
-        sfx.update(dt, camera.camera.position);
+        sfx.update(dt, camera.camera.getWorldPosition(listenerPos));
       },
       resize(width, height) {
         camera.setAspect(width / height);
