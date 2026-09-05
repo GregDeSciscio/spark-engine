@@ -1,0 +1,57 @@
+{
+  "Walk_Loop": [
+    {
+      "name": "footstep",
+      "time": 0.625,
+      "foot": "R"
+    },
+    {
+      "name": "footstep",
+      "time": 1.2917,
+      "foot": "L"
+    }
+  ],
+  "Sprint_Loop": [
+    {
+      "name": "footstep",
+      "time": 0.3333,
+      "foot": "R"
+    },
+    {
+      "name": "footstep",
+      "time": 0.6667,
+      "foot": "L"
+    }
+  ],
+  "Jump_Land": [
+    {
+      "name": "footstep",
+      "time": 0.7083,
+      "foot": "L"
+    },
+    {
+      "name": "footstep",
+      "time": 0.7083,
+      "foot": "R"
+    }
+  ],
+  "Jog_Fwd_Loop": [
+    {
+      "name": "footstep",
+      "time": 0.5,
+      "foot": "R"
+    }
+  ],
+  "Crouch_Fwd_Loop": [
+    {
+      "name": "footstep",
+      "time": 0.9167,
+      "foot": "R"
+    },
+    {
+      "name": "footstep",
+      "time": 1.4583,
+      "foot": "L"
+    }
+  ]
+}

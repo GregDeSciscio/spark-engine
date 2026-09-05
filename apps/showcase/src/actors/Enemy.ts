@@ -28,6 +28,7 @@ import { MuzzleFlash, type EffectsDeps, type Impacts } from '../combat/effects';
 import { Weapon } from '../combat/Weapon';
 import { RIFLE_BASELINE, applySpread, damageAt, hitZoneAt, type HitZone, type WeaponDefinition } from '../combat/weapons';
 import { RifleProp } from './RifleProp';
+import type { MissionAudio } from '../audio/MissionAudio';
 import { AIM_PITCH_RANGE, BONES, CHARACTER_RAGDOLL, LOCOMOTION, UPPER_BODY_MASK, findBone, tintCharacter } from './rig';
 import { OPERATOR, type Stance } from './Operator';
 
@@ -75,7 +76,7 @@ export interface EnemyDeps extends EffectsDeps {
   readonly random: Random;
   readonly audio: AudioSystem;
   readonly impacts: Impacts;
-  readonly shotSound: string | null;
+  readonly sfx: MissionAudio;
   readonly ragdolls: RagdollWorld;
   readonly gore: Gore;
 }
@@ -121,6 +122,10 @@ const BASE_TINT = 0x3a1f2a;
 const BLOOD_TINT = 0x2a0408;
 const ACCENT_TINT = 0x6e1624;
 const UPPER_FADE = 10;
+/** An enemy round passing within this of the operator's head is heard as a whiz. */
+const WHIZ_DISTANCE = 2.0;
+/** The ragdoll reaches the ground about this long after the killing shot. */
+const BODY_FALL_DELAY = 0.55;
 
 /**
  * Base layer: locomotion on speed, a crouch while holding cover, death by
@@ -372,9 +377,13 @@ export class Enemy implements Damageable {
       this.deps.physics.removeBody(this.eid);
       this.velocity.set(0, 0, 0);
       this.startRagdoll(now, impact);
+      this.deps.sfx.bark(this.eid, 'death');
+      this.feet(this.feetPos);
+      this.deps.sfx.playAt('body-fall', { x: this.feetPos.x, y: this.feetPos.y + 0.2, z: this.feetPos.z }, { delay: BODY_FALL_DELAY, spatial: { refDistance: 2.5, rolloff: 1.1, maxDistance: 45 } });
       return true;
     }
     animation.setTrigger(this.eid, 'hit');
+    this.deps.sfx.bark(this.eid, 'hit');
     void zone;
     return false;
   }
@@ -505,6 +514,7 @@ export class Enemy implements Damageable {
           this.state = 'searching';
           this.lookUntil = -1;
           this.nav.clear();
+          this.deps.sfx.bark(this.eid, 'search');
           break;
         }
         faceTarget = this.playerFeet;
@@ -700,6 +710,7 @@ export class Enemy implements Damageable {
       this.hasCover = false;
       this.inCover = false;
       this.peeking = false;
+      this.deps.sfx.bark(this.eid, 'alert');
     }
     this.state = 'alert';
     this.awareness = 1;
@@ -710,6 +721,7 @@ export class Enemy implements Damageable {
 
   private investigate(position: THREE.Vector3, now: number): void {
     this.lastKnown.copy(position);
+    if (this.state === 'unaware') this.deps.sfx.bark(this.eid, 'suspicious');
     this.state = this.state === 'searching' ? 'searching' : 'suspicious';
     this.lookUntil = -1;
     this.nav.clear();
@@ -751,7 +763,7 @@ export class Enemy implements Damageable {
   // ---- fire -------------------------------------------------------------------------
 
   private shoot(sample: { distance: number }, player: OperatorView, now: number): void {
-    const { physics, audio, random, impacts, shotSound } = this.deps;
+    const { physics, random, impacts, sfx } = this.deps;
     // Burst rhythm: fire for a beat, pause for a beat, from the seeded stream.
     if (now >= this.nextBurstAt && now >= this.burstUntil) {
       this.burstUntil = now + random.range(0.25, 0.45);
@@ -759,7 +771,12 @@ export class Enemy implements Damageable {
     }
     this.weapon.trigger = now < this.burstUntil;
     if (this.weapon.ammo === 0) this.weapon.reloadRequested = true;
+    const wasReloading = this.weapon.reloading;
     const shots = this.weapon.fixedUpdate(1 / 60, { stance: 'stand', speed: this.speed, grounded: true, aiming: true }, random);
+    if (!wasReloading && this.weapon.reloading) {
+      sfx.reload(this.eid, false);
+      sfx.bark(this.eid, 'reload');
+    }
     if (shots.length === 0) return;
 
     const settled = Math.min(1, (now - this.alertSince) / 2.5);
@@ -773,8 +790,18 @@ export class Enemy implements Damageable {
       applySpread(this.shotDir, spreadDeg, random, this.tmpA, this.tmpB);
       this.rifle.muzzle.getWorldPosition(this.tmpA);
       this.flash.fire(this.tmpA, this.shotDir, now);
-      if (shotSound) audio.playAt(shotSound, this.eid, { spatial: { refDistance: 4, rolloff: 1, maxDistance: 80 }, volume: 0.8 });
+      sfx.enemyShot(this.eid, this.feetPos.distanceTo(this.playerFeet));
       const hit = physics.raycast(this.eye, this.shotDir, ENEMY_RIFLE.range, { layers: ['world', 'player'], excludeEid: this.eid });
+      // A near miss whips past the operator's head.
+      this.tmpB.copy(this.playerFeet);
+      this.tmpB.y += Math.min(CHEST_HEIGHT, player.colliderHeight * 0.8);
+      const along = this.tmpB.sub(this.eye).dot(this.shotDir);
+      if (along > 0 && (!hit || hit.distance > along)) {
+        this.tmpA.copy(this.eye).addScaledVector(this.shotDir, along);
+        this.tmpB.copy(this.playerFeet);
+        this.tmpB.y += Math.min(CHEST_HEIGHT, player.colliderHeight * 0.8);
+        if (this.tmpA.distanceTo(this.tmpB) < WHIZ_DISTANCE) sfx.whiz(this.tmpA);
+      }
       if (!hit) continue;
       if (hit.eid === player.eid) {
         this.tmpA.set(hit.point.x, hit.point.y, hit.point.z);

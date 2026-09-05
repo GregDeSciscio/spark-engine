@@ -77,8 +77,17 @@ export interface AudioSystemOptions {
 
 interface SoundEntry {
   readonly def: ResolvedSound;
-  buffer: AudioBuffer | null;
+  /** One per URL (or the inline buffer); null until decoded. */
+  readonly buffers: (AudioBuffer | null)[];
+  /** Index of the variant played last, so round-robin never repeats. */
+  lastVariant: number;
   readonly gate: SoundGate;
+}
+
+/** Any decoded buffer on the entry. */
+function anyBuffer(entry: SoundEntry): AudioBuffer | null {
+  for (const b of entry.buffers) if (b) return b;
+  return null;
 }
 
 interface BufferEntry {
@@ -385,20 +394,25 @@ export class AudioSystem implements Disposable {
     if (this.disposed) throw new Error('AudioSystem: defineSound after dispose');
     const def = resolveSoundDefinition(definition);
     this.undefineSound(def.name);
-    const entry: SoundEntry = { def, buffer: definition.buffer ?? null, gate: new SoundGate(def.cooldownMs, def.maxInstances) };
+    const entry: SoundEntry = {
+      def,
+      buffers: definition.buffer ? [definition.buffer] : def.urls.map(() => null),
+      lastVariant: -1,
+      gate: new SoundGate(def.cooldownMs, def.maxInstances),
+    };
     this.sounds.set(def.name, entry);
     // Inline buffers live in the cache under the sound name so stats / getBuffer see them.
     if (definition.buffer) this.registerBuffer(def.name, definition.buffer);
-    if (def.url) {
-      void this.loadBuffer(def.url).then(
+    def.urls.forEach((url, index) => {
+      void this.loadBuffer(url).then(
         (buffer) => {
-          if (this.sounds.get(def.name) === entry) entry.buffer = buffer;
+          if (this.sounds.get(def.name) === entry) entry.buffers[index] = buffer;
         },
         () => {
-          // Logged by loadBuffer; the sound simply never becomes playable.
+          // Logged by loadBuffer; that variant simply never plays.
         },
       );
-    }
+    });
     return def;
   }
 
@@ -406,7 +420,8 @@ export class AudioSystem implements Disposable {
     const entry = this.sounds.get(name);
     if (!entry) return false;
     this.sounds.delete(name);
-    this.releaseBuffer(entry.def.url ?? name);
+    if (entry.def.urls.length === 0) this.releaseBuffer(name);
+    for (const url of entry.def.urls) this.releaseBuffer(url);
     return true;
   }
 
@@ -414,9 +429,28 @@ export class AudioSystem implements Disposable {
     return this.sounds.has(name);
   }
 
-  /** True once the sound's buffer is decoded (placeholders: immediately). */
+  /** True once at least one of the sound's buffers is decoded (placeholders: immediately). */
   isSoundReady(name: string): boolean {
-    return this.sounds.get(name)?.buffer !== null && this.sounds.has(name);
+    const entry = this.sounds.get(name);
+    return entry !== undefined && anyBuffer(entry) !== null;
+  }
+
+  /**
+   * Pick the buffer for the next play: the only one, or a decoded variant
+   * other than the last one played. Null while nothing has decoded.
+   */
+  private nextBuffer(entry: SoundEntry): AudioBuffer | null {
+    const ready: number[] = [];
+    for (let i = 0; i < entry.buffers.length; i++) if (entry.buffers[i]) ready.push(i);
+    if (ready.length === 0) return null;
+    if (ready.length === 1) {
+      entry.lastVariant = ready[0] as number;
+      return entry.buffers[entry.lastVariant] ?? null;
+    }
+    const candidates = ready.filter((i) => i !== entry.lastVariant);
+    const index = candidates[Math.min(candidates.length - 1, Math.floor(this.random.next() * candidates.length))] as number;
+    entry.lastVariant = index;
+    return entry.buffers[index] ?? null;
   }
 
   // ---- playback ----------------------------------------------------------------
@@ -468,7 +502,8 @@ export class AudioSystem implements Disposable {
     const entry = this.sounds.get(name);
     const bus = options.bus ?? entry?.def.bus ?? 'sfx';
     if (!ctx || !entry) return new DeadVoice(bus, name);
-    if (!entry.buffer) {
+    const buffer = this.nextBuffer(entry);
+    if (!buffer) {
       this.log.debug(`play("${name}"): buffer not decoded yet`);
       return new DeadVoice(bus, name);
     }
@@ -500,7 +535,7 @@ export class AudioSystem implements Disposable {
       ctx,
       destination,
       {
-        buffer: entry.buffer,
+        buffer,
         bus,
         volume: varyVolume(this.random, entry.def.volume, entry.def.volumeVariance) * (options.volume ?? 1),
         rate: varyPitch(this.random, options.pitch ?? 1, entry.def.pitchVariance),

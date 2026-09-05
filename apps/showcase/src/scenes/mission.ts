@@ -9,7 +9,6 @@ import {
   ShoulderCamera,
   initNavigation,
   litness,
-  renderAllPlaceholders,
   type CaptureAPI,
   type SceneDefinition,
   type SceneInstance,
@@ -17,6 +16,7 @@ import {
 import { Enemy } from '../actors/Enemy';
 import { OPERATOR_MAX_HEALTH, Operator } from '../actors/Operator';
 import { CHARACTER_URL } from '../actors/rig';
+import { MissionAudio } from '../audio/MissionAudio';
 import { TargetDummy } from '../actors/TargetDummy';
 import { AWARENESS, overallState } from '../ai/Awareness';
 import type { Damageable } from '../combat/Damageable';
@@ -39,8 +39,6 @@ const GRADE = new URLSearchParams(location.search).get('grade') !== '0';
 /** `?level=blockout` forces the procedural street; the default is the Blender-authored one, with the blockout as fallback. */
 const LEVEL = new URLSearchParams(location.search).get('level') ?? 'street';
 const STREET_URL = '/levels/street.glb';
-const SOUND_SHOT = 'rifle-shot';
-const SOUND_HIT = 'impact';
 /** Seconds the damage vignette takes to fade. */
 const HURT_FADE = 0.8;
 /** Ragdoll caps (docs/design/gore-scope.md): at most this many simulating, none older than this. */
@@ -119,33 +117,23 @@ export const missionScene: SceneDefinition = {
       (navLines.material as THREE.Material).dispose();
     });
 
-    // ---- audio: placeholder cues until real samples land ------------------------
-    const placeholders = await renderAllPlaceholders();
-    const impact = placeholders.get('placeholder-impact');
-    const shotSound = impact ? SOUND_SHOT : null;
-    const hitSound = impact ? SOUND_HIT : null;
-    if (impact) {
-      audio.defineSound({ name: SOUND_SHOT, bus: 'sfx', buffer: impact, volume: 0.9, pitchVariance: 2, cooldownMs: 30, maxInstances: 8 });
-      audio.defineSound({ name: SOUND_HIT, bus: 'sfx', buffer: impact, volume: 0.5, pitchVariance: 5, cooldownMs: 40, maxInstances: 6 });
-      bag.add(() => {
-        audio.undefineSound(SOUND_SHOT);
-        audio.undefineSound(SOUND_HIT);
-        audio.stopAll(0.1);
-      });
-    }
+    // ---- audio: the mission's cue set (tools/audio); cues without takes are silent no-ops ----
+    const sfx = await MissionAudio.load({ audio, animation, random: random.fork(), logger });
+    bag.add(sfx);
+    bag.add(() => audio.stopAll(0.1));
 
     // ---- actors ----------------------------------------------------------------
     const model = await assets.loadModel(CHARACTER_URL);
     bag.add(() => assets.release(CHARACTER_URL));
     const effects = { entities, vfx, scene };
-    const impacts = new Impacts({ ...effects, audio, random: random.fork(), worldMeshes: level.meshes, hitSound });
+    const impacts = new Impacts({ ...effects, audio, random: random.fork(), worldMeshes: level.meshes, sfx });
     bag.add(impacts);
     const gore = new Gore({ ...effects, physics, random: random.fork(), worldMeshes: level.meshes });
     bag.add(gore);
     const ragdolls = new RagdollWorld(entities, physics);
     bag.add(ragdolls);
     bag.add(entities.addSystem(ragdolls.system()));
-    const operator = new Operator({ entities, physics, animation, renderSync, scene, model }, level.spawn, level.spawnYaw);
+    const operator = new Operator({ entities, physics, animation, renderSync, scene, model, sfx }, level.spawn, level.spawnYaw);
     bag.add(operator);
     const dummies = level.targetSpots.map((spot, i) => {
       const dummy = new TargetDummy({ entities, physics, animation, renderSync, scene, model, labels: ui.labels }, `Target ${i + 1}`, spot.position, spot.yaw);
@@ -154,13 +142,19 @@ export const missionScene: SceneDefinition = {
     });
     const enemies = level.patrols.map((spec) => {
       const enemy = new Enemy(
-        { ...effects, physics, animation, renderSync, model, labels: ui.labels, navigation, random: random.fork(), audio, impacts, shotSound, ragdolls, gore },
+        { ...effects, physics, animation, renderSync, model, labels: ui.labels, navigation, random: random.fork(), audio, impacts, sfx, ragdolls, gore },
         spec,
       );
       bag.add(enemy);
       return enemy;
     });
     const targets: Damageable[] = [...dummies, ...enemies];
+    // Beds, neon and steam emitters, and every footstep marker in the level.
+    sfx.startAmbience(
+      level.lights.map((l) => l.position),
+      level.vfx.filter((v) => v.preset === 'steam').map((v) => v.position),
+    );
+    sfx.bindFootsteps((eid) => (eid === operator.eid ? 1 : 0.85));
 
     // ---- camera --------------------------------------------------------------
     const camera = new ShoulderCamera({ aspect: ctx.renderer.aspect, near: 0.05, far: 200 });
@@ -198,7 +192,7 @@ export const missionScene: SceneDefinition = {
         targets,
         impacts,
         gore,
-        shotSound,
+        sfx,
         onShot: (position, loudness) => {
           for (const e of enemies) e.hear(position, loudness, now);
         },
@@ -237,6 +231,7 @@ export const missionScene: SceneDefinition = {
     const mission = new MissionRunner({ entities, scene, labels: ui.labels, renderSync }, level.objectives, { position: level.spawn, yaw: level.spawnYaw });
     bag.add(mission);
     let interactHeld = false;
+    let wasAlert = false;
 
     // ---- HUD and pointer lock ------------------------------------------------
     const hud = createOperatorHud(ui);
@@ -373,12 +368,17 @@ export const missionScene: SceneDefinition = {
         hud.setReticle(reticle.x, reticle.y, gunplay.aimBlocked);
         hud.setAmmo(weapon.ammo, weapon.reserve, weapon.reloading, weapon.reloadProgress);
         hud.setHealth(operator.health / OPERATOR_MAX_HEALTH, Math.max(0, 1 - (now - operator.lastHitAt) / HURT_FADE) * (operator.dead ? 1 : 0.85));
+        sfx.setHeartbeat(operator.dead ? 0 : operator.health / OPERATOR_MAX_HEALTH);
         hud.setVisibility(operator.lit);
-        hud.setAlert(overallState(enemies.filter((e) => !e.dead).map((e) => e.state)));
+        const alertState = overallState(enemies.filter((e) => !e.dead).map((e) => e.state));
+        hud.setAlert(alertState);
+        if (alertState === 'alert' && !wasAlert) sfx.alertStinger();
+        wasAlert = alertState === 'alert';
         hud.setStatus(operator.stance, operator.speed, operator.grounded);
         hud.setScore(gunplay.stats.hits, gunplay.stats.kills, enemies.filter((e) => !e.dead).length);
         hud.setFailed(operator.dead);
         const ms = mission.status();
+        sfx.setPlantProgress(ms.objective?.kind === 'plant' ? ms.progress : 0);
         const promptText =
           ms.objective?.kind === 'plant' && ms.inRange ? (ms.progress > 0 ? 'setting charge' : 'hold F to set the charge') : null;
         hud.setObjective(ms.index, ms.total, ms.objective?.label ?? null, ms.distance, ms.progress, promptText);
@@ -407,6 +407,7 @@ export const missionScene: SceneDefinition = {
         mission.fixedUpdate(fixedDt, feet, interactHeld, enemies.filter((e) => !e.dead).length);
         if (mission.justCompleted) {
           logger.info(`mission: objective "${mission.justCompleted.id}" complete, checkpoint moved`);
+          sfx.objectiveComplete(mission.justCompleted.kind, mission.complete);
           mission.justCompleted = null;
         }
       },
@@ -414,6 +415,7 @@ export const missionScene: SceneDefinition = {
         syncCamera();
         camera.update(dt, occluder);
         weather.update(feet);
+        sfx.update(dt, camera.camera.position);
       },
       resize(width, height) {
         camera.setAspect(width / height);

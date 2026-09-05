@@ -4,8 +4,13 @@ import { isBusName, type BusName } from './Buses';
 /** How a sound is declared by a scene: a URL to decode, or a buffer already in hand. */
 export interface SoundDefinition {
   readonly name: string;
-  /** Decoded through the audio buffer cache. Mutually exclusive with `buffer`. */
+  /** Decoded through the audio buffer cache. Mutually exclusive with `buffer` and `urls`. */
   readonly url?: string | undefined;
+  /**
+   * Round-robin variants: one is picked per play from the seeded stream, never
+   * the same one twice in a row. Mutually exclusive with `url` and `buffer`.
+   */
+  readonly urls?: readonly string[] | undefined;
   /** A pre-decoded buffer (procedural placeholders use this). */
   readonly buffer?: AudioBuffer | undefined;
   readonly bus?: BusName | undefined;
@@ -27,7 +32,9 @@ export interface SoundDefinition {
 
 export interface ResolvedSound {
   readonly name: string;
+  /** The first URL, for anything that wants one; `urls` has them all. */
   readonly url: string | null;
+  readonly urls: readonly string[];
   readonly bus: BusName;
   readonly volume: number;
   readonly volumeVariance: number;
@@ -41,8 +48,11 @@ export interface ResolvedSound {
 /** Validate and fill defaults. Throws with the offending field named. */
 export function resolveSoundDefinition(def: SoundDefinition): ResolvedSound {
   if (!def.name) throw new Error('defineSound: name is required');
-  if (!def.url && !def.buffer) throw new Error(`defineSound("${def.name}"): url or buffer is required`);
-  if (def.url && def.buffer) throw new Error(`defineSound("${def.name}"): url and buffer are mutually exclusive`);
+  const sources = [def.url ? 1 : 0, def.urls ? 1 : 0, def.buffer ? 1 : 0].reduce((a, b) => a + b, 0);
+  if (sources === 0) throw new Error(`defineSound("${def.name}"): url, urls or buffer is required`);
+  if (sources > 1) throw new Error(`defineSound("${def.name}"): url, urls and buffer are mutually exclusive`);
+  if (def.urls && def.urls.length === 0) throw new Error(`defineSound("${def.name}"): urls must not be empty`);
+  const urls = def.urls ? [...def.urls] : def.url ? [def.url] : [];
   const bus = def.bus ?? 'sfx';
   if (!isBusName(bus)) throw new Error(`defineSound("${def.name}"): unknown bus "${String(bus)}"`);
   const volume = def.volume ?? 1;
@@ -60,7 +70,8 @@ export function resolveSoundDefinition(def: SoundDefinition): ResolvedSound {
   const loop = def.loop ?? false;
   return {
     name: def.name,
-    url: def.url ?? null,
+    url: urls[0] ?? null,
+    urls,
     bus,
     volume,
     volumeVariance,

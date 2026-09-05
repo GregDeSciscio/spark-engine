@@ -14,6 +14,13 @@ real assets in.
 | ----- | -------- | --- | ---------------- | ------ | ---------- | ------- | ----- |
 | `scene` | `cue-name` | music / sfx / ui / ambience | one line of intent | s | seamless / `loopStart`–`loopEnd` / n/a | what fires it (code path) | variance, cooldown, spatial settings |
 
+## `mission` scene (the customer game)
+
+The showcase's cues are designed and generated as data: see
+[mission-sound-design.md](mission-sound-design.md) and `tools/audio/manifest.mjs`.
+The game reads the built `apps/showcase/public/audio/manifest.json`; cues without
+takes are silent and listed once in the console.
+
 ## `hud` scene (Milestone 10 demo)
 
 | Scene | Cue name | Bus | Mood / character | Length | Loop point | Trigger | Notes |

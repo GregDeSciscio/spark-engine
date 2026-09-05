@@ -96,9 +96,19 @@ describe('sound definitions', () => {
     expect(resolveSoundDefinition({ name: 'hum', url: '/a.ogg', loop: true, priority: 3 }).priority).toBe(3);
   });
 
+  it('accepts round-robin variants and keeps url as the first of them', () => {
+    const def = resolveSoundDefinition({ name: 'step', urls: ['/a.ogg', '/b.ogg', '/c.ogg'] });
+    expect(def.urls).toEqual(['/a.ogg', '/b.ogg', '/c.ogg']);
+    expect(def.url).toBe('/a.ogg');
+    expect(resolveSoundDefinition({ name: 'one', url: '/x.ogg' }).urls).toEqual(['/x.ogg']);
+    expect(resolveSoundDefinition({ name: 'buf', buffer: fakeBuffer }).urls).toEqual([]);
+    expect(() => resolveSoundDefinition({ name: 'both', url: '/x.ogg', urls: ['/y.ogg'] })).toThrow(/mutually exclusive/);
+    expect(() => resolveSoundDefinition({ name: 'none', urls: [] })).toThrow(/must not be empty/);
+  });
+
   it('rejects bad definitions naming the field', () => {
     expect(() => resolveSoundDefinition({ name: '', url: '/a.ogg' })).toThrow(/name/);
-    expect(() => resolveSoundDefinition({ name: 'x' })).toThrow(/url or buffer/);
+    expect(() => resolveSoundDefinition({ name: 'x' })).toThrow(/url, urls or buffer/);
     expect(() => resolveSoundDefinition({ name: 'x', url: '/a', buffer: fakeBuffer })).toThrow(/mutually exclusive/);
     expect(() => resolveSoundDefinition({ name: 'x', url: '/a', bus: 'voice' as never })).toThrow(/bus/);
     expect(() => resolveSoundDefinition({ name: 'x', url: '/a', volume: -1 })).toThrow(/volume/);

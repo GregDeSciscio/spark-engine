@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { DisposeBag, type AudioSystem, type Entity, type PhysicsWorld, type Random, type ShoulderCamera, type WorldLabels } from '@spark/engine';
 import type { Operator } from '../actors/Operator';
+import type { MissionAudio } from '../audio/MissionAudio';
 import type { Damageable } from './Damageable';
 import { MuzzleFlash, type EffectsDeps, type Impacts } from './effects';
 import type { Gore } from './gore';
@@ -30,8 +31,7 @@ export interface GunplayDeps extends EffectsDeps {
   readonly targets: readonly Damageable[];
   readonly impacts: Impacts;
   readonly gore: Gore;
-  /** Defined gunshot sound, or null to stay silent. */
-  readonly shotSound: string | null;
+  readonly sfx: MissionAudio;
   /** Fired after every shot with the muzzle position and how far the report carries, world units. */
   readonly onShot?: ((position: THREE.Vector3, loudness: number) => void) | undefined;
 }
@@ -58,6 +58,7 @@ export class Gunplay {
   private readonly targetByEntity = new Map<Entity, Damageable>();
   private readonly flash: MuzzleFlash;
   private readonly muzzle: THREE.Object3D;
+  private readonly feet = new THREE.Vector3();
   private now = 0;
   /** The reticle's share of recoil, radians (negative pitch is up). */
   private reticlePitch = 0;
@@ -90,13 +91,17 @@ export class Gunplay {
     this.weapon.trigger = trigger;
     if (triggerEdge) this.weapon.triggerEdge = true;
     if (reload) this.weapon.reloadRequested = true;
+    // Nothing left to load: the trigger just clicks.
+    if (triggerEdge && this.weapon.ammo === 0 && this.weapon.reserve === 0 && !this.weapon.reloading) this.deps.sfx.empty();
   }
 
   fixedUpdate(dt: number): void {
-    const { operator, camera, random } = this.deps;
+    const { operator, camera, random, sfx } = this.deps;
     this.now += dt;
     const state = { stance: operator.stance, speed: operator.speed, grounded: operator.grounded, aiming: operator.aiming };
+    const wasReloading = this.weapon.reloading;
     const shots = operator.dead ? [] : this.weapon.fixedUpdate(dt, state, random);
+    if (!wasReloading && this.weapon.reloading) sfx.reload(operator.eid, true);
     for (const shot of shots) this.fire(shot.spreadDeg);
     // Recoil: up is negative pitch; a positive yaw kick goes right, which is negative camera yaw.
     const pitch = -THREE.MathUtils.degToRad(this.weapon.recoilPitch);
@@ -158,7 +163,7 @@ export class Gunplay {
   }
 
   private fire(spreadDeg: number): void {
-    const { physics, audio, labels, camera, operator, random, impacts, gore, shotSound, onShot } = this.deps;
+    const { physics, labels, camera, operator, random, impacts, gore, sfx, onShot } = this.deps;
     const def = this.weapon.def;
     this.stats.shots += 1;
 
@@ -170,7 +175,8 @@ export class Gunplay {
 
     this.muzzle.getWorldPosition(this.muzzlePos);
     this.flash.fire(this.muzzlePos, this.direction, this.now);
-    if (shotSound) audio.playAt(shotSound, operator.eid, { spatial: { refDistance: 4, rolloff: 1, maxDistance: 80 } });
+    operator.feet(this.feet);
+    sfx.shot(operator.eid, this.feet);
     onShot?.(this.muzzlePos, RIFLE_LOUDNESS);
 
     const hit = physics.raycast(this.origin, this.direction, def.range, { layers: ['world', 'target', 'enemy'], excludeEid: operator.eid, solid: false });
@@ -184,8 +190,10 @@ export class Gunplay {
       const zone = hitZoneAt(target.heightFraction(this.hitPoint.y));
       const damage = Math.max(1, Math.round(damageAt(def, hit.distance) * ZONE_MULTIPLIER[zone]));
       gore.characterHit(this.hitPoint, this.direction, zone === 'head');
+      sfx.flesh(this.hitPoint, zone === 'head');
       const killed = target.hit(zone, damage, this.now, { point: this.hitPoint, direction: this.direction });
       this.stats.hits += 1;
+      sfx.hitmarker(zone === 'head');
       if (killed) this.stats.kills += 1;
       labels.popup(target.eid, zone === 'head' ? `-${damage} HEAD` : `-${damage}`, {
         life: 0.8,

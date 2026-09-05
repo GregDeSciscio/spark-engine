@@ -25,7 +25,7 @@
  * The rig's bone names, masks and ragdoll shape live in
  * apps/showcase/src/actors/rig.ts; the two must agree.
  */
-import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { NodeIO } from '@gltf-transform/core';
@@ -86,6 +86,8 @@ export async function buildCharacter({ log = console.log, rig = 'cyberpunk', ret
 
   // Blender suffixes a retargeted action with .001 when the source action holds the plain name.
   const byName = new Map(root.listAnimations().map((a) => [a.getName().replace(/\.\d{3}$/, ''), a]));
+  // Foot-contact markers the retarget wrote next to the clip files (`events.json`), keyed by library clip name.
+  const events = await readEvents(spec.src);
   const wanted = new Set(Object.values(CLIPS).map((c) => c.from));
   for (const [name, anim] of byName) if (!wanted.has(name)) anim.dispose();
   for (const [name, clip] of Object.entries(CLIPS)) {
@@ -95,7 +97,11 @@ export async function buildCharacter({ log = console.log, rig = 'cyberpunk', ret
     // A clip whose every channel has one key is a pose, not an animation: the retarget export lost its keys.
     const keys = Math.max(0, ...anim.listSamplers().map((s) => s.getInput()?.getCount() ?? 0));
     if (keys < 2) throw new Error(`clip "${clip.from}" (for ${name}) has ${keys} key(s) per channel; the export is static`);
+    const markers = events[clip.from];
+    if (markers && markers.length > 0) anim.setExtras({ ...anim.getExtras(), 'spark.events': markers });
   }
+  const withEvents = Object.keys(CLIPS).filter((n) => (events[CLIPS[n].from] ?? []).length > 0);
+  if (withEvents.length > 0) log(`  footstep markers on ${withEvents.join(', ')}`);
 
   // Rigify names carry dots (DEF-spine.001, DEF-hand.R); three's glTF loader strips
   // those (PropertyBinding reserves them), which would leave the bone names in
@@ -128,6 +134,16 @@ export async function buildCharacter({ log = console.log, rig = 'cyberpunk', ret
   const ok = await runPipeline({ src: OUT_DIR, out: PUBLIC, only: spec.out, budget: 'enemy', verbose, log });
   if (!ok) throw new Error('asset pipeline failed');
   return path.join(PUBLIC, `${spec.out}.glb`);
+}
+
+/** `<dir>/events.json` from the retarget, or nothing for a plain glTF source. */
+async function readEvents(src) {
+  if (src.endsWith('.gltf') || src.endsWith('.glb')) return {};
+  try {
+    return JSON.parse(await readFile(path.join(src, 'events.json'), 'utf8'));
+  } catch {
+    return {};
+  }
 }
 
 /**

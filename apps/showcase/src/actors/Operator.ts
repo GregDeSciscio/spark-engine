@@ -16,6 +16,7 @@ import {
 } from '@spark/engine';
 import { RIFLE_BASELINE, type HitZone } from '../combat/weapons';
 import { RifleProp } from './RifleProp';
+import type { MissionAudio } from '../audio/MissionAudio';
 import { AIM_PITCH_RANGE, BONES, LOCOMOTION, UPPER_BODY_MASK, findBone, tintCharacter } from './rig';
 
 /**
@@ -144,6 +145,8 @@ export interface OperatorDeps {
   readonly renderSync: RenderSync;
   readonly scene: THREE.Scene;
   readonly model: ModelAsset;
+  /** The mission's cue set; optional so probes and tests can build a silent operator. */
+  readonly sfx?: MissionAudio | undefined;
 }
 
 export const OPERATOR_MAX_HEALTH = 100;
@@ -261,6 +264,7 @@ export class Operator {
     }
     this.resizeBody(height);
     this.stance = next;
+    this.deps.sfx?.gear(this.eid);
     return true;
   }
 
@@ -299,9 +303,11 @@ export class Operator {
       this.aiming = false;
       this.deps.animation.setParam(this.eid, 'dead', 1);
       this.deps.animation.setTrigger(this.eid, 'die');
+      this.deps.sfx?.playerDeath();
       return true;
     }
     this.deps.animation.setTrigger(this.eid, 'hit');
+    this.deps.sfx?.hurt();
     void zone;
     return false;
   }
@@ -343,7 +349,9 @@ export class Operator {
     if (input.wasPressed('KeyC')) this.setStance(this.stance === 'crouch' ? 'stand' : 'crouch');
     if (input.wasPressed('KeyX')) this.setStance(this.stance === 'prone' ? 'stand' : 'prone');
     if (input.wasPressed('Space') && this.stance === 'stand') this.jumpQueued = true;
+    const wasAiming = this.aiming;
     this.aiming = input.isButtonDown(2);
+    if (this.aiming !== wasAiming) this.deps.sfx?.aim(this.aiming);
     const forward = this.autoMove ? this.autoMove.forward : input.axis('KeyS', 'KeyW');
     const strafe = this.autoMove ? this.autoMove.strafe : input.axis('KeyA', 'KeyD');
     this.sprinting = input.isDown('ShiftLeft') && forward > 0 && this.stance === 'stand' && !this.aiming;
@@ -399,7 +407,9 @@ export class Operator {
     t.qy[this.eid] = Math.sin(this.facing / 2);
     t.qw[this.eid] = Math.cos(this.facing / 2);
 
+    const wasAirborne = this.airTime > AIRBORNE_SECONDS;
     this.airTime = this.grounded ? 0 : this.airTime + dt;
+    if (wasAirborne && this.grounded) this.deps.sfx?.footstep(this.eid, 'land');
     animation.setParam(this.eid, 'speed', this.speed);
     animation.setParam(this.eid, 'crouch', this.stance === 'stand' ? 0 : 1);
     animation.setParam(this.eid, 'air', this.airTime > AIRBORNE_SECONDS ? 1 : 0);

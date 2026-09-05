@@ -26,6 +26,7 @@ baked from Python to a single key per channel. The node build
 into one model, renames the clips and adds the `spark.*` extras.
 """
 
+import json
 import os
 import shutil
 import sys
@@ -64,6 +65,10 @@ SRC_HIPS = 'DEF-hips'
 FEET = {'Foot_L': 'LowerLeg_L', 'Foot_R': 'LowerLeg_R'}
 # The kit's sword mesh: it is weighted to the Weapon socket and the game brings its own rifle.
 DROP_MATERIALS = {'Blade', 'Blade_Edge'}
+# Clips whose foot contacts become `footstep` animation events (audio binds to them).
+FOOTSTEP_CLIPS = {'Walk_Loop', 'Walk_Formal_Loop', 'Jog_Fwd_Loop', 'Sprint_Loop', 'Crouch_Fwd_Loop', 'Jump_Land'}
+# A foot is "down" within this much of its lowest point over the clip (metres, after scaling).
+FOOT_CONTACT_BAND = 0.04
 
 
 def log(msg):
@@ -249,6 +254,8 @@ def bake(src, tgt, actions, wanted, rt):
         pb.rotation_mode = 'QUATERNION'
     keyed = {n for n in MAP} | {HIPS}
     out = []
+    events = {}
+    fps = scene.render.fps
     for act in actions:
         if wanted and act.name not in wanted:
             continue
@@ -258,18 +265,40 @@ def bake(src, tgt, actions, wanted, rt):
         new = bpy.data.actions.new(act.name)
         new.use_fake_user = True
         assign_action(tgt, new)
+        feet_z = {foot: [] for foot in FEET}
         for f in range(start, end + 1):
             scene.frame_set(f)
-            rt.pose_frame()
+            desired = rt.pose_frame()
+            for foot in FEET:
+                feet_z[foot].append(desired[foot].translation.z)
             for name in keyed:
                 pb = tgt.pose.bones[name]
                 pb.keyframe_insert('rotation_quaternion', frame=f)
                 if name == HIPS:
                     pb.keyframe_insert('location', frame=f)
         out.append((new, start, end, act.name))
-        log(f'baked {act.name}: frames {start}-{end}')
+        if act.name in FOOTSTEP_CLIPS:
+            events[act.name] = foot_contacts(feet_z, fps)
+        log(f'baked {act.name}: frames {start}-{end}' + (f', {len(events[act.name])} footsteps' if act.name in events else ''))
     src.animation_data.action = None
-    return out
+    return out, events
+
+
+def foot_contacts(feet_z, fps):
+    """Frames where a foot comes down: it enters the band above its lowest height. One event per stride."""
+    markers = []
+    for foot, zs in feet_z.items():
+        if not zs:
+            continue
+        low = min(zs) + FOOT_CONTACT_BAND
+        down = zs[0] <= low
+        for i in range(1, len(zs)):
+            now_down = zs[i] <= low
+            if now_down and not down:
+                markers.append({'name': 'footstep', 'time': round(i / fps, 4), 'foot': foot[-1]})
+            down = now_down
+    markers.sort(key=lambda m: m['time'])
+    return markers
 
 
 def export(tgt, meshes, out_dir, baked):
@@ -311,6 +340,13 @@ def export(tgt, meshes, out_dir, baked):
     log(f'wrote {len(baked)} clip file(s) to {out_dir}')
 
 
+def write_events(out_dir, events):
+    path = os.path.join(out_dir, 'events.json')
+    with open(path, 'w', encoding='utf8') as fh:
+        json.dump(events, fh, indent=2)
+    log(f'wrote {path}')
+
+
 def main(argv):
     ual, usda, out = argv[0], argv[1], argv[2]
     wanted = set(argv[3].split(',')) if len(argv) > 3 and argv[3] else None
@@ -326,10 +362,11 @@ def main(argv):
     rt = Retarget(src, tgt)
     bpy.context.scene.frame_set(1)
     rt.verify()
-    baked = bake(src, tgt, actions, wanted, rt)
+    baked, events = bake(src, tgt, actions, wanted, rt)
     if not baked:
         raise RuntimeError('no clips baked')
     export(tgt, meshes, out, baked)
+    write_events(out, events)
 
 
 if __name__ == '__main__':

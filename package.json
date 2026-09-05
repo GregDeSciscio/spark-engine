@@ -23,6 +23,8 @@
     "assets": "node tools/asset-pipeline/pipeline.mjs",
     "level:street": "node tools/level-authoring/build.mjs",
     "props:fetch": "node tools/asset-pipeline/fetch-polyhaven.mjs --kit=street",
+    "audio:generate": "node tools/audio/generate.mjs",
+    "audio:build": "node tools/audio/build.mjs",
     "character:build": "node tools/asset-pipeline/build-character.mjs",
     "character:retarget": "node tools/asset-pipeline/build-character.mjs --retarget",
     "props:build": "node tools/asset-pipeline/pipeline.mjs --src=assets/source/props --out=apps/showcase/public/models --budget=prop"

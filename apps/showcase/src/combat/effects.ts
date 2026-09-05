@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { float, length, smoothstep, uv, vec2 } from 'three/tsl';
+import { impactSurfaceFor, type MissionAudio } from '../audio/MissionAudio';
 import {
   Decals,
   DisposeBag,
@@ -77,8 +78,7 @@ export interface ImpactsDeps extends EffectsDeps {
   readonly random: Random;
   /** Level meshes by physics entity, for clipping decals. */
   readonly worldMeshes: ReadonlyMap<Entity, THREE.Mesh>;
-  /** Defined sound name for a world hit, or null to stay silent. */
-  readonly hitSound: string | null;
+  readonly sfx: MissionAudio;
 }
 
 function impactMaterial(): THREE.MeshStandardNodeMaterial {
@@ -108,7 +108,7 @@ export class Impacts {
 
   /** A bullet struck level geometry at `point` with surface `normal` on entity `eid`. */
   world(point: THREE.Vector3, normal: THREE.Vector3, eid: Entity): void {
-    const { random, worldMeshes, vfx, audio, hitSound } = this.deps;
+    const { random, worldMeshes, vfx, sfx } = this.deps;
     const mesh = worldMeshes.get(eid);
     if (mesh) {
       this.decals.spawn({
@@ -121,7 +121,8 @@ export class Impacts {
       });
     }
     if (this.sparksEid !== null) vfx.burstAt(this.sparksEid, point, normal, 10);
-    if (hitSound) audio.playAt(hitSound, { x: point.x, y: point.y, z: point.z }, { volume: 0.35 });
+    const material = mesh ? (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) : undefined;
+    sfx.impact(point, impactSurfaceFor(material?.name, point));
   }
 
   dispose(): void {
