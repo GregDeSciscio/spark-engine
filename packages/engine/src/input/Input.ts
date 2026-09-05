@@ -33,6 +33,7 @@ export class Input implements Disposable {
   private wheel = 0;
   private pointerInside = false;
   private pointerLocked = false;
+  private lockError: string | null = null;
   private captured = false;
   private readonly passthrough = new Set<string>(['Escape']);
   private disposed = false;
@@ -50,6 +51,7 @@ export class Input implements Disposable {
     target.addEventListener('wheel', this.onWheel, { passive: true });
     target.addEventListener('contextmenu', this.onContextMenu);
     document.addEventListener('pointerlockchange', this.onPointerLockChange);
+    document.addEventListener('pointerlockerror', this.onPointerLockError);
   }
 
   /**
@@ -59,8 +61,38 @@ export class Input implements Disposable {
    */
   requestPointerLock(): void {
     if (this.disposed || this.pointerLocked) return;
-    const result = this.target.requestPointerLock() as unknown;
-    if (result instanceof Promise) result.catch(() => {});
+    let result: unknown;
+    try {
+      result = this.target.requestPointerLock() as unknown;
+    } catch (error) {
+      this.notePointerLockFailure(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
+      return;
+    }
+    if (result instanceof Promise) {
+      result.catch((error: unknown) => {
+        this.notePointerLockFailure(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
+      });
+    }
+  }
+
+  /**
+   * Why the last pointer-lock request failed, or null. `WrongDocumentError`
+   * means the page is embedded somewhere that forbids pointer lock (an iframe
+   * without the permission); the game should fall back to plain mouse look.
+   */
+  get pointerLockError(): string | null {
+    return this.lockError;
+  }
+
+  /** True once a request failed for a reason that will not change with another click. */
+  get pointerLockUnavailable(): boolean {
+    return this.lockError !== null && /WrongDocumentError|NotSupportedError|SecurityError/.test(this.lockError);
+  }
+
+  private notePointerLockFailure(reason: string): void {
+    if (this.lockError === reason) return;
+    this.lockError = reason;
+    console.warn(`[spark:input] pointer lock refused: ${reason}`);
   }
 
   exitPointerLock(): void {
@@ -213,6 +245,11 @@ export class Input implements Disposable {
 
   private readonly onPointerLockChange = (): void => {
     this.pointerLocked = document.pointerLockElement === this.target;
+    if (this.pointerLocked) this.lockError = null;
+  };
+
+  private readonly onPointerLockError = (): void => {
+    if (this.lockError === null) this.notePointerLockFailure('pointerlockerror event');
   };
 
   private updatePointer(e: PointerEvent): void {
@@ -224,6 +261,7 @@ export class Input implements Disposable {
   dispose(): void {
     if (this.disposed) return;
     document.removeEventListener('pointerlockchange', this.onPointerLockChange);
+    document.removeEventListener('pointerlockerror', this.onPointerLockError);
     this.disposed = true;
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);

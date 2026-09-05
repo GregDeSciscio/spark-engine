@@ -9,7 +9,8 @@ import type { Stance } from '../actors/Operator';
  * engine's `hud` layer; no game state lives here.
  */
 export interface OperatorHud {
-  setLocked(locked: boolean): void;
+  /** `note` replaces the click-to-play prompt when the browser refuses pointer lock. */
+  setLocked(locked: boolean, note?: string | null): void;
   setAiming(aiming: boolean): void;
   /** Crosshair spread ring radius in CSS pixels (the scene projects the cone through the camera). */
   setSpread(radiusPx: number): void;
@@ -31,6 +32,7 @@ export interface OperatorHud {
 }
 
 const MONO = 'ui-monospace, Consolas, monospace';
+const PROMPT_TEXT = 'click to take control · WASD move · Shift sprint · C crouch · X prone · Space jump · LMB fire · RMB aim · R reload · F4 navmesh · Esc release';
 const RING_MIN_PX = 6;
 
 const ALERT_STYLE = {
@@ -146,7 +148,7 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
   } satisfies Partial<CSSStyleDeclaration>);
 
   const prompt = document.createElement('div');
-  prompt.textContent = 'click to take control · WASD move · Shift sprint · C crouch · X prone · Space jump · LMB fire · RMB aim · R reload · F4 navmesh · Esc release';
+  prompt.textContent = PROMPT_TEXT;
   Object.assign(prompt.style, {
     position: 'absolute',
     left: '50%',
@@ -252,8 +254,10 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
     ring.style.borderColor = blockedNow ? 'rgba(255,90,90,0.9)' : aimingNow ? 'rgba(255,214,102,0.8)' : 'rgba(255,255,255,0.55)';
   };
   return {
-    setLocked(locked) {
+    setLocked(locked, note = null) {
       prompt.hidden = locked;
+      const text = note ?? PROMPT_TEXT;
+      if (prompt.textContent !== text) prompt.textContent = text;
       const opacity = locked ? '1' : '0.35';
       dot.style.opacity = opacity;
       ring.style.opacity = opacity;

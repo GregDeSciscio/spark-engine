@@ -218,8 +218,11 @@ export const missionScene: SceneDefinition = {
     // ---- HUD and pointer lock ------------------------------------------------
     const hud = createOperatorHud(ui);
     bag.add(hud);
+    // Free look: the pointer is treated as locked. Forced by `?freelook=1`, or adopted
+    // when the browser refuses pointer lock outright (an embedding without the permission).
+    let freelook = FREELOOK;
     const onPointerDown = (): void => {
-      if (!FREELOOK && !input.isPointerLocked && !input.isCaptured) input.requestPointerLock();
+      if (!freelook && !input.isPointerLocked && !input.isCaptured) input.requestPointerLock();
     };
     ctx.config.container.addEventListener('pointerdown', onPointerDown);
     bag.add(() => ctx.config.container.removeEventListener('pointerdown', onPointerDown));
@@ -302,7 +305,11 @@ export const missionScene: SceneDefinition = {
       scene,
       camera: camera.camera,
       update(_dt) {
-        const locked = FREELOOK || input.isPointerLocked;
+        if (!freelook && input.pointerLockUnavailable) {
+          freelook = true;
+          logger.warn(`mission: pointer lock unavailable here (${input.pointerLockError}); using free look`);
+        }
+        const locked = freelook || input.isPointerLocked;
         if (locked) {
           const d = input.pointerDelta;
           camera.look(d.x, d.y);
@@ -315,7 +322,7 @@ export const missionScene: SceneDefinition = {
         // The click that takes control must not also fire.
         gunplay.update((locked && input.isButtonDown(0)) || autoFire > 0, (locked && input.wasButtonPressed(0)) || autoFire > 0, input.wasPressed('KeyR') || (autoFire > 0 && gunplay.weapon.ammo === 0));
         const weapon = gunplay.weapon;
-        hud.setLocked(locked);
+        hud.setLocked(locked, freelook && !FREELOOK ? 'pointer lock refused by this view: free look, cursor stays visible. Open http://localhost:5174 in a browser tab for the real thing' : null);
         hud.setAiming(operator.aiming);
         const viewportHeight = ctx.config.container.clientHeight || 720;
         hud.setSpread(camera.projectAngleRadius(THREE.MathUtils.degToRad(gunplay.spreadNow()), viewportHeight));
