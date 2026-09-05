@@ -3,6 +3,7 @@ import {
   DisposeBag,
   LevelLoader,
   Navigation,
+  SurfaceLibrary,
   createHeightFog,
   type AssetManager,
   type Entity,
@@ -37,7 +38,15 @@ export interface MissionLevel {
   readonly objectives: readonly ObjectiveDef[];
   /** Baked offline for authored levels, at load for the blockout (ADR-009). */
   readonly navigation: Navigation;
+  /** Authored particle sources: steam vents and the like (`spark.type=vfx`). */
+  readonly vfx: readonly VfxSpot[];
   dispose(): void;
+}
+
+export interface VfxSpot {
+  readonly preset: 'steam' | 'smoke' | 'embers';
+  readonly position: THREE.Vector3;
+  readonly direction: THREE.Vector3;
 }
 
 /** Night sky, moon, fog: the scene-level look every level shares until levels carry their own lighting rigs. */
@@ -113,12 +122,18 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
   const navigation = Navigation.fromBytes(navBytes);
   bag.add(navigation);
 
+  // The level's material names are surface names; swap in the procedural wet-city surfaces.
+  const surfaces = new SurfaceLibrary();
+  bag.add(surfaces);
+  const surfaced = surfaces.applyTo(level.root);
+
   // Decals clip against the render twin of each collider: COL_<name> ↔ <name>.
   const meshes = new Map<Entity, THREE.Mesh>();
   let colliderIndex = 0;
   const objectives: (ObjectiveDef & { order: number })[] = [];
   const routes = new Map<string, { index: number; position: THREE.Vector3 }[]>();
   const targets: { index: number; position: THREE.Vector3 }[] = [];
+  const vfx: VfxSpot[] = [];
   let spawnYaw = 0;
   const positionOf = (d: LevelEntityDescriptor): THREE.Vector3 => new THREE.Vector3(d.node.position[0], d.node.position[1], d.node.position[2]);
 
@@ -159,6 +174,13 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
       case 'target':
         targets.push({ index: num(s.index, targets.length), position: positionOf(d) });
         break;
+      case 'vfx': {
+        const preset = str(s.preset, 'steam');
+        if (preset === 'steam' || preset === 'smoke' || preset === 'embers') {
+          vfx.push({ preset, position: positionOf(d), direction: new THREE.Vector3(num(s.dx, 0), num(s.dy, 1), num(s.dz, 0)) });
+        }
+        break;
+      }
       default:
         logger.warn(`street: unknown spark.type "${d.type}" on ${d.node.path}`);
     }
@@ -174,7 +196,7 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
 
   const stats = navigation.stats();
   logger.info(
-    `street: ${level.entities.length} entities, ${level.colliders.length} colliders (${meshes.size} with render twins), ${level.lights.length} lights, ${objectives.length} objectives, ${patrols.length} patrols, navmesh ${stats.polys} polys`,
+    `street: ${level.entities.length} entities, ${level.colliders.length} colliders (${meshes.size} with render twins), ${level.lights.length} lights, ${surfaced} surfaced meshes, ${vfx.length} vfx spots, ${objectives.length} objectives, ${patrols.length} patrols, navmesh ${stats.polys} polys`,
   );
 
   return {
@@ -185,6 +207,7 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
     patrols,
     objectives: objectives.map(({ order: _order, ...o }) => o),
     navigation,
+    vfx,
     dispose: () => bag.dispose(),
   };
 }

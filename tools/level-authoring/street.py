@@ -127,11 +127,14 @@ class Level:
 
 def build(level: Level):
     rng = random.Random(SEED)
+    # Material names are engine surface names (SurfaceLibrary): the loader swaps them for the
+    # procedural wet-city surfaces. Colours here only matter for the tinted `metal` surface.
     asphalt = material('asphalt', hex_rgb(0x14161C), 0.32, 0.05)
-    sidewalk = material('sidewalk', hex_rgb(0x232630), 0.6, 0.02)
-    facade = material('facade', hex_rgb(0x191C26), 0.72, 0.08)
-    crate = material('crate', hex_rgb(0x3A3F4A), 0.65, 0.1)
-    barrier = material('barrier', hex_rgb(0x4A3A2A), 0.7, 0.05)
+    sidewalk = material('concrete', hex_rgb(0x232630), 0.6, 0.02)
+    facade = material('brick', hex_rgb(0x191C26), 0.72, 0.08)
+    crate = material('metal', hex_rgb(0x3A3F4A), 0.55, 0.35)
+    barrier = material('metal.barrier', hex_rgb(0x4A3A2A), 0.6, 0.2)
+    skyline = material('skyline', hex_rgb(0x05060A), 1.0, 0.0)
     neon_mats = {c: material(f'neon_{c:06x}', hex_rgb(c), 0.4, 0.0, hex_rgb(c), 2.5) for c in NEON_COLORS}
 
     length = STREET_Z_MAX - STREET_Z_MIN
@@ -191,6 +194,16 @@ def build(level: Level):
     # ---- the ends: walls so the street reads as enclosed --------------------------
     level.box('wall_far', 0, 6, STREET_Z_MIN - 1, STREET_HALF_WIDTH + SIDEWALK + 2, 6, 1, facade)
     level.box('wall_near', 0, 6, STREET_Z_MAX + 1, STREET_HALF_WIDTH + SIDEWALK + 2, 6, 1, facade)
+
+    # ---- skyline: emissive backdrop cards beyond each end and along the sides, no collision ----
+    level.box('skyline_far', 0, 38, STREET_Z_MIN - 45, 120, 38, 0.5, skyline, collide=False)
+    level.box('skyline_near', 0, 38, STREET_Z_MAX + 45, 120, 38, 0.5, skyline, collide=False)
+    level.box('skyline_left', -70, 34, z_mid, 0.5, 34, 130, skyline, collide=False)
+    level.box('skyline_right', 70, 34, z_mid, 0.5, 34, 130, skyline, collide=False)
+
+    # ---- steam vents at the base of a few facades, read by the game as spark.type=vfx ----
+    for index, (x, z, dx) in enumerate([(-STREET_HALF_WIDTH - 0.4, -6, 0.55), (STREET_HALF_WIDTH + 0.4, -22, -0.5), (-STREET_HALF_WIDTH - 0.4, -44, 0.5), (STREET_HALF_WIDTH + 0.4, 12, -0.5)]):
+        level.empty(f'steam_{index}', x, 0.6, z, {'type': 'vfx', 'preset': 'steam', 'dx': dx, 'dy': 0.8, 'dz': 0.1}, display='SINGLE_ARROW', size=0.6)
 
     # ---- gameplay ---------------------------------------------------------------------
     spawn_z = STREET_Z_MAX - 6

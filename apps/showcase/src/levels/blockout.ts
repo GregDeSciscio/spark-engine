@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { DisposeBag, Navigation, Transform, TriangleSoup, type Entity, type EntityWorld, type PhysicsWorld, type Random } from '@spark/engine';
+import { DisposeBag, Navigation, SurfaceLibrary, Transform, TriangleSoup, type Entity, type EntityWorld, type PhysicsWorld, type Random } from '@spark/engine';
 import type { ObjectiveDef } from '../mission/Objectives';
 import type { MissionLevel } from './MissionLevel';
 
@@ -37,19 +37,14 @@ export function buildBlockout(scene: THREE.Scene, entities: EntityWorld, physics
 
   // ---- shared geometry and materials ----------------------------------------
   const unitBox = new THREE.BoxGeometry(1, 1, 1);
-  const asphalt = new THREE.MeshStandardMaterial({ color: 0x14161c, roughness: 0.32, metalness: 0.05 });
-  const sidewalk = new THREE.MeshStandardMaterial({ color: 0x232630, roughness: 0.6, metalness: 0.02 });
-  const facade = new THREE.MeshStandardMaterial({ color: 0x191c26, roughness: 0.72, metalness: 0.08 });
-  const crate = new THREE.MeshStandardMaterial({ color: 0x3a3f4a, roughness: 0.65, metalness: 0.1 });
-  const barrier = new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 0.7, metalness: 0.05 });
-  bag.add(() => {
-    unitBox.dispose();
-    asphalt.dispose();
-    sidewalk.dispose();
-    facade.dispose();
-    crate.dispose();
-    barrier.dispose();
-  });
+  const surfaces = new SurfaceLibrary();
+  bag.add(surfaces);
+  const asphalt = surfaces.get('asphalt');
+  const sidewalk = surfaces.get('concrete');
+  const facade = surfaces.get('brick');
+  const crate = surfaces.get('metal', { color: 0x3a3f4a, roughness: 0.55, metalness: 0.35 });
+  const barrier = surfaces.get('metal', { color: 0x4a3a2a, roughness: 0.6, metalness: 0.2 });
+  bag.add(() => unitBox.dispose());
 
   physics.layers.define('world', 'player', 'target', 'enemy');
 
@@ -167,6 +162,7 @@ export function buildBlockout(scene: THREE.Scene, entities: EntityWorld, physics
     patrols,
     objectives,
     navigation,
+    vfx: [],
     dispose: () => bag.dispose(),
   };
 }
