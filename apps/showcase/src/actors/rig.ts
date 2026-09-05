@@ -1,5 +1,5 @@
 import type * as THREE from 'three/webgpu';
-import type { RagdollConfig } from '@spark/engine';
+import { findBone, type RagdollConfig } from '@spark/engine';
 
 /**
  * The showcase character (`tools/asset-pipeline/build-character.mjs`):
@@ -77,14 +77,7 @@ export const LOCOMOTION = { walk: 1.4, run: 4.0, sprint: 7.0, crouchWalk: 2.0 } 
 /** Aim blend parameter: view pitch in degrees, positive looking down; the poses cover this range. */
 export const AIM_PITCH_RANGE = 45;
 
-/** Find a bone by name under an instantiated model. */
-export function findBone(root: THREE.Object3D, name: string): THREE.Object3D | null {
-  let found: THREE.Object3D | null = null;
-  root.traverse((o) => {
-    if (!found && o.name === name) found = o;
-  });
-  return found;
-}
+export { findBone };
 
 /**
  * Recolour a character instance: the kit's `Main` material takes `main`,

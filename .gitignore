@@ -9,3 +9,4 @@ tools/capture/out/
 
 # local secrets (ElevenLabs key for tools/audio)
 .env
+__pycache__/

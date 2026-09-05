@@ -50,6 +50,7 @@ export interface AudioStats {
   readonly buses: Readonly<Record<BusName, BusState>>;
   readonly activeVoices: number;
   readonly pendingLoops: number;
+  /** Live voices with a panner: at an entity or at a fixed point. */
   readonly spatialVoices: number;
   readonly loadedBuffers: number;
   readonly sounds: number;
@@ -655,7 +656,7 @@ export class AudioSystem implements Disposable {
 
   stats(): AudioStats {
     let spatial = 0;
-    for (const voice of this.live.values()) if (this.attached.has(voice)) spatial += 1;
+    for (const voice of this.live.values()) if (voice.isSpatial) spatial += 1;
     let loaded = 0;
     for (const entry of this.buffers.values()) if (entry.buffer) loaded += 1;
     const buses = Object.fromEntries(BUS_NAMES.map((b) => [b, { ...this.buses[b], voices: this.pool.countOn(b) }])) as Record<BusName, BusState>;

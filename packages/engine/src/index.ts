@@ -143,7 +143,7 @@ export {
 } from './rendering/ShoulderCamera';
 export { distanceFalloff, illuminanceAt, lightRecord, litness, spotFactor, type IlluminanceLight, type IlluminanceOptions } from './rendering/Illuminance';
 export { CYBERPUNK_GRADE, ColorGradeSettings, NEUTRAL_GRADE, colorGradeHDR, colorGradeLDR, type ColorGradeParams } from './rendering/ColorGrade';
-export { SURFACE_NAMES, WINDOW_GRID, SurfaceLibrary, createSurface, isSurfaceName, wetSheenGraph, type SurfaceName, type SurfaceOptions } from './rendering/Surfaces';
+export { SURFACE_NAMES, WINDOW_GRID, SurfaceLibrary, createSurface, isSurfaceName, surfaceKindOf, wetSheenGraph, type SurfaceKind, type SurfaceName, type SurfaceOptions } from './rendering/Surfaces';
 export { applyRoomEnvironment, applySceneEnvironment, loadHDREnvironment } from './rendering/Environment';
 // ---- rendering (Milestone 7) ----
 export {

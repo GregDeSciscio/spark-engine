@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { SURFACE_NAMES, SurfaceLibrary, createSurface, isSurfaceName } from '../src/rendering/Surfaces';
+import { SURFACE_NAMES, SurfaceLibrary, createSurface, isSurfaceName, surfaceKindOf } from '../src/rendering/Surfaces';
 
 describe('createSurface', () => {
   it('builds every surface as a node material with a colour graph', () => {
@@ -63,5 +63,21 @@ describe('SurfaceLibrary', () => {
     expect((meshes[5]?.material as THREE.Material).name).toBe('surface:metal');
     expect((meshes[0]?.material as THREE.Material).name).toBe('brick');
     lib.dispose();
+  });
+});
+
+describe('surfaceKindOf', () => {
+  it('maps surface names, Blender suffixes and prop material keywords to kinds', () => {
+    expect(surfaceKindOf('brick')).toBe('brick');
+    expect(surfaceKindOf('brick.003')).toBe('brick');
+    expect(surfaceKindOf('window')).toBe('glass');
+    expect(surfaceKindOf('skyline.001')).toBe('concrete');
+    expect(surfaceKindOf('metal')).toBe('metal');
+    expect(surfaceKindOf('asphalt')).toBe('asphalt');
+    expect(surfaceKindOf('fire_hydrant_paint')).toBe('metal');
+    expect(surfaceKindOf('Neon_Sign')).toBe('glass');
+    expect(surfaceKindOf('kerb_stone')).toBe('concrete');
+    expect(surfaceKindOf('mystery')).toBe('unknown');
+    expect(surfaceKindOf(undefined)).toBe('unknown');
   });
 });

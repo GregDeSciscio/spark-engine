@@ -8,6 +8,9 @@ import { crossfadeGains, fadeCurve, intensityGain } from '../src/audio/Crossfade
 import { MusicPlayer, type MusicVoiceSource } from '../src/audio/MusicPlayer';
 import { impactVolume } from '../src/audio/bindings';
 import { DeadVoice, PendingVoice, type Voice } from '../src/audio/Voice';
+import { SoundBank } from '../src/audio/SoundBank';
+import { EmitterPool, Scatter } from '../src/audio/Emitters';
+import type { AudioSystem } from '../src/audio/AudioSystem';
 
 const fakeBuffer = {} as AudioBuffer;
 
@@ -360,5 +363,103 @@ describe('voice handles', () => {
     expect(p.isStopped).toBe(true);
     expect(p.pending).toBe(false);
     expect(p.isPlaying()).toBe(false);
+  });
+});
+
+/** An AudioSystem stand-in that records definitions and plays. */
+function fakeAudio(): { audio: AudioSystem; defined: string[]; undefined: string[]; plays: { name: string; target: unknown; options: unknown }[] } {
+  const defined: string[] = [];
+  const undefinedNames: string[] = [];
+  const plays: { name: string; target: unknown; options: unknown }[] = [];
+  const voice = (): Voice => ({ isPlaying: () => true, stop: () => undefined, setVolume: () => undefined, setPitch: () => undefined, setPosition: () => undefined }) as unknown as Voice;
+  const audio = {
+    defineSound: (def: { name: string }) => {
+      defined.push(def.name);
+      return def;
+    },
+    undefineSound: (name: string) => {
+      undefinedNames.push(name);
+      return true;
+    },
+    play: (name: string, options: unknown) => {
+      plays.push({ name, target: null, options });
+      return voice();
+    },
+    playAt: (name: string, target: unknown, options: unknown) => {
+      plays.push({ name, target, options });
+      return voice();
+    },
+  } as unknown as AudioSystem;
+  return { audio, defined, undefined: undefinedNames, plays };
+}
+
+describe('SoundBank', () => {
+  it('defines cues that have files, treats the rest as silent no-ops, and undefines on dispose', () => {
+    const f = fakeAudio();
+    const bank = new SoundBank(f.audio, {
+      cues: [
+        { name: 'shot', bus: 'sfx', files: [{ url: '/a.ogg' }, { url: '/b.ogg' }] },
+        { name: 'later', bus: 'sfx', files: [] },
+      ],
+    });
+    expect(f.defined).toEqual(['shot']);
+    expect(bank.has('shot')).toBe(true);
+    expect(bank.has('later')).toBe(false);
+    expect(bank.missing).toEqual(['later']);
+    expect(bank.play('later')).toBeNull();
+    expect(bank.playAt('shot', { x: 1, y: 0, z: 0 })).not.toBeNull();
+    expect(f.plays.map((p) => p.name)).toEqual(['shot']);
+    bank.dispose();
+    expect(f.undefined).toEqual(['shot']);
+    expect(bank.has('shot')).toBe(false);
+  });
+});
+
+describe('EmitterPool', () => {
+  it('plays only the nearest emitters within range and re-picks as the listener moves', () => {
+    const f = fakeAudio();
+    const sink = { play: f.audio.play.bind(f.audio), playAt: f.audio.playAt.bind(f.audio), has: () => true };
+    const pool = new EmitterPool(sink, { max: 2, repickSeconds: 1, spatial: { refDistance: 2, maxDistance: 20 } });
+    pool.add({ position: { x: 0, y: 0, z: 5 }, sound: 'hum' });
+    pool.add({ position: { x: 0, y: 0, z: 10 }, sound: 'hum' });
+    pool.add({ position: { x: 0, y: 0, z: 15 }, sound: 'hum' });
+    pool.add({ position: { x: 0, y: 0, z: 100 }, sound: 'hum' });
+    pool.update(0, { x: 0, y: 0, z: 0 });
+    expect(pool.playing).toBe(2);
+    expect(pool.nearest).toBe(5);
+    expect(f.plays.map((p) => (p.target as { z: number }).z)).toEqual([5, 10]);
+    // Walk to the far end: the far emitter is now within range and the near ones are dropped.
+    pool.update(1.5, { x: 0, y: 0, z: 100 });
+    expect(pool.playing).toBe(1);
+    expect(f.plays.at(-1)?.target).toEqual({ x: 0, y: 0, z: 100 });
+    pool.stopAll();
+    expect(pool.playing).toBe(0);
+  });
+});
+
+describe('Scatter', () => {
+  it('plays on its interval, around the listener for a positioned scatter and flat otherwise', () => {
+    const f = fakeAudio();
+    const sink = { play: f.audio.play.bind(f.audio), playAt: f.audio.playAt.bind(f.audio), has: () => true };
+    const random = new Random(7);
+    const drips = new Scatter(sink, 'drip', { interval: [1, 1], radius: [2, 4], y: 0.1 }, random);
+    const thunder = new Scatter(sink, 'thunder', { interval: [5, 5] }, random);
+    for (let i = 0; i < 3; i++) {
+      drips.update(1, { x: 10, y: 1, z: 10 });
+      thunder.update(1, { x: 10, y: 1, z: 10 });
+    }
+    const dripPlays = f.plays.filter((p) => p.name === 'drip');
+    expect(dripPlays.length).toBe(3);
+    for (const p of dripPlays) {
+      const t = p.target as { x: number; y: number; z: number };
+      const r = Math.hypot(t.x - 10, t.z - 10);
+      expect(r).toBeGreaterThanOrEqual(2 - 1e-6);
+      expect(r).toBeLessThanOrEqual(4 + 1e-6);
+      expect(t.y).toBe(0.1);
+    }
+    expect(f.plays.filter((p) => p.name === 'thunder').length).toBe(0);
+    for (let i = 0; i < 3; i++) thunder.update(1, { x: 0, y: 0, z: 0 });
+    expect(f.plays.filter((p) => p.name === 'thunder').length).toBe(1);
+    expect(f.plays.find((p) => p.name === 'thunder')?.target).toBeNull();
   });
 });

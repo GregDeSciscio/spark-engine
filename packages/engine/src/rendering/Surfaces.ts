@@ -301,6 +301,44 @@ export class SurfaceLibrary {
 /** Material or extra name → surface, for names that already are surface names. */
 const IDENTITY: Readonly<Record<string, SurfaceName>> = Object.fromEntries(SURFACE_NAMES.map((n) => [n, n]));
 
+/** What a surface is made of, for impacts, footsteps and decals. */
+export type SurfaceKind = 'concrete' | 'asphalt' | 'brick' | 'metal' | 'glass' | 'unknown';
+
+const KIND_RULES: readonly [RegExp, SurfaceKind][] = [
+  [/metal|steel|iron|pipe|shutter|bollard|grate|vent|rail|lamp|hydrant|barrel|can\b|generator|box/i, 'metal'],
+  [/window|glass|neon|pane/i, 'glass'],
+  [/asphalt|road|tarmac|street/i, 'asphalt'],
+  [/brick/i, 'brick'],
+  [/concrete|skyline|wall|kerb|curb|pavement|sidewalk|stone/i, 'concrete'],
+];
+
+/**
+ * Classify a material (or `spark.surface`) name into a surface kind, by the
+ * same first-segment rule `applyTo` uses plus keyword fallbacks for prop
+ * materials. Unknown names return 'unknown' so the caller picks its default.
+ */
+export function surfaceKindOf(name: string | null | undefined): SurfaceKind {
+  if (!name) return 'unknown';
+  const base = name.split('.')[0] as string;
+  if (isSurfaceName(base)) {
+    switch (base) {
+      case 'metal':
+        return 'metal';
+      case 'window':
+        return 'glass';
+      case 'asphalt':
+        return 'asphalt';
+      case 'brick':
+        return 'brick';
+      case 'concrete':
+      case 'skyline':
+        return 'concrete';
+    }
+  }
+  for (const [pattern, kind] of KIND_RULES) if (pattern.test(name)) return kind;
+  return 'unknown';
+}
+
 function create(name: SurfaceName, options: SurfaceOptions): THREE.MeshStandardNodeMaterial {
   switch (name) {
     case 'asphalt':

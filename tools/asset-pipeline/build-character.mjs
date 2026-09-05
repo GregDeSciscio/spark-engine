@@ -1,29 +1,25 @@
 #!/usr/bin/env node
 /**
- * Build the showcase's character (all CC0, see assets/source/characters/SOURCES.md):
+ * Build a game character from a config file:
  *
- *   node tools/asset-pipeline/build-character.mjs [--rig=cyberpunk|ual] [--retarget] [--no-pipeline] [--verbose]
+ *   node tools/asset-pipeline/build-character.mjs [--config=<path.json>] [--retarget] [--no-pipeline] [--verbose]
  *
- * Clips come from Quaternius' Universal Animation Library (a 1.83 m mannequin
- * on a Rigify DEF- skeleton, 46 clips). Rigs:
+ * The config (default assets/source/characters/operator.character.json) names
+ * the character, its `spark.*` extras, the clip renames (library clip → engine
+ * name, loop flag) and, when the model is not the clip library's own rig, a
+ * `retarget` section that tools/level-authoring/character.py runs in Blender:
+ * source library, target model, bone map, hips, foot reparenting, footstep
+ * clips. `--retarget` runs Blender; otherwise the last retarget export is used.
  *
- *   cyberpunk (default)  Quaternius' Cyberpunk Game Kit character with the
- *                        library's clips retargeted onto it by Blender
- *                        (tools/level-authoring/character.py; `--retarget` runs
- *                        it, else the last export is used). Blender writes one
- *                        GLB per clip into cyberpunk/retargeted/; they are
- *                        merged here → operator.glb
- *   ual                  the library's own mannequin → operator_ual.glb
+ * With a retarget, Blender writes one GLB per clip (Blender 5.1 flattens
+ * multi-action exports) and they are merged here. Either way the clips are
+ * renamed, bone names lose their dots (three's loader would strip them), loops
+ * and the root-motion bone get `spark.*` extras, the footstep markers from
+ * the retarget become `spark.events`, and the asset pipeline writes
+ * <publicDir>/<name>.glb.
  *
- * Either way this keeps the clips the showcase graphs use, renames them to the
- * engine's conventions (`idle`, `walk`, `run`, `hit`, `death`, ... see CLIPS),
- * replaces the dots in bone names with underscores (three's loader would strip
- * them), marks loops and the root-motion bone with `spark.*` extras, writes
- * assets/source/characters/<name>.glb and runs the asset pipeline on it into
- * apps/showcase/public/models/.
- *
- * The rig's bone names, masks and ragdoll shape live in
- * apps/showcase/src/actors/rig.ts; the two must agree.
+ * The game's rig config (bone names, masks, ragdoll) must agree with the bone
+ * names in the config; for the showcase that is apps/showcase/src/actors/rig.ts.
  */
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -35,51 +31,40 @@ import { runPipeline } from './pipeline.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
-const CHARACTERS = path.join(repoRoot, 'assets', 'source', 'characters');
-const UAL = path.join(CHARACTERS, 'ual', 'AnimationLibrary_Godot_Standard.gltf');
-const KIT_CHARACTER = path.join(CHARACTERS, 'cyberpunk', 'SK_Character.usda');
-/** One GLB per retargeted clip (Blender 5.1 flattens multi-action exports; see character.py). */
-const RETARGETED = path.join(CHARACTERS, 'cyberpunk', 'retargeted');
 const RETARGET_SCRIPT = path.join(repoRoot, 'tools', 'level-authoring', 'character.py');
-const OUT_DIR = CHARACTERS;
-const PUBLIC = path.join(repoRoot, 'apps', 'showcase', 'public', 'models');
+export const DEFAULT_CONFIG = 'assets/source/characters/operator.character.json';
 
-export const RIGS = {
-  cyberpunk: { src: RETARGETED, root: 'Root', out: 'operator', source: 'Quaternius Cyberpunk Game Kit character + Universal Animation Library clips (CC0)' },
-  ual: { src: UAL, root: 'root', out: 'operator_ual', source: 'Quaternius Universal Animation Library (CC0)' },
-};
+/** Read and validate a character config; paths become absolute. */
+export async function loadConfig(configPath = DEFAULT_CONFIG) {
+  const file = path.resolve(repoRoot, configPath);
+  const cfg = JSON.parse(await readFile(file, 'utf8'));
+  for (const key of ['name', 'clips', 'rootBone', 'publicDir']) if (!cfg[key]) throw new Error(`${configPath}: missing "${key}"`);
+  if (!cfg.retarget && !cfg.model) throw new Error(`${configPath}: needs "model" (a glTF with the clips) or "retarget"`);
+  const abs = (p) => path.resolve(repoRoot, p);
+  return {
+    file,
+    name: cfg.name,
+    source: cfg.source ?? '',
+    budget: cfg.budget ?? 'enemy',
+    rootBone: cfg.rootBone,
+    clips: cfg.clips,
+    publicDir: abs(cfg.publicDir),
+    outDir: path.dirname(file),
+    model: cfg.model ? abs(cfg.model) : null,
+    retarget: cfg.retarget ? { ...cfg.retarget, library: abs(cfg.retarget.library), target: abs(cfg.retarget.target), out: abs(cfg.retarget.out) } : null,
+  };
+}
 
-/** Engine clip name → library clip, and whether it loops. */
-export const CLIPS = {
-  idle: { from: 'Idle_Loop', loop: true },
-  walk: { from: 'Walk_Loop', loop: true },
-  run: { from: 'Jog_Fwd_Loop', loop: true },
-  sprint: { from: 'Sprint_Loop', loop: true },
-  crouch_idle: { from: 'Crouch_Idle_Loop', loop: true },
-  crouch_walk: { from: 'Crouch_Fwd_Loop', loop: true },
-  /** Weapon held, relaxed: the upper-body pose whenever the operator is not aiming. */
-  ready: { from: 'Pistol_Idle_Loop', loop: true },
-  /** Aim poses for the pitch blend; short static clips. */
-  aim_up: { from: 'Pistol_Aim_Up', loop: true },
-  aim: { from: 'Pistol_Aim_Neutral', loop: true },
-  aim_down: { from: 'Pistol_Aim_Down', loop: true },
-  reload: { from: 'Pistol_Reload', loop: false },
-  hit: { from: 'Hit_Chest', loop: false },
-  hit_head: { from: 'Hit_Head', loop: false },
-  death: { from: 'Death01', loop: false },
-  jump: { from: 'Jump_Loop', loop: true },
-  land: { from: 'Jump_Land', loop: false },
-};
-
-export async function buildCharacter({ log = console.log, rig = 'cyberpunk', retarget = false, pipeline = true, verbose = false } = {}) {
-  const spec = RIGS[rig];
-  if (!spec) throw new Error(`unknown rig "${rig}"; rigs: ${Object.keys(RIGS).join(', ')}`);
-  if (rig === 'cyberpunk' && retarget) {
-    const clips = Object.values(CLIPS).map((c) => c.from).join(',');
-    const status = runBlender(RETARGET_SCRIPT, [UAL, KIT_CHARACTER, RETARGETED, clips]);
+export async function buildCharacter({ log = console.log, config = DEFAULT_CONFIG, retarget = false, pipeline = true, verbose = false } = {}) {
+  const cfg = await loadConfig(config);
+  const CLIPS = cfg.clips;
+  if (cfg.retarget && retarget) {
+    const status = runBlender(RETARGET_SCRIPT, [cfg.file]);
     if (status !== 0) throw new Error(`retarget failed (blender exit ${status})`);
   }
-  const OUT = path.join(OUT_DIR, `${spec.out}.glb`);
+  const src = cfg.retarget ? cfg.retarget.out : cfg.model;
+  const spec = { src, root: cfg.rootBone, out: cfg.name, source: cfg.source };
+  const OUT = path.join(cfg.outDir, `${spec.out}.glb`);
   const io = new NodeIO().registerExtensions(ALL_EXTENSIONS);
   const doc = spec.src.endsWith('.gltf') || spec.src.endsWith('.glb') ? await io.read(spec.src) : await mergeClipFiles(io, spec.src, log);
   const root = doc.getRoot();
@@ -115,7 +100,7 @@ export async function buildCharacter({ log = console.log, rig = 'cyberpunk', ret
   rootJoint.setExtras({ 'spark.rootBone': true });
   const scene = root.listScenes()[0];
   const top = scene.listChildren()[0];
-  top.setExtras({ 'spark.type': 'character', 'spark.budget': 'enemy', 'spark.source': spec.source });
+  top.setExtras({ 'spark.type': 'character', 'spark.budget': cfg.budget, 'spark.source': spec.source });
   root.setExtras({ 'spark.source': spec.source });
 
   if (verbose) {
@@ -126,14 +111,14 @@ export async function buildCharacter({ log = console.log, rig = 'cyberpunk', ret
     for (const child of scene.listChildren()) walk(child, 0);
   }
 
-  await mkdir(OUT_DIR, { recursive: true });
+  await mkdir(cfg.outDir, { recursive: true });
   const glb = await io.writeBinary(doc);
   await writeFile(OUT, glb);
   log(`wrote ${path.relative(repoRoot, OUT)} (${(glb.byteLength / 1024).toFixed(0)} KiB, ${Object.keys(CLIPS).length} clips)`);
   if (!pipeline) return OUT;
-  const ok = await runPipeline({ src: OUT_DIR, out: PUBLIC, only: spec.out, budget: 'enemy', verbose, log });
+  const ok = await runPipeline({ src: cfg.outDir, out: cfg.publicDir, only: spec.out, budget: cfg.budget, verbose, log });
   if (!ok) throw new Error('asset pipeline failed');
-  return path.join(PUBLIC, `${spec.out}.glb`);
+  return path.join(cfg.publicDir, `${spec.out}.glb`);
 }
 
 /** `<dir>/events.json` from the retarget, or nothing for a plain glTF source. */
@@ -181,9 +166,9 @@ export async function mergeClipFiles(io, dir, log) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const argv = process.argv.slice(2);
-  const rigArg = argv.find((a) => a.startsWith('--rig='));
+  const configArg = argv.find((a) => a.startsWith('--config='));
   buildCharacter({
-    rig: rigArg ? rigArg.slice(6) : 'cyberpunk',
+    config: configArg ? configArg.slice(9) : DEFAULT_CONFIG,
     retarget: argv.includes('--retarget'),
     pipeline: !argv.includes('--no-pipeline'),
     verbose: argv.includes('--verbose'),

@@ -95,7 +95,15 @@ export function overrideBoost(share: number): number {
   return Math.min(OVERRIDE_MAX_BOOST, share / (1 - share));
 }
 
+interface LayerFade {
+  target: number;
+  /** Weight units per second; Infinity snaps. */
+  rate: number;
+}
+
 interface Instance {
+  /** Layer index → fade in progress (layers 1..3). */
+  readonly fades: Map<number, LayerFade>;
   readonly root: THREE.Object3D;
   readonly mixer: THREE.AnimationMixer;
   readonly playback: AnimatorPlayback;
@@ -169,6 +177,7 @@ export class AnimationWorld {
     }
 
     const inst: Instance = {
+      fades: new Map(),
       root,
       mixer,
       playback,
@@ -283,6 +292,47 @@ export class AnimationWorld {
     return this.table.get(eid)?.mixer;
   }
 
+  /**
+   * Fade layer 1..3's weight to `target` over `seconds` (0 snaps). The weight
+   * lives in the `Animator` component (`layer1..3`); this moves it each step
+   * so a game does not hand-roll the same lerp per actor.
+   */
+  setLayerWeight(eid: Entity, layer: number, target: number, seconds = 0): void {
+    if (layer < 1 || layer > 3) throw new Error(`AnimationWorld.setLayerWeight: layer must be 1..3, got ${layer}`);
+    const inst = this.table.require(eid);
+    const clamped = Math.max(0, Math.min(1, target));
+    if (seconds <= 0) {
+      inst.fades.delete(layer);
+      this.writeLayerWeight(eid, layer, clamped);
+      return;
+    }
+    const current = this.getLayerWeight(eid, layer);
+    inst.fades.set(layer, { target: clamped, rate: Math.abs(clamped - current) / seconds || Number.POSITIVE_INFINITY });
+  }
+
+  getLayerWeight(eid: Entity, layer: number): number {
+    const a = this.entities.store(Animator);
+    const store = layer === 1 ? a.layer1 : layer === 2 ? a.layer2 : a.layer3;
+    return store[eid] ?? 1;
+  }
+
+  private writeLayerWeight(eid: Entity, layer: number, weight: number): void {
+    const a = this.entities.store(Animator);
+    const store = layer === 1 ? a.layer1 : layer === 2 ? a.layer2 : a.layer3;
+    store[eid] = weight;
+  }
+
+  private advanceFades(eid: Entity, inst: Instance, dt: number): void {
+    if (inst.fades.size === 0) return;
+    for (const [layer, fade] of inst.fades) {
+      const current = this.getLayerWeight(eid, layer);
+      const step = fade.rate * dt;
+      const next = Math.abs(fade.target - current) <= step ? fade.target : current + Math.sign(fade.target - current) * step;
+      this.writeLayerWeight(eid, layer, next);
+      if (next === fade.target) inst.fades.delete(layer);
+    }
+  }
+
   // ---- systems ---------------------------------------------------------------
 
   /** Update stage: advance every animator by `dt`, fire events, pose skeletons, accumulate root motion. */
@@ -292,6 +342,7 @@ export class AnimationWorld {
     for (const [eid, inst] of this.table.entries()) {
       const speed = a.speed[eid] ?? 1;
       inst.playback.step(dt * speed);
+      this.advanceFades(eid, inst, dt);
       this.syncMixer(inst, eid, a.layer1[eid] ?? 1, a.layer2[eid] ?? 1, a.layer3[eid] ?? 1);
       this.dispatch(eid, inst, inst.playback.fired, inst.playback.transitions);
     }

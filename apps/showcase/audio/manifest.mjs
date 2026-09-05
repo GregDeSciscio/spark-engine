@@ -4,10 +4,12 @@
  * length, loop, variants) and how the engine plays it (bus, gain, variance,
  * cooldown, instance cap, spatial defaults).
  *
- * `generate.mjs` turns the prompts into raw takes, `build.mjs` masters them
- * into apps/showcase/public/audio and writes manifest.json, which the game
- * reads at scene load (apps/showcase/src/audio/MissionAudio.ts). Names are the
- * contract between this file and the game; change one, change both.
+ * The engine's audio tools take this file as `--manifest`:
+ * `tools/audio/generate.mjs` turns the prompts into raw takes under `PATHS.raw`,
+ * `tools/audio/build.mjs` masters them into `PATHS.out` and writes
+ * manifest.json there, which the game reads at scene load through the
+ * engine's `SoundBank` (apps/showcase/src/audio/MissionAudio.ts). Names are
+ * the contract between this file and the game; change one, change both.
  *
  * Prompt craft for ElevenLabs' text-to-sound model (its guide: short and
  * concrete, one sound per prompt, no cinematic words): name the source, the
@@ -39,6 +41,9 @@
  * @property {string} [voiceStyle]  voice lines: 'ganger' (helmet comms filter) or 'operator'
  * @property {string} [note]        design intent, for the cue sheet
  */
+
+/** Where the tools read and write, relative to the repo root. */
+export const PATHS = { raw: 'assets/source/audio/raw', out: 'apps/showcase/public/audio' };
 
 /** Loudness targets (LUFS integrated) so the mix balances before any in-game gain. */
 export const LUFS = { sfx: -18, ui: -20, ambience: -26, voice: -19, music: -16 };

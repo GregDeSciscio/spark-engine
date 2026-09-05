@@ -17,6 +17,14 @@ What building the customer game's first slice (ADR-005, `apps/showcase`) taught 
 | Over-the-shoulder aiming needs two rays: what the reticle is over, then the shot from the shoulder toward it, or cover the camera sees past eats the round with no feedback. | `ShoulderCamera.directionFor` and the screen-projection helpers; the two-ray scheme itself stays game code. |
 | Recoil that kicks and returns the whole view fights the player's own correction. | The reticle carries most of the kick on screen and bullets follow it; the camera follows a fraction. Recoil offsets on `ShoulderCamera` support this split. |
 | A weapon-ready or aim pose has to sit on the upper body over any locomotion. Additive layers cannot do it (a pose minus its own first frame is nothing), and three's mixer averages normal-blend actions by weight, so a masked pose at weight 1 only got half the arms. | Override layers: `additive: false` on a masked layer makes its clips replace the base on those bones by the layer weight (`overrideBoost` maps the share to a mixer weight; a full override leaves 0.1 percent of the base). |
+| Every actor hand-rolled the same lerp to fade an animation layer's weight. | `AnimationWorld.setLayerWeight(eid, layer, target, seconds)` fades the `Animator` component weight each step. |
+| The controller's grounded flag flickers on flat ground; each actor timed "airborne" itself. | `Character.air` accumulates seconds since last grounded; `CharacterController.airborneSeconds(eid)`. |
+| Lights driven by entities sat at the origin until the lighting system's first run. | `LightingSystem.attachEntity` copies the transform at attach. |
+| The game's audio layer grew a manifest loader, a nearest-N emitter pool and random scatter timers that every game would rewrite. | `SoundBank`, `EmitterPool`, `Scatter` in the audio module; the manifest schema is the engine's. |
+| The rifle followed a hand bone for position and the aim for orientation with bespoke code. | `BoneSocket` (position from a bone, offset in the parent frame, rotation left to the caller) plus `findBone`. |
+| Impact sounds classified surfaces by regex in the game, while the engine already names its surfaces. | `surfaceKindOf(materialName)` next to the surface library: concrete, asphalt, brick, metal, glass or unknown. |
+| Ragdolls emitted no contacts, so the body fall was timed. | `RagdollConfig.contactEvents` enables events on the root part; `Ragdoll.hasPart` / `rootEid` route them. |
+| `spatialVoices` counted only entity-attached voices. | It counts every voice with a panner. |
 | Rigify bone names carry dots (`DEF-spine.001`, `DEF-hand.R`) and three's glTF loader strips them, so every bone name in a config pointed at nothing while the clips still played. | Character builds rename joints to dot-free names (`build-character.mjs`); `RagdollWorld.create` already throws on a missing bone, which is how this surfaced. |
 
 ## Game code that turned out to be engine material

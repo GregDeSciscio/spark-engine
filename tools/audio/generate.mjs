@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * Generate the showcase's raw sound takes with ElevenLabs:
+ * Generate a game's raw sound takes with ElevenLabs:
  *
- *   node tools/audio/generate.mjs [--only=<name>[,<name>]] [--kind=sfx|voice] [--force] [--dry-run]
+ *   node tools/audio/generate.mjs [--manifest=<path>] [--raw=<dir>] [--only=<name>[,<name>]] [--kind=sfx|voice] [--force] [--dry-run]
  *
- * Reads tools/audio/manifest.mjs and writes one MP3 per cue variant into
- * assets/source/audio/raw/<name>-<n>.mp3 (skipping files that exist, unless
- * --force). Sound effects go through the text-to-sound-effects endpoint,
+ * Reads the manifest module (default apps/showcase/audio/manifest.mjs; see
+ * manifest-loader.mjs) and writes one MP3 per cue variant into its raw folder
+ * as <name>-<n>.mp3 (skipping files that exist, unless --force). Sound effects go through the text-to-sound-effects endpoint,
  * voice lines through text-to-speech with the voice picked by VOICE_ID or by
  * searching the account's voices for the manifest's description.
  *
@@ -21,11 +21,8 @@
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CUES, VOICE_SEARCH } from './manifest.mjs';
+import { loadManifest, manifestArg, pathArg, repoRoot } from './manifest-loader.mjs';
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(here, '..', '..');
-export const RAW = path.join(repoRoot, 'assets', 'source', 'audio', 'raw');
 const API = 'https://api.elevenlabs.io';
 const SFX_MODEL = 'eleven_text_to_sound_v2';
 const TTS_MODEL = 'eleven_multilingual_v2';
@@ -64,7 +61,7 @@ async function loadVoiceId() {
 }
 
 function parseArgs(argv) {
-  const args = { only: null, kind: null, force: false, dryRun: false };
+  const args = { only: null, kind: null, force: false, dryRun: false, manifest: manifestArg(argv), raw: pathArg(argv, 'raw') };
   for (const raw of argv) {
     if (raw.startsWith('--only=')) args.only = new Set(raw.slice(7).split(',').filter(Boolean));
     else if (raw.startsWith('--kind=')) args.kind = raw.slice(7);
@@ -74,8 +71,8 @@ function parseArgs(argv) {
   return args;
 }
 
-export function rawFile(name, variant) {
-  return path.join(RAW, `${name}-${String(variant + 1).padStart(2, '0')}.mp3`);
+export function rawFile(rawDir, name, variant) {
+  return path.join(rawDir, `${name}-${String(variant + 1).padStart(2, '0')}.mp3`);
 }
 
 async function exists(file) {
@@ -111,8 +108,8 @@ export async function generateSfx(apiKey, cue) {
   });
 }
 
-/** Find a voice for the enemy barks: VOICE_ID, else the first voice matching the manifest's search. */
-export async function pickVoice(apiKey, log) {
+/** Find a voice for the barks: VOICE_ID, else the first voice matching the manifest's search. */
+export async function pickVoice(apiKey, voiceSearch, log) {
   const fixed = await loadVoiceId();
   if (fixed) return fixed;
   const res = await fetch(`${API}/v1/voices`, { headers: { 'xi-api-key': apiKey } });
@@ -122,8 +119,8 @@ export async function pickVoice(apiKey, log) {
     const labels = Object.values(v.labels ?? {}).join(' ').toLowerCase();
     const text = `${v.name} ${labels} ${v.description ?? ''}`.toLowerCase();
     let s = 0;
-    if (labels.includes(VOICE_SEARCH.gender)) s += 2;
-    for (const k of VOICE_SEARCH.keywords) if (text.includes(k)) s += 1;
+    if (labels.includes(voiceSearch.gender)) s += 2;
+    for (const k of voiceSearch.keywords) if (text.includes(k)) s += 1;
     return s;
   };
   const ranked = [...voices].sort((a, b) => score(b) - score(a));
@@ -142,15 +139,17 @@ export async function generateVoice(apiKey, voiceId, cue, variant) {
   });
 }
 
-export async function generateAll({ only = null, kind = null, force = false, dryRun = false, log = console.log } = {}) {
-  const cues = CUES.filter((c) => (!only || only.has(c.name)) && (!kind || c.kind === kind));
+export async function generateAll({ manifest = undefined, raw = null, only = null, kind = null, force = false, dryRun = false, log = console.log } = {}) {
+  const m = await loadManifest(manifest, { raw });
+  const cues = m.cues.filter((c) => (!only || only.has(c.name)) && (!kind || c.kind === kind));
+  log(`manifest: ${path.relative(repoRoot, m.file)} → ${path.relative(repoRoot, m.raw)}`);
   let planned = 0;
   let credits = 0;
   const work = [];
   for (const cue of cues) {
     const variants = cue.variants ?? 1;
     for (let v = 0; v < variants; v++) {
-      const file = rawFile(cue.name, v);
+      const file = rawFile(m.raw, cue.name, v);
       if (!force && (await exists(file))) continue;
       work.push({ cue, v, file });
       planned += 1;
@@ -165,7 +164,7 @@ export async function generateAll({ only = null, kind = null, force = false, dry
   if (planned === 0) return { planned, generated: 0, failed: 0 };
   const apiKey = await loadApiKey();
   if (!apiKey) throw new Error('ELEVENLABS_API_KEY is not set (environment or .env at the repo root)');
-  await mkdir(RAW, { recursive: true });
+  await mkdir(m.raw, { recursive: true });
   let voiceId = null;
   let generated = 0;
   let failed = 0;
@@ -173,7 +172,7 @@ export async function generateAll({ only = null, kind = null, force = false, dry
     try {
       let bytes;
       if (cue.kind === 'voice') {
-        voiceId ??= await pickVoice(apiKey, log);
+        voiceId ??= await pickVoice(apiKey, m.voiceSearch, log);
         bytes = await generateVoice(apiKey, voiceId, cue, v);
       } else {
         bytes = await generateSfx(apiKey, cue);

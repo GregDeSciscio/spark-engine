@@ -43,6 +43,10 @@ export class LiveVoice implements Voice {
   private readonly source: AudioBufferSourceNode;
   private readonly gain: GainNode;
   private readonly panner: PannerNode | null;
+  /** Whether this voice plays through a panner (at an entity or a fixed point). */
+  get isSpatial(): boolean {
+    return this.panner !== null;
+  }
   private readonly context: BaseAudioContext;
   private playing = true;
   private ended = false;

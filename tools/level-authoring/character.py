@@ -1,9 +1,15 @@
 """
-Retarget the Universal Animation Library clips onto Quaternius' Cyberpunk Game
-Kit character, headless:
+Retarget a clip library's animations onto another skeleton, headless:
 
-    blender --background --python tools/level-authoring/character.py -- \
-        <ual.gltf> <SK_Character.usda> <out-dir> [Clip1,Clip2,...]
+    blender --background --python tools/level-authoring/character.py -- <character.json>
+
+The config is the same file tools/asset-pipeline/build-character.mjs reads
+(see assets/source/characters/operator.character.json): its `retarget`
+section names the source library (glTF with the clips), the target model
+(USD or glTF), the output folder, the target height, the hips bone on each
+side, a target→source bone map with an `align` flag per limb bone, helper
+bones to reparent, materials to drop and the clips that carry footsteps; the
+`clips` section says which library clips to bake.
 
 Both rigs rest in a T-pose. For every mapped target bone the retarget takes
 the source bone's rotation *delta from its rest* and applies it to the target
@@ -22,7 +28,7 @@ assumes unit-scaled bone chains). Each clip is exported as its own GLB,
 `<out-dir>/<ClipName>.glb`, with the action active and the scene range set to
 it: in Blender 5.1 the NLA-track and per-action export modes flatten actions
 baked from Python to a single key per channel. The node build
-(`tools/asset-pipeline/build-character.mjs --rig=cyberpunk`) merges the files
+(`tools/asset-pipeline/build-character.mjs --config=<character.json>`) merges the files
 into one model, renames the clips and adds the `spark.*` extras.
 """
 
@@ -34,41 +40,29 @@ import sys
 import bpy
 from mathutils import Matrix, Vector
 
+# Filled from the config by `configure()`; module-level so the helpers below read them.
 TARGET_HEIGHT = 1.8
-
-# target bone -> source bone. `align` limb bones onto the source rest direction.
-MAP = {
-    'Body': ('DEF-hips', False),
-    'Abdomen': ('DEF-spine.001', False),
-    'Torso': ('DEF-spine.002', False),
-    'Chest': ('DEF-spine.003', False),
-    'Neck': ('DEF-neck', False),
-    'Head': ('DEF-head', False),
-    'Shoulder_L': ('DEF-shoulder.L', False),
-    'UpperArm_L': ('DEF-upper_arm.L', True),
-    'LowerArm_L': ('DEF-forearm.L', True),
-    'Hand_L': ('DEF-hand.L', True),
-    'Shoulder_R': ('DEF-shoulder.R', False),
-    'UpperArm_R': ('DEF-upper_arm.R', True),
-    'LowerArm_R': ('DEF-forearm.R', True),
-    'Hand_R': ('DEF-hand.R', True),
-    'UpperLeg_L': ('DEF-thigh.L', True),
-    'LowerLeg_L': ('DEF-shin.L', True),
-    'UpperLeg_R': ('DEF-thigh.R', True),
-    'LowerLeg_R': ('DEF-shin.R', True),
-    'Foot_L': ('DEF-foot.L', False),
-    'Foot_R': ('DEF-foot.R', False),
-}
-HIPS = 'Body'
-SRC_HIPS = 'DEF-hips'
-# IK-style foot bones -> the shin they belong to.
-FEET = {'Foot_L': 'LowerLeg_L', 'Foot_R': 'LowerLeg_R'}
-# The kit's sword mesh: it is weighted to the Weapon socket and the game brings its own rifle.
-DROP_MATERIALS = {'Blade', 'Blade_Edge'}
-# Clips whose foot contacts become `footstep` animation events (audio binds to them).
-FOOTSTEP_CLIPS = {'Walk_Loop', 'Walk_Formal_Loop', 'Jog_Fwd_Loop', 'Sprint_Loop', 'Crouch_Fwd_Loop', 'Jump_Land'}
-# A foot is "down" within this much of its lowest point over the clip (metres, after scaling).
+MAP = {}          # target bone -> (source bone, align)
+HIPS = ''
+SRC_HIPS = ''
+FEET = {}         # helper bone -> new parent (reparented before the bake)
+DROP_MATERIALS = set()
+FOOTSTEP_CLIPS = set()
 FOOT_CONTACT_BAND = 0.04
+
+
+def configure(cfg):
+    """Load the retarget section of a character config into the module settings."""
+    global TARGET_HEIGHT, MAP, HIPS, SRC_HIPS, FEET, DROP_MATERIALS, FOOTSTEP_CLIPS, FOOT_CONTACT_BAND
+    r = cfg['retarget']
+    TARGET_HEIGHT = float(r.get('targetHeight', 1.8))
+    MAP = {tgt: (spec['from'], bool(spec.get('align', False))) for tgt, spec in r['bones'].items()}
+    HIPS = r['hips']
+    SRC_HIPS = r['sourceHips']
+    FEET = dict(r.get('reparent', {}))
+    DROP_MATERIALS = set(r.get('dropMaterials', []))
+    FOOTSTEP_CLIPS = set(r.get('footstepClips', []))
+    FOOT_CONTACT_BAND = float(r.get('footContactBand', 0.04))
 
 
 def log(msg):
@@ -96,7 +90,10 @@ def import_source(path):
 
 def import_target(path):
     before = set(bpy.data.objects)
-    bpy.ops.wm.usd_import(filepath=path, import_skeletons=True, import_blendshapes=False)
+    if path.lower().endswith(('.gltf', '.glb')):
+        bpy.ops.import_scene.gltf(filepath=path)
+    else:
+        bpy.ops.wm.usd_import(filepath=path, import_skeletons=True, import_blendshapes=False)
     objs = set(bpy.data.objects) - before
     arm = next(o for o in objs if o.type == 'ARMATURE')
     meshes = [o for o in objs if o.type == 'MESH']
@@ -121,7 +118,8 @@ def import_target(path):
     for m in keep:
         m.parent = arm
         m.matrix_parent_inverse = arm.matrix_world.inverted()
-    reparent_feet(arm)
+    if FEET:
+        reparent_feet(arm)
     return arm, keep
 
 
@@ -347,9 +345,22 @@ def write_events(out_dir, events):
     log(f'wrote {path}')
 
 
+def resolve(base_dir, p):
+    return p if os.path.isabs(p) else os.path.normpath(os.path.join(base_dir, p))
+
+
 def main(argv):
-    ual, usda, out = argv[0], argv[1], argv[2]
-    wanted = set(argv[3].split(',')) if len(argv) > 3 and argv[3] else None
+    config_path = os.path.abspath(argv[0])
+    with open(config_path, encoding='utf8') as fh:
+        cfg = json.load(fh)
+    configure(cfg)
+    # Paths in the config are relative to the repo root.
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+    r = cfg['retarget']
+    ual = resolve(repo_root, r['library'])
+    usda = resolve(repo_root, r['target'])
+    out = resolve(repo_root, r['out'])
+    wanted = {spec['from'] for spec in cfg['clips'].values()}
     bpy.ops.wm.read_factory_settings(use_empty=True)
     src, actions = import_source(ual)
     log(f'source {src.name}: {len(src.data.bones)} bones, {len(actions)} clips, fps {bpy.context.scene.render.fps}')
@@ -371,7 +382,7 @@ def main(argv):
 
 if __name__ == '__main__':
     args = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
-    if len(args) < 3:
+    if len(args) < 1:
         print(__doc__)
         sys.exit(2)
     main(args)

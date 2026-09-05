@@ -22,4 +22,5 @@ export const RigidBody = defineComponentType('RigidBody', { type: 'u8', sleeping
  * Per-entity state for `CharacterController`: accumulated vertical velocity
  * and the grounded flag from the last move. Added by `attach()`.
  */
-export const Character = defineComponentType('Character', { vy: 'f32', grounded: 'u8' });
+/** `air`: seconds since the character was last grounded (0 while grounded). Debounces Rapier's per-step grounded flag. */
+export const Character = defineComponentType('Character', { vy: 'f32', grounded: 'u8', air: 'f32' });

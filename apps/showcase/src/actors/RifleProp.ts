@@ -1,27 +1,29 @@
 import * as THREE from 'three/webgpu';
+import { BoneSocket } from '@spark/engine';
 
 /**
- * A placeholder rifle that rides in a character's right hand. The pose owns
+ * A placeholder rifle that rides in a character's weapon socket. The pose owns
  * where the hand is; the shooter's view owns where the barrel points, so the
- * prop sits at the hand bone each frame and yaws / pitches with the aim
- * instead of inheriting the bone's twist (which would need hand IK to look
- * right with a two-handed grip). Until a real weapon model lands.
+ * prop sits on a `BoneSocket` (position from the bone, orientation from the
+ * aim) instead of inheriting the bone's twist, which would need hand IK to
+ * look right with a two-handed grip. Until a real weapon model lands.
  */
 export class RifleProp {
-  readonly group = new THREE.Group();
+  readonly group: THREE.Group;
   /** Where shots leave the barrel, in world space via `getWorldPosition`. */
   readonly muzzle = new THREE.Object3D();
+  private readonly socket: BoneSocket;
   private readonly parts: { dispose(): void }[] = [];
-  private readonly handWorld = new THREE.Vector3();
-  private readonly fallback = new THREE.Vector3();
 
   /**
    * @param parent the actor's entity group (yawed by the render sync)
    * @param hand the right hand bone, or null to sit at a fixed offset
    * @param fallback group-local position used when there is no hand
    */
-  constructor(parent: THREE.Object3D, private readonly hand: THREE.Object3D | null, fallback: THREE.Vector3, color = 0x4a4f58) {
-    this.fallback.copy(fallback);
+  constructor(parent: THREE.Object3D, hand: THREE.Object3D | null, fallback: THREE.Vector3, color = 0x4a4f58) {
+    // The grip sits a little ahead of and above the palm so the receiver clears the fingers.
+    this.socket = new BoneSocket(parent, hand, { fallback, offset: new THREE.Vector3(0, 0.02, 0.04) });
+    this.group = this.socket.object;
     const material = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.7 });
     const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.07, 0.34), material);
     receiver.position.set(0, 0.02, 0.1);
@@ -39,8 +41,6 @@ export class RifleProp {
     this.parts.push(receiver.geometry, barrel.geometry, stock.geometry, mag.geometry, material);
     this.muzzle.position.set(0, 0.04, 0.62);
     this.group.add(this.muzzle);
-    this.group.position.copy(fallback);
-    parent.add(this.group);
   }
 
   /**
@@ -50,20 +50,12 @@ export class RifleProp {
    * animation step.
    */
   update(pitch: number): void {
-    const parent = this.group.parent;
-    if (this.hand && parent) {
-      this.hand.getWorldPosition(this.handWorld);
-      parent.worldToLocal(this.handWorld);
-      // The grip sits a little ahead of and above the palm so the receiver clears the fingers.
-      this.group.position.set(this.handWorld.x, this.handWorld.y + 0.02, this.handWorld.z + 0.04);
-    } else {
-      this.group.position.copy(this.fallback);
-    }
+    this.socket.update();
     this.group.rotation.set(pitch, 0, 0);
   }
 
   dispose(): void {
-    this.group.removeFromParent();
+    this.socket.dispose();
     for (const p of this.parts) p.dispose();
   }
 }

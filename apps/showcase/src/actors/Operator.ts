@@ -1,6 +1,5 @@
 import * as THREE from 'three/webgpu';
 import {
-  Animator,
   CharacterController,
   Character,
   Transform,
@@ -48,9 +47,9 @@ export const OPERATOR = {
 } as const;
 
 const UP = new THREE.Vector3(0, 1, 0);
-/** How fast the upper-body layer fades in and out (per second). */
-const UPPER_FADE = 10;
-/** Rapier reports grounded per step and it flickers on flat ground while moving; only this long in the air counts. */
+/** Seconds the upper-body layer takes to fade in or out. */
+const UPPER_FADE_SECONDS = 0.12;
+/** The controller's grounded flag flickers on flat ground while moving; only this long in the air counts. */
 const AIRBORNE_SECONDS = 0.12;
 const RELOAD_CLIP_SECONDS = 1.67;
 /** Operator colours: dark grey kit, deep-teal jacket panels with a faint glow. */
@@ -180,10 +179,10 @@ export class Operator {
   private readonly rifle: RifleProp;
   private readonly visual: THREE.Object3D;
   private readonly materials: readonly THREE.Material[];
-  /** Current weight of the upper-body layer, chased toward its target every frame. */
-  private upperWeight = 1;
-  private airTime = 0;
+  /** Target weight of the upper-body layer; the animation world fades to it. */
+  private upperTarget = 1;
   private pitch = 0;
+  private wasAirborne = false;
   /** Scripted movement for probes (`window.__spark.game.move`): replaces the WASD axes while set. */
   autoMove: { forward: number; strafe: number } | null = null;
   /** Height of the current collider; the entity transform sits at half of it. */
@@ -328,7 +327,6 @@ export class Operator {
     this.facing = yaw + Math.PI;
     this.health = OPERATOR_MAX_HEALTH;
     this.stance = 'stand';
-    this.airTime = 0;
     if (this.dead) {
       this.dead = false;
       animation.setParam(this.eid, 'dead', 0);
@@ -342,7 +340,7 @@ export class Operator {
       this.wish.set(0, 0, 0);
       this.sprinting = false;
       this.aiming = false;
-      this.fadeUpper(0, dt);
+      this.fadeUpper(0);
       this.rifle.update(0);
       return;
     }
@@ -366,15 +364,15 @@ export class Operator {
     this.pitch = camera.effectivePitch();
     this.rifle.update(this.pitch);
     // The upper-body layer stands down while sprinting so the arms pump.
-    this.fadeUpper(this.sprinting ? 0 : 1, dt);
+    this.fadeUpper(this.sprinting ? 0 : 1);
     void now;
+    void dt;
   }
 
-  private fadeUpper(target: number, dt: number): void {
-    const k = Math.min(1, UPPER_FADE * dt);
-    this.upperWeight += (target - this.upperWeight) * k;
-    if (Math.abs(this.upperWeight - target) < 0.005) this.upperWeight = target;
-    this.deps.entities.store(Animator).layer1[this.eid] = this.upperWeight;
+  private fadeUpper(target: number): void {
+    if (target === this.upperTarget) return;
+    this.upperTarget = target;
+    this.deps.animation.setLayerWeight(this.eid, 1, target, UPPER_FADE_SECONDS);
   }
 
   fixedUpdate(dt: number): void {
@@ -407,12 +405,12 @@ export class Operator {
     t.qy[this.eid] = Math.sin(this.facing / 2);
     t.qw[this.eid] = Math.cos(this.facing / 2);
 
-    const wasAirborne = this.airTime > AIRBORNE_SECONDS;
-    this.airTime = this.grounded ? 0 : this.airTime + dt;
-    if (wasAirborne && this.grounded) this.deps.sfx?.footstep(this.eid, 'land');
+    const airborne = this.controller.airborneSeconds(this.eid) > AIRBORNE_SECONDS;
+    if (this.wasAirborne && !airborne && this.grounded) this.deps.sfx?.footstep(this.eid, 'land');
+    this.wasAirborne = airborne;
     animation.setParam(this.eid, 'speed', this.speed);
     animation.setParam(this.eid, 'crouch', this.stance === 'stand' ? 0 : 1);
-    animation.setParam(this.eid, 'air', this.airTime > AIRBORNE_SECONDS ? 1 : 0);
+    animation.setParam(this.eid, 'air', airborne ? 1 : 0);
     animation.setParam(this.eid, 'aim', this.aiming ? 1 : 0);
     animation.setParam(this.eid, 'reload', this.reloading ? 1 : 0);
     animation.setParam(this.eid, 'pitch', THREE.MathUtils.radToDeg(this.pitch));

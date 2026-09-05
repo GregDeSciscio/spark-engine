@@ -2,22 +2,24 @@
 
 The customer game's soundscape (ADR-005): a lone operator on a wet neon
 street at night. The brief is that the audio carries as much detail as the
-picture. Every cue below is data in `tools/audio/manifest.mjs`; the game reads
-the built manifest at scene load (`apps/showcase/src/audio/MissionAudio.ts`)
-and plays one verb per moment. Missing takes are silent no-ops that the
+picture. Every cue below is data in `apps/showcase/audio/manifest.mjs`; the
+game reads the built manifest at scene load through the engine's `SoundBank`
+(`apps/showcase/src/audio/MissionAudio.ts`) and plays one verb per moment. Missing takes are silent no-ops that the
 console lists once, so the game runs identically before and after the assets
 exist.
 
 ## Pipeline
 
 ```
-tools/audio/manifest.mjs      the design: prompts, lengths, loops, variants, buses, gains, spatial roles
-pnpm audio:generate           ElevenLabs text-to-sound-effects (and text-to-speech for barks) → assets/source/audio/raw/<cue>-NN.mp3
-pnpm audio:build              ffmpeg: trim, mono/stereo, LUFS normalise, loop seams, comms filter → apps/showcase/public/audio/<cue>-NN.ogg + manifest.json
+apps/showcase/audio/manifest.mjs   the design: prompts, lengths, loops, variants, buses, gains, spatial roles, PATHS { raw, out }
+pnpm audio:generate                tools/audio/generate.mjs --manifest=<that file>: ElevenLabs text-to-sound-effects (and text-to-speech for barks) → <raw>/<cue>-NN.mp3
+pnpm audio:build                   tools/audio/build.mjs --manifest=<that file>: ffmpeg mastering → <out>/<cue>-NN.ogg + manifest.json
+
+The two tools are engine tooling: any game points them at its own manifest module (`--manifest`, with `--raw` / `--out` overrides). The engine side is `SoundBank` (defines the cues a manifest has files for, silent no-ops for the rest), `EmitterPool` (nearest-N looping point sources) and `Scatter` (random one-shots around the listener).
 ```
 
 - **Two ways in.** The first full set (2026-09-05) was generated through the
-  ElevenLabs Creative connector onto one canvas, `tools/audio/elevenlabs-flow.json`
+  ElevenLabs Creative connector onto one canvas, `apps/showcase/audio/elevenlabs-flow.json`
   records the flow and the node per cue, and the takes were pulled into
   `assets/source/audio/raw/` by name. `pnpm audio:generate` is the scripted
   path for re-runs: `ELEVENLABS_API_KEY` in the environment or in `.env` at the

@@ -283,3 +283,23 @@ describe('override layers', () => {
     f.dispose();
   });
 });
+
+describe('layer weight fades', () => {
+  it('moves the Animator layer weight to the target over the given seconds, snapping at 0', () => {
+    const f = fixture();
+    const rig = makeRig();
+    const eid = f.entities.create([Transform, {}]);
+    f.animation.attach(eid, rig.root, rig.clips, GRAPH, { rootMotion: { mode: 'none' } });
+    expect(f.animation.getLayerWeight(eid, 1)).toBe(1);
+    f.animation.setLayerWeight(eid, 1, 0, 0.5);
+    for (let i = 0; i < 15; i++) f.frame();
+    // A quarter second in: halfway down.
+    expect(f.animation.getLayerWeight(eid, 1)).toBeCloseTo(0.5, 1);
+    for (let i = 0; i < 20; i++) f.frame();
+    expect(f.animation.getLayerWeight(eid, 1)).toBe(0);
+    f.animation.setLayerWeight(eid, 1, 0.8);
+    expect(f.animation.getLayerWeight(eid, 1)).toBeCloseTo(0.8, 5);
+    expect(() => f.animation.setLayerWeight(eid, 0, 1)).toThrow(/1\.\.3/);
+    f.dispose();
+  });
+});

@@ -2,10 +2,10 @@
 /**
  * Master the raw takes into game assets:
  *
- *   node tools/audio/build.mjs [--only=<name>] [--force] [--verbose]
+ *   node tools/audio/build.mjs [--manifest=<path>] [--raw=<dir>] [--out=<dir>] [--only=<name>] [--force] [--verbose]
  *
- * For every cue in tools/audio/manifest.mjs with raw takes in
- * assets/source/audio/raw/, ffmpeg:
+ * For every cue in the manifest module (default apps/showcase/audio/manifest.mjs;
+ * see manifest-loader.mjs) with raw takes in its raw folder, ffmpeg:
  *
  *   one-shots   normalise first (peak to -1 dBTP under 3 s, where integrated
  *               loudness is meaningless; two-pass loudnorm to the cue's LUFS
@@ -18,22 +18,19 @@
  *   voice       the `ganger` style adds a helmet-comms band-pass, a touch of
  *               saturation and a squelch of noise so the barks sit in the mix
  *
- * and writes Ogg Vorbis into apps/showcase/public/audio/, plus manifest.json:
+ * and writes Ogg Vorbis into the manifest's output folder, plus manifest.json:
  * the cue list with the engine settings and the files that exist, which the
- * game reads at scene load. Cues with no takes are listed without files, so
- * the game can fall back and the console says what is missing.
+ * game reads at scene load through the engine's `SoundBank`. Cues with no
+ * takes are listed without files, so the game runs and the console says what
+ * is missing.
  */
 import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CUES, LUFS } from './manifest.mjs';
-import { RAW } from './generate.mjs';
+import { loadManifest, manifestArg, pathArg, repoRoot } from './manifest-loader.mjs';
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(here, '..', '..');
-export const OUT = path.join(repoRoot, 'apps', 'showcase', 'public', 'audio');
 const SAMPLE_RATE = 48000;
 const LOOP_CROSSFADE = 0.35;
 /** Silence thresholds for trimming, applied after normalisation so a quiet take is not eaten whole. */
@@ -46,7 +43,7 @@ const PEAK_DBTP = -1;
 const MIN_TRIMMED_SECONDS = 0.08;
 
 function parseArgs(argv) {
-  const args = { only: null, force: false, verbose: false };
+  const args = { only: null, force: false, verbose: false, manifest: manifestArg(argv), raw: pathArg(argv, 'raw'), out: pathArg(argv, 'out') };
   for (const raw of argv) {
     if (raw.startsWith('--only=')) args.only = new Set(raw.slice(7).split(',').filter(Boolean));
     else if (raw === '--force') args.force = true;
@@ -123,8 +120,8 @@ function trimFilters() {
 }
 
 /** Master one take to Ogg. Returns the output duration. */
-async function masterTake(input, output, cue, tmp, verbose) {
-  const target = cue.lufs ?? (cue.kind === 'voice' ? LUFS.voice : LUFS[cue.bus] ?? LUFS.sfx);
+async function masterTake(input, output, cue, lufs, tmp, verbose) {
+  const target = cue.lufs ?? (cue.kind === 'voice' ? lufs.voice : lufs[cue.bus] ?? lufs.sfx);
   const channels = cue.stereo ? 2 : 1;
   const base = path.basename(output, '.ogg');
   // Stage 1: colour and level.
@@ -164,15 +161,19 @@ async function masterTake(input, output, cue, tmp, verbose) {
   return probeDuration(output);
 }
 
-export async function buildAll({ only = null, force = false, verbose = false, log = console.log } = {}) {
+export async function buildAll({ manifest = undefined, raw = null, out = null, only = null, force = false, verbose = false, log = console.log } = {}) {
+  const m = await loadManifest(manifest, { raw, out });
+  const RAW = m.raw;
+  const OUT = m.out;
+  log(`manifest: ${path.relative(repoRoot, m.file)}; raw ${path.relative(repoRoot, RAW)} → ${path.relative(repoRoot, OUT)}`);
   await mkdir(OUT, { recursive: true });
   const rawFiles = new Set((await readdir(RAW).catch(() => [])).filter((f) => f.endsWith('.mp3')));
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'spark-audio-'));
-  const manifest = { generated: new Date().toISOString(), sampleRate: SAMPLE_RATE, cues: [] };
+  const output = { generated: new Date().toISOString(), sampleRate: SAMPLE_RATE, cues: [] };
   let built = 0;
   let missing = 0;
   try {
-    for (const cue of CUES) {
+    for (const cue of m.cues) {
       const variants = cue.variants ?? 1;
       const files = [];
       for (let v = 0; v < variants; v++) {
@@ -184,7 +185,7 @@ export async function buildAll({ only = null, force = false, verbose = false, lo
         let duration = 0;
         const have = await stat(output).catch(() => null);
         if (selected && (force || !have || have.mtimeMs < (await stat(path.join(RAW, `${base}.mp3`))).mtimeMs)) {
-          duration = await masterTake(path.join(RAW, `${base}.mp3`), output, cue, tmp, verbose);
+          duration = await masterTake(path.join(RAW, `${base}.mp3`), output, cue, m.lufs, tmp, verbose);
           built += 1;
           log(`  ${base}.ogg  ${duration.toFixed(2)} s${cue.loop ? ' loop' : ''}`);
         } else if (have) {
@@ -193,7 +194,7 @@ export async function buildAll({ only = null, force = false, verbose = false, lo
         if (duration > 0) files.push({ url, duration: Math.round(duration * 1000) / 1000 });
       }
       if (files.length === 0) missing += 1;
-      manifest.cues.push({
+      output.cues.push({
         name: cue.name,
         kind: cue.kind,
         bus: cue.bus,
@@ -209,10 +210,10 @@ export async function buildAll({ only = null, force = false, verbose = false, lo
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
-  await writeFile(path.join(OUT, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-  const withFiles = manifest.cues.filter((c) => c.files.length > 0).length;
-  log(`${built} take(s) mastered; manifest: ${withFiles}/${manifest.cues.length} cues have audio${missing ? ` (${missing} still need takes: pnpm audio:generate)` : ''}`);
-  return manifest;
+  await writeFile(path.join(OUT, 'manifest.json'), `${JSON.stringify(output, null, 2)}\n`);
+  const withFiles = output.cues.filter((c) => c.files.length > 0).length;
+  log(`${built} take(s) mastered; manifest: ${withFiles}/${output.cues.length} cues have audio${missing ? ` (${missing} still need takes: pnpm audio:generate)` : ''}`);
+  return output;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

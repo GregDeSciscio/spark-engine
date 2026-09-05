@@ -81,7 +81,7 @@ export class CharacterController implements Disposable {
     if (!this.physics.hasBody(eid) || type !== BODY_TYPE.kinematicPosition) {
       throw new Error(`CharacterController.attach: entity ${eid} needs a kinematicPosition body first`);
     }
-    this.physics.entities.add(eid, Character, { vy: 0, grounded: 0 });
+    this.physics.entities.add(eid, Character, { vy: 0, grounded: 0, air: 0 });
     this.attached.add(eid);
   }
 
@@ -96,6 +96,16 @@ export class CharacterController implements Disposable {
 
   isGrounded(eid: Entity): boolean {
     return (this.physics.entities.store(Character).grounded[eid] ?? 0) !== 0;
+  }
+
+  /**
+   * Seconds since the character was last grounded; 0 while grounded. Rapier's
+   * grounded flag flickers on flat ground while moving, so anything that
+   * reacts to being airborne (the jump pose, a landing sound, coyote time)
+   * should test this against a small threshold instead.
+   */
+  airborneSeconds(eid: Entity): number {
+    return this.physics.entities.store(Character).air[eid] ?? 0;
   }
 
   verticalVelocity(eid: Entity): number {
@@ -156,6 +166,7 @@ export class CharacterController implements Disposable {
     if (grounded && vy < 0) vy = 0;
     ch.vy[eid] = vy;
     ch.grounded[eid] = grounded ? 1 : 0;
+    ch.air[eid] = grounded ? 0 : (ch.air[eid] ?? 0) + dt;
   }
 
   /** Number of obstacle collisions in the last `move()`. Debug/gameplay hook. */

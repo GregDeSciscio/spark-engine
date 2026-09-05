@@ -23,6 +23,8 @@ export { DEFAULT_SPATIAL, attenuation, inaudible, resolveSpatial, type DistanceM
 export { crossfadeGains, fadeCurve, intensityGain } from './Crossfade';
 export { MusicPlayer, type MusicPlayOptions, type MusicPlayerStats, type MusicTrack, type MusicVoiceSource } from './MusicPlayer';
 export { DeadVoice, LiveVoice, PendingVoice, type VoiceStartOptions } from './Voice';
+export { SoundBank, type SoundBankCue, type SoundBankManifest, type SoundSink } from './SoundBank';
+export { EmitterPool, Scatter, type EmitterPoolOptions, type EmitterSpec, type ScatterOptions } from './Emitters';
 export {
   bindAnimationEvents,
   bindPhysicsEvents,

@@ -2,7 +2,6 @@ import * as THREE from 'three/webgpu';
 import {
   CharacterController,
   Character,
-  Animator,
   NavAgent,
   Transform,
   findCover,
@@ -121,11 +120,8 @@ const KILL_IMPULSE = 90;
 const BASE_TINT = 0x3a1f2a;
 const BLOOD_TINT = 0x2a0408;
 const ACCENT_TINT = 0x6e1624;
-const UPPER_FADE = 10;
 /** An enemy round passing within this of the operator's head is heard as a whiz. */
 const WHIZ_DISTANCE = 2.0;
-/** The ragdoll reaches the ground about this long after the killing shot. */
-const BODY_FALL_DELAY = 0.55;
 
 /**
  * Base layer: locomotion on speed, a crouch while holding cover, death by
@@ -217,7 +213,8 @@ export class Enemy implements Damageable {
   private readonly tinted: THREE.MeshStandardMaterial[];
   private readonly rifle: RifleProp;
   private animated = true;
-  private upperWeight = 1;
+  private upperTarget = 1;
+  private bodyFallHeard = false;
   private aimPitch = 0;
   private aiming = false;
   private readonly nav: NavAgent;
@@ -283,11 +280,26 @@ export class Enemy implements Damageable {
     this.rifle = new RifleProp(this.root, findBone(visual, BONES.weapon), new THREE.Vector3(0.26, 1.32 - OPERATOR.height / 2, 0.12), 0x33363c);
   }
 
-  private fadeUpper(target: number, dt: number): void {
-    const k = Math.min(1, UPPER_FADE * dt);
-    this.upperWeight += (target - this.upperWeight) * k;
-    if (Math.abs(this.upperWeight - target) < 0.005) this.upperWeight = target;
-    this.deps.entities.store(Animator).layer1[this.eid] = this.upperWeight;
+  private fadeUpper(target: number): void {
+    if (target === this.upperTarget) return;
+    this.upperTarget = target;
+    this.deps.animation.setLayerWeight(this.eid, 1, target, 0.12);
+  }
+
+  /** A ragdoll part touched something: the first hips contact after a kill is the body landing. */
+  onRagdollContact(now: number): void {
+    if (this.bodyFallHeard) return;
+    this.bodyFallHeard = true;
+    this.feet(this.feetPos);
+    const ragdoll = this.deps.ragdolls.get(this.eid);
+    const at = ragdoll ? ragdoll.rootPosition({ x: 0, y: 0, z: 0 }) : { x: this.feetPos.x, y: this.feetPos.y + 0.2, z: this.feetPos.z };
+    this.deps.sfx.playAt('body-fall', at, { spatial: { refDistance: 2.5, rolloff: 1.1, maxDistance: 45 } });
+    void now;
+  }
+
+  /** Whether `eid` is one of this enemy's ragdoll bodies. */
+  ownsRagdollPart(eid: Entity): boolean {
+    return this.deps.ragdolls.get(this.eid)?.hasPart(eid) ?? false;
   }
 
   private applyTint(): void {
@@ -309,7 +321,8 @@ export class Enemy implements Damageable {
     const activation = impact
       ? { velocity, impulse: { point: { x: impact.point.x, y: impact.point.y, z: impact.point.z }, direction: { x: impact.direction.x, y: impact.direction.y, z: impact.direction.z }, strength: KILL_IMPULSE } }
       : { velocity };
-    const ragdoll = ragdolls.create(this.eid, this.visual, CHARACTER_RAGDOLL, { blendSeconds: 0.12, activation });
+    const ragdoll = ragdolls.create(this.eid, this.visual, { ...CHARACTER_RAGDOLL, contactEvents: true }, { blendSeconds: 0.12, activation });
+    this.bodyFallHeard = false;
     if (this.animated) {
       animation.detach(this.eid);
       this.animated = false;
@@ -378,8 +391,6 @@ export class Enemy implements Damageable {
       this.velocity.set(0, 0, 0);
       this.startRagdoll(now, impact);
       this.deps.sfx.bark(this.eid, 'death');
-      this.feet(this.feetPos);
-      this.deps.sfx.playAt('body-fall', { x: this.feetPos.x, y: this.feetPos.y + 0.2, z: this.feetPos.z }, { delay: BODY_FALL_DELAY, spatial: { refDistance: 2.5, rolloff: 1.1, maxDistance: 45 } });
       return true;
     }
     animation.setTrigger(this.eid, 'hit');
@@ -569,7 +580,7 @@ export class Enemy implements Damageable {
     }
     animation.setParam(this.eid, 'aim', this.aiming ? 1 : 0);
     animation.setParam(this.eid, 'pitch', THREE.MathUtils.radToDeg(this.aimPitch));
-    this.fadeUpper(1, dt);
+    this.fadeUpper(1);
     this.rifle.update(this.aimPitch);
     this.flash.fixedUpdate(now);
   }

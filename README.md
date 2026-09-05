@@ -76,8 +76,8 @@ apps/benchmark      the benchmark app and perf scenes (?scene=name)
 apps/showcase       the customer game's vertical slice (ADR-005); `pnpm dev:showcase`
 tools/level-authoring  Blender scripts that author levels; `pnpm level:street` = Blender → pipeline → showcase
 assets/source/props    CC0 props from Poly Haven; `pnpm props:fetch` downloads the street kit, `pnpm props:build` runs the pipeline into the showcase
-tools/audio           the showcase's sound design as data: `pnpm audio:generate` (ElevenLabs) → `pnpm audio:build` (ffmpeg → Ogg + manifest); see docs/audio/mission-sound-design.md
-assets/source/characters  the showcase character: Quaternius' CC0 Cyberpunk Game Kit character with the Universal Animation Library's clips retargeted in Blender; `pnpm character:retarget` retargets + builds, `pnpm character:build` rebuilds from the last retarget
+tools/audio           audio tooling for any game: `generate.mjs` (ElevenLabs) and `build.mjs` (ffmpeg → Ogg + manifest) take `--manifest=<game manifest>`; the showcase's is apps/showcase/audio/manifest.mjs
+assets/source/characters  the showcase character, built from `operator.character.json` (clip renames + Blender retarget config) by `tools/asset-pipeline/build-character.mjs --config=…`; `pnpm character:retarget` retargets + builds, `pnpm character:build` rebuilds from the last retarget
 tools/capture       headless boot + screenshot + stats (the agent verification loop)
 tools/benchmarks    perf runner and per-machine baselines
 tools/asset-pipeline normalize / compress / validate GLB assets

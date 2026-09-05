@@ -149,6 +149,18 @@ export const missionScene: SceneDefinition = {
       return enemy;
     });
     const targets: Damageable[] = [...dummies, ...enemies];
+    // Ragdoll hips touching the world: the body landing.
+    bag.add(
+      physics.events.on('collisionStart', (pair) => {
+        for (const e of enemies) {
+          if (!e.dead) continue;
+          if (e.ownsRagdollPart(pair.a) || e.ownsRagdollPart(pair.b)) {
+            e.onRagdollContact(now);
+            return;
+          }
+        }
+      }),
+    );
     // Beds, neon and lamp hums at the level's lights, steam at the authored vents, and every footstep marker in the level.
     sfx.startAmbience({ lights: () => MissionAudio.emittersFromScene(scene), steam: level.vfx.filter((v) => v.preset === 'steam').map((v) => v.position) });
     sfx.bindFootsteps((eid) => (eid === operator.eid ? 1 : 0.85));

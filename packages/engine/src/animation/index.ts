@@ -39,3 +39,4 @@ export {
   type RootMotionOptions,
 } from './Animator';
 export { ANIMATION_ORDER, createAnimationSystems } from './systems';
+export { BoneSocket, findBone, type BoneSocketOptions } from './BoneSocket';

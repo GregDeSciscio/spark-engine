@@ -48,6 +48,12 @@ export interface RagdollConfig {
   readonly linearDamping?: number | undefined;
   readonly angularDamping?: number | undefined;
   readonly friction?: number | undefined;
+  /**
+   * Emit physics contact events for the root part (the hips), so a game can
+   * hear the body land instead of timing it. Other parts stay silent: a
+   * ragdoll's limbs touch things constantly. Default false.
+   */
+  readonly contactEvents?: boolean | undefined;
 }
 
 /** The engine's mannequin skeleton (tools/asset-pipeline/make-test-assets.mjs). */
@@ -146,6 +152,17 @@ export class Ragdoll implements Disposable {
     this.blendSeconds = blendSeconds;
     this.entities = entities;
     this.physics = physics;
+  }
+
+  /** The root part's entity (the hips), whose contacts `contactEvents` reports. */
+  get rootEid(): Entity | null {
+    return this.parts[0]?.eid ?? null;
+  }
+
+  /** Whether `eid` is one of this ragdoll's bodies. */
+  hasPart(eid: Entity): boolean {
+    for (const p of this.parts) if (p.eid === eid) return true;
+    return false;
   }
 
   /** Every part asleep: the body has come to rest. */
@@ -304,7 +321,7 @@ export class RagdollWorld implements Disposable {
         friction: config.friction ?? 0.8,
         linearDamping: config.linearDamping ?? 0.3,
         angularDamping: config.angularDamping ?? 2,
-        events: false,
+        events: Boolean(config.contactEvents) && parts.length === 0,
       });
 
       // Nearest configured ancestor becomes the parent body.

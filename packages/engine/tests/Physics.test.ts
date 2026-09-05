@@ -357,3 +357,30 @@ describe('PhysicsWorld.setCapsule', () => {
     f.dispose();
   });
 });
+
+describe('CharacterController airborne time', () => {
+  it('is zero on the ground, accumulates in the air and resets on landing', async () => {
+    const f = await fixture();
+    addGround(f);
+    const player = f.entities.create([Transform, { x: 0, y: 1.0, z: 0 }]);
+    f.physics.addBody(player, { type: 'kinematicPosition', shape: { kind: 'capsule', halfHeight: 0.5, radius: 0.3 }, layer: 'player', collidesWith: ['world'] });
+    const controller = new CharacterController(f.physics, { stepHeight: 0.35, snapToGround: 0.3 });
+    controller.attach(player);
+    for (let i = 0; i < 30; i++) {
+      controller.move(player, { x: 0.02, y: 0, z: 0 }, DT);
+      f.tick(1);
+    }
+    expect(controller.airborneSeconds(player)).toBe(0);
+    controller.jump(player, 8);
+    let peakAir = 0;
+    for (let i = 0; i < 120; i++) {
+      controller.move(player, { x: 0, y: 0, z: 0 }, DT);
+      f.tick(1);
+      peakAir = Math.max(peakAir, controller.airborneSeconds(player));
+    }
+    expect(peakAir).toBeGreaterThan(0.5);
+    expect(controller.airborneSeconds(player)).toBe(0);
+    controller.dispose();
+    f.dispose();
+  });
+});

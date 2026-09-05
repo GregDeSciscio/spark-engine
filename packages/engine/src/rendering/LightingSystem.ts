@@ -251,6 +251,13 @@ export class LightingSystem implements System, Disposable {
     if (!world.has(eid, Light)) world.add(eid, Light, { intensity: light.intensity, range: local.distance ?? 0 });
     this.register(light);
     this.lights.set(eid, light);
+    // Place it now: anything reading the light's position before the first frame (audio emitters,
+    // fog cones) would otherwise see the origin until this system has run once.
+    if (world.has(eid, Transform)) {
+      const t = world.store(Transform);
+      light.position.set(t.x[eid] ?? 0, t.y[eid] ?? 0, t.z[eid] ?? 0);
+      light.updateMatrixWorld(true);
+    }
   }
 
   // ---- budget -------------------------------------------------------------------------

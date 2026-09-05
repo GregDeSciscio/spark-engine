@@ -163,3 +163,22 @@ describe('ragdoll mass', () => {
     f.dispose();
   });
 });
+
+describe('ragdoll contact events', () => {
+  it('reports the root part landing when contactEvents is on, and knows its parts', async () => {
+    const f = await fixture();
+    const { root } = skeleton();
+    const owner = f.entities.create(Transform);
+    const r = f.ragdolls.create(owner, root, { ...CONFIG, contactEvents: true }, { blendSeconds: 0 });
+    expect(r.rootEid).toBe(r.parts[0]?.eid ?? -1);
+    expect(r.hasPart(r.rootEid ?? -1)).toBe(true);
+    expect(r.hasPart(owner)).toBe(false);
+    const touched: number[] = [];
+    f.physics.events.on('collisionStart', (pair) => {
+      if (r.hasPart(pair.a) || r.hasPart(pair.b)) touched.push(pair.a);
+    });
+    f.tick(180);
+    expect(touched.length).toBeGreaterThan(0);
+    f.dispose();
+  });
+});

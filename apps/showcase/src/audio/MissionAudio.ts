@@ -1,33 +1,28 @@
 import type * as THREE from 'three/webgpu';
-import type { AnimationWorld, AudioSystem, Entity, Logger, Random, SoundPlayAtOptions, SpatialOptions, Voice } from '@spark/engine';
+import {
+  EmitterPool,
+  Scatter,
+  SoundBank,
+  surfaceKindOf,
+  type AnimationWorld,
+  type AudioSystem,
+  type Entity,
+  type Logger,
+  type Random,
+  type SoundPlayAtOptions,
+  type SpatialOptions,
+  type Voice,
+} from '@spark/engine';
 
 /**
  * The mission's sound design at runtime (docs/audio/mission-sound-design.md).
- * `tools/audio/build.mjs` masters the generated takes and writes
- * `/audio/manifest.json`; this reads it, defines every cue that has files
- * (round-robin variants through the engine's `urls`) and offers the game
- * one verb per moment: `shot`, `impact`, `footstep`, `bark`, `heartbeat`...
- * A cue without files is a silent no-op, and the missing names are logged
- * once, so the game runs the same before and after the assets exist.
+ * The engine's `SoundBank` reads the built manifest and defines every cue that
+ * has takes (cues without takes are silent no-ops); this layer is the game's
+ * vocabulary on top of it: one verb per moment (`shot`, `impact`, `footstep`,
+ * `bark`, `heartbeat`...), the bark groups, the distance crossfade for enemy
+ * fire, and the ambience (beds, an `EmitterPool` of neon, lamp and steam
+ * hums, `Scatter` timers for drips, thunder and drone passes).
  */
-
-export interface ManifestCue {
-  readonly name: string;
-  readonly kind: 'sfx' | 'voice';
-  readonly bus: 'sfx' | 'ui' | 'ambience' | 'music';
-  readonly loop: boolean;
-  readonly volume: number;
-  readonly volumeVariance: number;
-  readonly pitchVariance: number;
-  readonly cooldownMs: number;
-  readonly maxInstances: number | null;
-  readonly files: readonly { readonly url: string; readonly duration: number }[];
-}
-
-export interface AudioManifest {
-  readonly cues: readonly ManifestCue[];
-}
-
 export interface MissionAudioDeps {
   readonly audio: AudioSystem;
   readonly animation: AnimationWorld;
@@ -65,107 +60,64 @@ const SHOT_NEAR_FULL = 14;
 const SHOT_NEAR_GONE = 55;
 const SHOT_FAR_START = 8;
 const SHOT_FAR_FULL = 40;
-/** Point loops: how many neon / steam emitters sound at once, and how often the nearest set is re-picked. */
-const MAX_POINT_LOOPS = 8;
-const POINT_LOOP_REPICK = 1.5;
+/** Point emitters: how many neon / lamp / steam hums sound at once. */
+const MAX_EMITTERS = 8;
 /** Low-health heartbeat comes in below this health fraction. */
 const HEARTBEAT_BELOW = 0.35;
 
-interface PointLoop {
-  readonly position: THREE.Vector3;
-  readonly sound: string;
-  readonly pitch: number;
-  readonly volume: number;
-  voice: Voice | null;
-  distance: number;
-}
-
 type Vec3 = { x: number; y: number; z: number };
+
+export interface LightEmitters {
+  readonly neon: readonly THREE.Vector3[];
+  readonly lamps: readonly THREE.Vector3[];
+}
 
 export class MissionAudio {
   /** Cue names present in the manifest with at least one file. */
   readonly available: ReadonlySet<string>;
   private readonly deps: MissionAudioDeps;
-  private readonly defined: string[] = [];
-  private readonly missing = new Set<string>();
+  private readonly bank: SoundBank;
+  private readonly emitters: EmitterPool;
+  private readonly scatters: Scatter[] = [];
   private readonly beds: Voice[] = [];
-  private readonly loops: PointLoop[] = [];
   private heartbeat: Voice | null = null;
   private heartbeatLevel = 0;
   private plantLoop: Voice | null = null;
-  private repickIn = 0;
-  private nextDrip = 1;
-  private nextThunder = 20;
-  private nextDrone = 35;
+  /** Light emitters are read on the second frame: entity-driven lights only get their Object3D position from the render sync. */
+  private pendingLights: (() => LightEmitters) | null = null;
+  private framesSeen = 0;
   private unbindFootsteps: (() => void) | null = null;
   private readonly lastListener = { x: 0, y: 0, z: 0 };
-  /** Light emitters are read on the second frame: entity-driven lights only get their Object3D position from the render sync. */
-  private pendingLights: (() => { neon: THREE.Vector3[]; lamps: THREE.Vector3[] }) | null = null;
-  private framesSeen = 0;
   private disposed = false;
 
-  private constructor(deps: MissionAudioDeps, manifest: AudioManifest | null) {
+  private constructor(deps: MissionAudioDeps, bank: SoundBank) {
     this.deps = deps;
-    const available = new Set<string>();
-    if (manifest) {
-      for (const cue of manifest.cues) {
-        if (cue.files.length === 0) continue;
-        deps.audio.defineSound({
-          name: cue.name,
-          urls: cue.files.map((f) => f.url),
-          bus: cue.bus,
-          volume: cue.volume,
-          volumeVariance: cue.volumeVariance,
-          pitchVariance: cue.pitchVariance,
-          cooldownMs: cue.cooldownMs,
-          maxInstances: cue.maxInstances ?? undefined,
-          loop: cue.loop,
-        });
-        this.defined.push(cue.name);
-        available.add(cue.name);
-      }
-      const absent = manifest.cues.filter((c) => c.files.length === 0).map((c) => c.name);
-      if (absent.length > 0) deps.logger.warn(`audio: ${absent.length} cue(s) have no takes yet (pnpm audio:generate && pnpm audio:build): ${absent.join(', ')}`);
-      deps.logger.info(`audio: ${available.size} cue(s) defined from the manifest`);
-    }
-    this.available = available;
+    this.bank = bank;
+    this.available = bank.available;
+    this.emitters = new EmitterPool(bank, { max: MAX_EMITTERS, repickSeconds: 1.5, spatial: SPATIAL.emitter });
   }
 
   /** Fetch the manifest and define its cues. A missing manifest yields a silent instance. */
   static async load(deps: MissionAudioDeps, url = '/audio/manifest.json'): Promise<MissionAudio> {
-    let manifest: AudioManifest | null = null;
-    try {
-      const res = await fetch(url);
-      if (res.ok) manifest = (await res.json()) as AudioManifest;
-      else deps.logger.warn(`audio: no manifest at ${url} (${res.status}); the mission runs silent. Run pnpm audio:build.`);
-    } catch (error) {
-      deps.logger.warn(`audio: manifest fetch failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    return new MissionAudio(deps, manifest);
+    const bank = await SoundBank.load(deps.audio, url, deps.logger);
+    if (bank.missing.length > 0) deps.logger.warn('audio: takes are generated with pnpm audio:generate && pnpm audio:build');
+    return new MissionAudio(deps, bank);
   }
 
   has(name: string): boolean {
-    return this.available.has(name);
+    return this.bank.has(name);
   }
 
   /** What the ambience layer is doing, for probes. */
-  stats(): { cues: number; beds: number; emitters: number; emittersPlaying: number; nearestEmitter: number | null; nearestAt: number[] | null; listener: number[]; heartbeat: boolean; plantLoop: boolean } {
-    let nearest: number | null = null;
-    let nearestAt: number[] | null = null;
-    for (const loop of this.loops) {
-      if (nearest === null || loop.distance < nearest) {
-        nearest = loop.distance;
-        nearestAt = [loop.position.x, loop.position.y, loop.position.z].map((v) => Math.round(v * 10) / 10);
-      }
-    }
+  stats(): { cues: number; beds: number; emitters: number; emittersPlaying: number; nearestEmitter: number | null; listener: number[]; heartbeat: boolean; plantLoop: boolean } {
+    const nearest = this.emitters.nearest;
     return {
-      nearestAt,
-      listener: [this.lastListener.x, this.lastListener.y, this.lastListener.z].map((v) => Math.round(v * 10) / 10),
       cues: this.available.size,
       beds: this.beds.filter((b) => b.isPlaying()).length,
-      emitters: this.loops.length,
-      emittersPlaying: this.loops.filter((l) => l.voice?.isPlaying()).length,
+      emitters: this.emitters.count,
+      emittersPlaying: this.emitters.playing,
       nearestEmitter: nearest === null ? null : Math.round(nearest * 10) / 10,
+      listener: [this.lastListener.x, this.lastListener.y, this.lastListener.z].map((v) => Math.round(v * 10) / 10),
       heartbeat: this.heartbeat !== null,
       plantLoop: this.plantLoop !== null,
     };
@@ -173,24 +125,12 @@ export class MissionAudio {
 
   /** Flat one-shot; a silent no-op for cues without takes. */
   play(name: string, options?: SoundPlayAtOptions): Voice | null {
-    if (!this.guard(name)) return null;
-    return this.deps.audio.play(name, options);
+    return this.disposed ? null : this.bank.play(name, options);
   }
 
   /** Spatial one-shot at an entity or a point. */
   playAt(name: string, target: Entity | Vec3, options?: SoundPlayAtOptions): Voice | null {
-    if (!this.guard(name)) return null;
-    return this.deps.audio.playAt(name, target, options);
-  }
-
-  private guard(name: string): boolean {
-    if (this.disposed) return false;
-    if (this.available.has(name)) return true;
-    if (!this.missing.has(name)) {
-      this.missing.add(name);
-      this.deps.logger.debug(`audio: cue "${name}" has no takes; skipped`);
-    }
-    return false;
+    return this.disposed ? null : this.bank.playAt(name, target, options);
   }
 
   // ---- weapons ---------------------------------------------------------------------
@@ -302,7 +242,7 @@ export class MissionAudio {
   setHeartbeat(health01: number): void {
     const level = health01 < HEARTBEAT_BELOW && health01 > 0 ? 1 - health01 / HEARTBEAT_BELOW : 0;
     if (level > 0 && !this.heartbeat && this.has('heartbeat')) {
-      this.heartbeat = this.deps.audio.play('heartbeat', { loop: true, volume: 0, fadeIn: 0.2 });
+      this.heartbeat = this.bank.play('heartbeat', { loop: true, volume: 0, fadeIn: 0.2 });
     }
     if (!this.heartbeat) return;
     if (Math.abs(level - this.heartbeatLevel) > 0.01 || (level === 0 && this.heartbeatLevel !== 0)) {
@@ -319,7 +259,7 @@ export class MissionAudio {
   // ---- enemies --------------------------------------------------------------------------
 
   bark(eid: Entity, kind: BarkKind): void {
-    const names = BARKS[kind].filter((n) => this.available.has(n));
+    const names = BARKS[kind].filter((n) => this.has(n));
     if (names.length === 0) return;
     this.playAt(this.deps.random.pick(names), eid, { spatial: SPATIAL.voice });
   }
@@ -341,7 +281,7 @@ export class MissionAudio {
   setPlantProgress(progress: number): void {
     const active = progress > 0 && progress < 1;
     if (active && !this.plantLoop && this.has('ui-plant-loop')) {
-      this.plantLoop = this.deps.audio.play('ui-plant-loop', { loop: true, fadeIn: 0.1 });
+      this.plantLoop = this.bank.play('ui-plant-loop', { loop: true, fadeIn: 0.1 });
     }
     if (this.plantLoop) {
       if (active) this.plantLoop.setPitch(1 + progress * 0.35, 0.1);
@@ -360,20 +300,24 @@ export class MissionAudio {
   // ---- ambience ------------------------------------------------------------------------------
 
   /**
-   * Start the beds and register the point emitters: neon signs hum, street
-   * lamps get the same hum lower and quieter (a ballast), steam vents hiss.
-   * Only the nearest `MAX_POINT_LOOPS` emitters sound at a time; `update`
-   * re-picks them as the listener moves.
+   * Start the beds, the scatter timers and the point emitters: neon signs hum,
+   * street lamps get the same hum lower and quieter (a ballast), steam vents
+   * hiss. `lights` is read on the second frame (see `pendingLights`).
    */
-  startAmbience(emitters: { readonly lights: () => { neon: THREE.Vector3[]; lamps: THREE.Vector3[] }; readonly steam: readonly THREE.Vector3[] }): void {
-    const { audio, random } = this.deps;
+  startAmbience(emitters: { readonly lights: () => LightEmitters; readonly steam: readonly THREE.Vector3[] }): void {
+    const { random } = this.deps;
     for (const bed of ['rain-bed', 'city-bed']) {
-      if (this.has(bed)) this.beds.push(audio.play(bed, { loop: true, fadeIn: 2.5 }));
+      const voice = this.bank.play(bed, { loop: true, fadeIn: 2.5 });
+      if (voice) this.beds.push(voice);
     }
-    if (this.has('steam-hiss')) for (const p of emitters.steam) this.loops.push({ position: p, sound: 'steam-hiss', pitch: random.range(0.9, 1.1), volume: random.range(0.8, 1), voice: null, distance: 0 });
-    this.pendingLights = this.has('neon-buzz') ? emitters.lights : null;
+    for (const p of emitters.steam) this.emitters.add({ position: p, sound: 'steam-hiss', pitch: random.range(0.9, 1.1), volume: random.range(0.8, 1) });
+    this.pendingLights = emitters.lights;
     this.framesSeen = 0;
-    this.repickIn = 0;
+    this.scatters.push(
+      new Scatter(this.bank, 'drip', { interval: [0.7, 2.4], radius: [2, 9], y: 0.1, spatial: SPATIAL.drip, initialDelay: 1 }, random),
+      new Scatter(this.bank, 'thunder', { interval: [28, 70], initialDelay: 20 }, random),
+      new Scatter(this.bank, 'drone-pass', { interval: [45, 110], initialDelay: 35 }, random),
+    );
   }
 
   private registerLights(): void {
@@ -381,16 +325,14 @@ export class MissionAudio {
     const { random } = this.deps;
     const { neon, lamps } = this.pendingLights();
     this.pendingLights = null;
-    for (const p of neon) this.loops.push({ position: p, sound: 'neon-buzz', pitch: random.range(0.94, 1.06), volume: random.range(0.7, 1), voice: null, distance: 0 });
-    for (const p of lamps) this.loops.push({ position: p, sound: 'neon-buzz', pitch: random.range(0.82, 0.9), volume: random.range(0.35, 0.5), voice: null, distance: 0 });
-    this.repickIn = 0;
+    for (const p of neon) this.emitters.add({ position: p, sound: 'neon-buzz', pitch: random.range(0.94, 1.06), volume: random.range(0.7, 1) });
+    for (const p of lamps) this.emitters.add({ position: p, sound: 'neon-buzz', pitch: random.range(0.82, 0.9), volume: random.range(0.35, 0.5) });
   }
 
   /**
    * The level's static point lights as emitter positions: saturated colours
    * are neon signs, warm near-white ones are street lamps. Dim or unlit lights
-   * (muzzle flashes at rest) are skipped. Call it after a frame has run:
-   * entity-driven lights sit at the origin until the render sync places them.
+   * (muzzle flashes at rest) are skipped.
    */
   static emittersFromScene(scene: THREE.Object3D): { neon: THREE.Vector3[]; lamps: THREE.Vector3[] } {
     const neon: THREE.Vector3[] = [];
@@ -406,48 +348,16 @@ export class MissionAudio {
     return { neon, lamps };
   }
 
-  /** Per-frame ambience housekeeping: emitter selection, drips, distant thunder, a drone pass. */
+  /** Per-frame ambience housekeeping: emitter selection and the scatter timers. */
   update(dt: number, listener: Vec3): void {
     if (this.disposed) return;
-    const { audio, random } = this.deps;
     this.lastListener.x = listener.x;
     this.lastListener.y = listener.y;
     this.lastListener.z = listener.z;
     this.framesSeen += 1;
     if (this.pendingLights && this.framesSeen >= 2) this.registerLights();
-    this.repickIn -= dt;
-    if (this.repickIn <= 0 && this.loops.length > 0) {
-      this.repickIn = POINT_LOOP_REPICK;
-      for (const loop of this.loops) loop.distance = loop.position.distanceTo(listener as THREE.Vector3Like);
-      const sorted = [...this.loops].sort((a, b) => a.distance - b.distance);
-      for (let i = 0; i < sorted.length; i++) {
-        const loop = sorted[i] as PointLoop;
-        const wanted = i < MAX_POINT_LOOPS && loop.distance < SPATIAL.emitter.maxDistance!;
-        if (wanted && !loop.voice) {
-          loop.voice = audio.playAt(loop.sound, loop.position, { loop: true, spatial: SPATIAL.emitter, pitch: loop.pitch, volume: loop.volume, fadeIn: 0.8 });
-        } else if (!wanted && loop.voice) {
-          loop.voice.stop(0.8);
-          loop.voice = null;
-        }
-      }
-    }
-    this.nextDrip -= dt;
-    if (this.nextDrip <= 0) {
-      this.nextDrip = random.range(0.7, 2.4);
-      const angle = random.range(0, Math.PI * 2);
-      const r = random.range(2, 9);
-      this.playAt('drip', { x: listener.x + Math.cos(angle) * r, y: 0.1, z: listener.z + Math.sin(angle) * r }, { spatial: SPATIAL.drip });
-    }
-    this.nextThunder -= dt;
-    if (this.nextThunder <= 0) {
-      this.nextThunder = random.range(28, 70);
-      this.play('thunder');
-    }
-    this.nextDrone -= dt;
-    if (this.nextDrone <= 0) {
-      this.nextDrone = random.range(45, 110);
-      this.play('drone-pass');
-    }
+    this.emitters.update(dt, listener);
+    for (const s of this.scatters) s.update(dt, listener);
   }
 
   dispose(): void {
@@ -455,10 +365,10 @@ export class MissionAudio {
     this.disposed = true;
     this.unbindFootsteps?.();
     for (const bed of this.beds) bed.stop(0.3);
-    for (const loop of this.loops) loop.voice?.stop(0.2);
+    this.emitters.stopAll(0.2);
     this.heartbeat?.stop(0.2);
     this.plantLoop?.stop(0.1);
-    for (const name of this.defined) this.deps.audio.undefineSound(name);
+    this.bank.dispose();
   }
 }
 
@@ -483,12 +393,14 @@ function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
-/** Which impact family a level material belongs to, from the surface naming (`rendering/Surfaces.ts`). */
+/** Which impact family a level material belongs to: the engine's surface kind, with the wet street's ground hits splashing. */
 export function impactSurfaceFor(materialName: string | undefined, point: Vec3): ImpactSurface {
-  const name = (materialName ?? '').toLowerCase();
-  if (/metal|steel|pipe|shutter|bollard|grate|vent/.test(name)) return 'metal';
-  if (/window|glass|neon/.test(name)) return 'glass';
-  // Ground hits on the wet street splash.
-  if (point.y < 0.08) return 'water';
-  return 'concrete';
+  switch (surfaceKindOf(materialName)) {
+    case 'metal':
+      return 'metal';
+    case 'glass':
+      return 'glass';
+    default:
+      return point.y < 0.08 ? 'water' : 'concrete';
+  }
 }
