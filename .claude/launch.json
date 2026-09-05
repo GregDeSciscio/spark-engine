@@ -33,6 +33,17 @@
       ],
       "port": 5174,
       "autoPort": true
+    },
+    {
+      "name": "starter",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "@spark/starter",
+        "dev"
+      ],
+      "port": 5175,
+      "autoPort": true
     }
   ]
 }

@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist/types",
+    "tsBuildInfoFile": "dist/.tsbuildinfo",
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "types": ["vite/client", "@webgpu/types"]
+  },
+  "include": ["src"],
+  "references": [{ "path": "../../packages/engine" }]
+}

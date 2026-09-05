@@ -11,6 +11,9 @@
   "scripts": {
     "dev": "pnpm --filter @spark/benchmark dev",
     "dev:showcase": "pnpm --filter @spark/showcase dev",
+    "dev:starter": "pnpm --filter @spark/starter dev",
+    "create-app": "node tools/create-app.mjs",
+    "doctor": "node tools/doctor.mjs",
     "build": "pnpm -r --filter ./packages/* --filter ./apps/* build",
     "typecheck": "tsc -b tsconfig.json",
     "lint": "eslint .",
