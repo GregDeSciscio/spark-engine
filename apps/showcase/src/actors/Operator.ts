@@ -13,6 +13,7 @@ import {
   type RenderSync,
   type ShoulderCamera,
 } from '@spark/engine';
+import type { HitZone } from '../combat/weapons';
 
 /**
  * The player character: a kinematic capsule on the engine's character
@@ -84,6 +85,8 @@ export interface OperatorDeps {
   readonly model: ModelAsset;
 }
 
+export const OPERATOR_MAX_HEALTH = 100;
+
 export class Operator {
   readonly eid: Entity;
   /** Where shots leave the barrel, in world space via `getWorldPosition`. */
@@ -91,6 +94,10 @@ export class Operator {
   stance: Stance = 'stand';
   aiming = false;
   sprinting = false;
+  health = OPERATOR_MAX_HEALTH;
+  dead = false;
+  /** Set when damage lands this tick, cleared by whoever reads it (the HUD flash). */
+  lastHitAt = -100;
 
   private readonly deps: OperatorDeps;
   private readonly controller: CharacterController;
@@ -115,7 +122,7 @@ export class Operator {
       type: 'kinematicPosition',
       shape: { kind: 'capsule', halfHeight, radius: OPERATOR.radius },
       layer: 'player',
-      collidesWith: ['world'],
+      collidesWith: ['world', 'enemy'],
     });
     this.controller = new CharacterController(physics, { stepHeight: 0.4, snapToGround: 0.3, characterMass: 80, gravity: OPERATOR.gravity });
     this.controller.attach(this.eid);
@@ -167,8 +174,54 @@ export class Operator {
     return Math.hypot(this.velocity.x, this.velocity.z);
   }
 
+  /** Damage from an enemy. Returns true when this killed the operator. */
+  takeDamage(damage: number, zone: HitZone, now: number): boolean {
+    if (this.dead) return false;
+    this.health = Math.max(0, this.health - damage);
+    this.lastHitAt = now;
+    if (this.health === 0) {
+      this.dead = true;
+      this.stance = 'stand';
+      this.aiming = false;
+      this.deps.animation.setParam(this.eid, 'dead', 1);
+      this.deps.animation.setTrigger(this.eid, 'die');
+      return true;
+    }
+    this.deps.animation.setTrigger(this.eid, 'hit');
+    void zone;
+    return false;
+  }
+
+  /** Back to a spawn with full health: a checkpoint reload. */
+  respawn(spawn: THREE.Vector3, yaw: number): void {
+    const { entities, physics, animation } = this.deps;
+    const centerY = spawn.y + OPERATOR.height / 2;
+    const t = entities.store(Transform);
+    t.x[this.eid] = spawn.x;
+    t.y[this.eid] = centerY;
+    t.z[this.eid] = spawn.z;
+    physics.setPose(this.eid, { x: spawn.x, y: centerY, z: spawn.z });
+    entities.store(Character).vy[this.eid] = 0;
+    this.velocity.set(0, 0, 0);
+    this.wish.set(0, 0, 0);
+    this.facing = yaw + Math.PI;
+    this.health = OPERATOR_MAX_HEALTH;
+    this.stance = 'stand';
+    if (this.dead) {
+      this.dead = false;
+      animation.setParam(this.eid, 'dead', 0);
+      animation.setTrigger(this.eid, 'respawn');
+    }
+  }
+
   /** Read this frame's input. Pressed-edge queries are per frame, so this must not run inside the fixed step. */
   update(input: Input, camera: ShoulderCamera): void {
+    if (this.dead) {
+      this.wish.set(0, 0, 0);
+      this.sprinting = false;
+      this.aiming = false;
+      return;
+    }
     if (input.wasPressed('KeyC')) this.stance = this.stance === 'crouch' ? 'stand' : 'crouch';
     if (input.wasPressed('KeyX')) this.stance = this.stance === 'prone' ? 'stand' : 'prone';
     if (input.wasPressed('Space') && this.stance === 'stand') this.jumpQueued = true;

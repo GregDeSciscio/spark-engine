@@ -7,7 +7,8 @@ export default defineConfig({
     alias: [{ find: /^three$/, replacement: 'three/webgpu' }],
   },
   server: {
-    port: 5173,
+    // The preview tooling assigns a port through PORT; fall back to the app's own.
+    port: Number(process.env.PORT) || 5173,
     strictPort: false,
   },
   build: {

@@ -7,13 +7,10 @@
       "runtimeArgs": [
         "--filter",
         "@spark/benchmark",
-        "dev",
-        "--",
-        "--port",
-        "5173",
-        "--strictPort"
+        "dev"
       ],
-      "port": 5173
+      "port": 5173,
+      "autoPort": true
     },
     {
       "name": "benchmark-preview",
@@ -21,13 +18,10 @@
       "runtimeArgs": [
         "--filter",
         "@spark/benchmark",
-        "preview",
-        "--",
-        "--port",
-        "4173",
-        "--strictPort"
+        "preview"
       ],
-      "port": 4173
+      "port": 4173,
+      "autoPort": true
     },
     {
       "name": "showcase",
@@ -35,13 +29,10 @@
       "runtimeArgs": [
         "--filter",
         "@spark/showcase",
-        "dev",
-        "--",
-        "--port",
-        "5174",
-        "--strictPort"
+        "dev"
       ],
-      "port": 5174
+      "port": 5174,
+      "autoPort": true
     }
   ]
 }

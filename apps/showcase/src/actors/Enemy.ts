@@ -1,0 +1,553 @@
+import * as THREE from 'three/webgpu';
+import {
+  CharacterController,
+  Character,
+  PathFollower,
+  Transform,
+  type AnimationGraphDef,
+  type AnimationWorld,
+  type AudioSystem,
+  type Entity,
+  type ModelAsset,
+  type Navigation,
+  type PhysicsWorld,
+  type Random,
+  type RenderSync,
+  type WorldLabels,
+} from '@spark/engine';
+import { AWARENESS, sightGain, type AwarenessState } from '../ai/Awareness';
+import type { Damageable } from '../combat/Damageable';
+import { MuzzleFlash, type EffectsDeps, type Impacts } from '../combat/effects';
+import { Weapon } from '../combat/Weapon';
+import { RIFLE_BASELINE, applySpread, damageAt, hitZoneAt, type HitZone, type WeaponDefinition } from '../combat/weapons';
+import { OPERATOR, type Stance } from './Operator';
+
+/**
+ * The first enemy: a rifleman on the navmesh with the awareness ladder from
+ * `docs/design/mission-shape.md`. Unaware enemies patrol their route;
+ * suspicion sends them to investigate; alert enemies stand and shoot; losing
+ * the player sends them to search the last known position before giving up.
+ * Everything runs in the fixed step off the seeded stream, so a given seed
+ * and input replay the same fight.
+ *
+ * Perception is sight (distance, cone, line of sight, target stance and
+ * motion) and sound (gunshots, via `hear`). "How lit is the target" waits on
+ * the lighting query ADR-005 asks for.
+ */
+
+/** What the enemy needs to know about the player. */
+export interface OperatorView {
+  readonly eid: Entity;
+  readonly dead: boolean;
+  readonly stance: Stance;
+  readonly speed: number;
+  feet(out: THREE.Vector3): THREE.Vector3;
+  /** Apply damage. Returns true when it killed the operator. */
+  takeDamage(damage: number, zone: HitZone, now: number): boolean;
+}
+
+export interface EnemySpec {
+  readonly name: string;
+  /** Patrol loop, feet positions. The first point is the spawn. */
+  readonly route: readonly THREE.Vector3[];
+}
+
+export interface EnemyDeps extends EffectsDeps {
+  readonly physics: PhysicsWorld;
+  readonly animation: AnimationWorld;
+  readonly renderSync: RenderSync;
+  readonly model: ModelAsset;
+  readonly labels: WorldLabels;
+  readonly navigation: Navigation;
+  readonly random: Random;
+  readonly audio: AudioSystem;
+  readonly impacts: Impacts;
+  readonly shotSound: string | null;
+}
+
+/** Same gun as the player, throttled: slower cadence, lighter hits, so a fair fight lasts more than a second. */
+export const ENEMY_RIFLE: WeaponDefinition = { ...RIFLE_BASELINE, id: 'rifle_enemy', rpm: 420, damage: 14, reserveAmmo: 9999 };
+
+const MAX_HEALTH = 100;
+const PATROL_SPEED = 1.8;
+const INVESTIGATE_SPEED = 3.2;
+const CHASE_SPEED = 4.2;
+const ENGAGE_RANGE = 32;
+const EYE_HEIGHT = 1.6;
+const CHEST_HEIGHT = 1.2;
+const TURN_RATE = 8;
+const REPATH_SECONDS = 0.8;
+const PATROL_WAIT = 2;
+/** Cone half-angle the bot fires into; opens up while moving or newly alert. */
+const BOT_SPREAD_DEG = 1.6;
+const BOT_SPREAD_UNSETTLED_DEG = 4.5;
+/** Seconds after going alert before the first burst: the tell the player gets. */
+const REACTION_SECONDS = 0.45;
+
+const WALK_ANIM = 1.2;
+const RUN_ANIM = 4.0;
+
+const ENEMY_GRAPH: AnimationGraphDef = {
+  params: { speed: 0, dead: 0 },
+  layers: [
+    {
+      name: 'base',
+      entry: 'locomotion',
+      states: [
+        {
+          name: 'locomotion',
+          blend: {
+            param: 'speed',
+            points: [
+              { clip: 'idle', threshold: 0 },
+              { clip: 'walk', threshold: WALK_ANIM },
+              { clip: 'run', threshold: RUN_ANIM },
+            ],
+          },
+        },
+        { name: 'hit', clip: 'hit', transitions: [{ to: 'locomotion', exitTime: 1, duration: 0.15 }] },
+        { name: 'death', clip: 'death', transitions: [{ to: 'locomotion', conditions: [{ trigger: 'respawn' }], duration: 0.3 }] },
+      ],
+      anyState: [
+        { to: 'death', conditions: [{ trigger: 'die' }], duration: 0.1 },
+        { to: 'hit', conditions: [{ trigger: 'hit' }, { param: 'dead', op: '==', value: 0 }], duration: 0.08, allowSelf: true },
+      ],
+    },
+  ],
+};
+
+const wrapAngle = (a: number): number => Math.atan2(Math.sin(a), Math.cos(a));
+
+export class Enemy implements Damageable {
+  readonly eid: Entity;
+  readonly name: string;
+  state: AwarenessState = 'unaware';
+  awareness = 0;
+  health = MAX_HEALTH;
+  dead = false;
+
+  private readonly deps: EnemyDeps;
+  private readonly spec: EnemySpec;
+  private readonly controller: CharacterController;
+  private readonly root: THREE.Group;
+  private readonly follower = new PathFollower(0.4);
+  private readonly weapon = new Weapon(ENEMY_RIFLE);
+  private readonly flash: MuzzleFlash;
+
+  private facing: number;
+  private routeIndex = 0;
+  private waitUntil = 0;
+  private repathAt = 0;
+  private lastSeenAt = -100;
+  private alertSince = -100;
+  private lookUntil = -1;
+  private burstUntil = -1;
+  private nextBurstAt = 0;
+  private readonly lastKnown = new THREE.Vector3();
+  private readonly pathTarget = new THREE.Vector3();
+  private readonly velocity = new THREE.Vector3();
+  private readonly step = { x: 0, y: 0, z: 0 };
+  private readonly steer = { x: 0, y: 0, z: 0 };
+  private readonly corners: { x: number; y: number; z: number }[] = [];
+  private readonly feetPos = new THREE.Vector3();
+  private readonly playerFeet = new THREE.Vector3();
+  private readonly eye = new THREE.Vector3();
+  private readonly toPlayer = new THREE.Vector3();
+  private readonly shotDir = new THREE.Vector3();
+  private readonly tmpA = new THREE.Vector3();
+  private readonly tmpB = new THREE.Vector3();
+
+  constructor(deps: EnemyDeps, spec: EnemySpec) {
+    this.deps = deps;
+    this.spec = spec;
+    this.name = spec.name;
+    const { entities, physics, animation, renderSync, scene, model, labels } = deps;
+    const spawn = spec.route[0] ?? new THREE.Vector3();
+    const next = spec.route[1] ?? spawn;
+    this.facing = Math.atan2(next.x - spawn.x, next.z - spawn.z);
+    this.eid = entities.create([Transform, { x: spawn.x, y: spawn.y + OPERATOR.height / 2, z: spawn.z, qy: Math.sin(this.facing / 2), qw: Math.cos(this.facing / 2) }], Character);
+    this.addBody();
+    this.controller = new CharacterController(physics, { stepHeight: 0.4, snapToGround: 0.3, characterMass: 80, gravity: OPERATOR.gravity });
+    this.controller.attach(this.eid);
+
+    this.root = new THREE.Group();
+    const visual = model.instantiate({ castShadow: true, receiveShadow: true });
+    visual.position.y = -OPERATOR.height / 2;
+    // A darker tint so enemies read apart from the operator and the range dummies.
+    const tinted: THREE.Material[] = [];
+    visual.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const m = (mesh.material as THREE.MeshStandardMaterial).clone();
+      m.color.setHex(0x3a1f2a);
+      m.emissive.setHex(0xff2040);
+      m.emissiveIntensity = 0.12;
+      mesh.material = m;
+      tinted.push(m);
+    });
+    this.root.add(visual);
+    scene.add(this.root);
+    renderSync.attach(entities, this.eid, this.root);
+    animation.attach(this.eid, visual, model.animations, ENEMY_GRAPH, { rootMotion: { mode: 'none' } });
+    labels.attach(this.eid, { kind: 'healthbar', text: spec.name, offsetY: 2.05 });
+    this.flash = new MuzzleFlash(deps, ENEMY_RIFLE.muzzle.flashColor, ENEMY_RIFLE.muzzle.flashIntensity);
+    this.disposeTinted = () => {
+      for (const m of tinted) m.dispose();
+    };
+  }
+
+  private disposeTinted: () => void;
+
+  private addBody(): void {
+    const halfHeight = OPERATOR.height / 2 - OPERATOR.radius;
+    this.deps.physics.addBody(this.eid, {
+      type: 'kinematicPosition',
+      shape: { kind: 'capsule', halfHeight, radius: OPERATOR.radius },
+      layer: 'enemy',
+      collidesWith: ['world', 'player', 'enemy'],
+    });
+  }
+
+  feet(out: THREE.Vector3): THREE.Vector3 {
+    const t = this.deps.entities.store(Transform);
+    return out.set(t.x[this.eid] ?? 0, (t.y[this.eid] ?? 0) - OPERATOR.height / 2, t.z[this.eid] ?? 0);
+  }
+
+  heightFraction(y: number): number {
+    this.feet(this.feetPos);
+    return (y - this.feetPos.y) / OPERATOR.height;
+  }
+
+  get speed(): number {
+    return Math.hypot(this.velocity.x, this.velocity.z);
+  }
+
+  hit(zone: HitZone, damage: number, now: number): boolean {
+    if (this.dead) return false;
+    const { animation, labels } = this.deps;
+    this.health = Math.max(0, this.health - damage);
+    labels.setValue(this.eid, this.health / MAX_HEALTH);
+    // Being shot is the loudest possible tell.
+    this.becomeAlert(now);
+    if (this.health === 0) {
+      this.dead = true;
+      animation.setParam(this.eid, 'dead', 1);
+      animation.setTrigger(this.eid, 'die');
+      this.controller.detach(this.eid);
+      this.deps.physics.removeBody(this.eid);
+      this.velocity.set(0, 0, 0);
+      return true;
+    }
+    animation.setTrigger(this.eid, 'hit');
+    void zone;
+    return false;
+  }
+
+  /** A sound reached this enemy: `position` is where, `loudness` how far it carries. */
+  hear(position: THREE.Vector3, loudness: number, now: number): void {
+    if (this.dead) return;
+    this.feet(this.feetPos);
+    const d = this.feetPos.distanceTo(position);
+    if (d > loudness) return;
+    if (d < loudness * AWARENESS.loudAlertFraction) {
+      this.lastKnown.copy(position);
+      this.becomeAlert(now);
+      return;
+    }
+    if (this.state === 'unaware' || this.state === 'searching') {
+      this.awareness = Math.max(this.awareness, AWARENESS.suspiciousAt + 0.15);
+      this.investigate(position, now);
+    } else if (this.state === 'suspicious') {
+      this.lastKnown.copy(position);
+      this.repathAt = 0;
+      this.lookUntil = -1;
+    }
+  }
+
+  /** Another enemy went alert nearby: go and look where they say the player is. */
+  warn(position: THREE.Vector3, now: number): void {
+    if (this.dead || this.state === 'alert') return;
+    this.awareness = Math.max(this.awareness, AWARENESS.suspiciousAt + 0.3);
+    this.investigate(position, now);
+  }
+
+  /** Back to the start of the route, full health, unaware: a checkpoint reload. */
+  reset(): void {
+    const { entities, physics, animation, labels } = this.deps;
+    const spawn = this.spec.route[0] ?? new THREE.Vector3();
+    const t = entities.store(Transform);
+    if (this.dead) {
+      this.dead = false;
+      this.addBody();
+      this.controller.attach(this.eid);
+      animation.setParam(this.eid, 'dead', 0);
+      animation.setTrigger(this.eid, 'respawn');
+    }
+    t.x[this.eid] = spawn.x;
+    t.y[this.eid] = spawn.y + OPERATOR.height / 2;
+    t.z[this.eid] = spawn.z;
+    physics.setPose(this.eid, { x: spawn.x, y: spawn.y + OPERATOR.height / 2, z: spawn.z });
+    const ch = entities.store(Character);
+    ch.vy[this.eid] = 0;
+    this.health = MAX_HEALTH;
+    labels.setValue(this.eid, 1);
+    this.state = 'unaware';
+    this.awareness = 0;
+    this.routeIndex = 0;
+    this.waitUntil = 0;
+    this.repathAt = 0;
+    this.lookUntil = -1;
+    this.burstUntil = -1;
+    this.lastSeenAt = -100;
+    this.alertSince = -100;
+    this.velocity.set(0, 0, 0);
+    this.follower.clear();
+    this.weapon.ammo = ENEMY_RIFLE.magazineSize;
+  }
+
+  fixedUpdate(dt: number, now: number, player: OperatorView, onAlert: (enemy: Enemy) => void): void {
+    if (this.dead) {
+      this.flash.fixedUpdate(now);
+      return;
+    }
+    const { animation, entities } = this.deps;
+    this.feet(this.feetPos);
+    player.feet(this.playerFeet);
+
+    // ---- perception ----------------------------------------------------------
+    const sample = this.sense(player);
+    const gain = sightGain(sample);
+    const wasAlert = this.state === 'alert';
+    if (gain > 0) {
+      this.awareness = Math.min(1, this.awareness + gain * dt);
+      this.lastKnown.copy(this.playerFeet);
+      this.lastSeenAt = now;
+    } else if (this.state !== 'alert') {
+      this.awareness = Math.max(0, this.awareness - AWARENESS.decayPerSecond * dt);
+    }
+
+    if (this.awareness >= 1 && !player.dead) this.becomeAlert(now);
+    else if (this.state === 'unaware' && this.awareness >= AWARENESS.suspiciousAt) this.investigate(this.lastKnown, now);
+    if (this.state === 'alert' && !wasAlert) onAlert(this);
+
+    // ---- behaviour ------------------------------------------------------------
+    let moveSpeed = 0;
+    let faceTarget: THREE.Vector3 | null = null;
+    let wantsMove = false;
+    switch (this.state) {
+      case 'unaware':
+        moveSpeed = PATROL_SPEED;
+        wantsMove = this.patrol(now);
+        break;
+      case 'suspicious':
+        moveSpeed = INVESTIGATE_SPEED;
+        wantsMove = this.goLook(now, AWARENESS.investigateLook);
+        if (!wantsMove && this.lookUntil >= 0 && now >= this.lookUntil && this.awareness < AWARENESS.suspiciousAt) {
+          this.state = 'unaware';
+          this.lookUntil = -1;
+          this.follower.clear();
+        }
+        break;
+      case 'alert':
+        if (player.dead) {
+          this.state = 'searching';
+          this.lookUntil = -1;
+          break;
+        }
+        if (now - this.lastSeenAt <= AWARENESS.loseAfter) {
+          faceTarget = this.playerFeet;
+          if (sample.visible && sample.distance <= ENGAGE_RANGE) {
+            wantsMove = false;
+            this.follower.clear();
+            this.shoot(sample, player, now);
+          } else {
+            moveSpeed = CHASE_SPEED;
+            wantsMove = this.pathTo(this.lastKnown, now);
+          }
+        } else {
+          this.state = 'searching';
+          this.lookUntil = -1;
+          this.repathAt = 0;
+        }
+        break;
+      case 'searching':
+        moveSpeed = INVESTIGATE_SPEED;
+        wantsMove = this.goLook(now, AWARENESS.searchLook);
+        if (!wantsMove && this.lookUntil >= 0 && now >= this.lookUntil) {
+          this.state = 'unaware';
+          this.awareness = Math.min(this.awareness, AWARENESS.suspiciousAt - 0.05);
+          this.lookUntil = -1;
+          this.follower.clear();
+        }
+        break;
+    }
+
+    // ---- movement -------------------------------------------------------------
+    const targetX = wantsMove ? this.steer.x * moveSpeed : 0;
+    const targetZ = wantsMove ? this.steer.z * moveSpeed : 0;
+    const k = Math.min(1, 14 * dt);
+    this.velocity.x += (targetX - this.velocity.x) * k;
+    this.velocity.z += (targetZ - this.velocity.z) * k;
+    this.step.x = this.velocity.x * dt;
+    this.step.y = 0;
+    this.step.z = this.velocity.z * dt;
+    this.controller.move(this.eid, this.step, dt);
+
+    // ---- facing: the target if engaging, else the way we move, else a slow look-around ----
+    let desired = this.facing;
+    if (faceTarget) desired = Math.atan2(faceTarget.x - this.feetPos.x, faceTarget.z - this.feetPos.z);
+    else if (this.speed > 0.3) desired = Math.atan2(this.velocity.x, this.velocity.z);
+    else if (this.lookUntil >= 0) desired = this.facing + Math.sin(now * 1.7) * 0.02 + 0.9 * dt;
+    this.facing = wrapAngle(this.facing + wrapAngle(desired - this.facing) * Math.min(1, TURN_RATE * dt));
+    const t = entities.store(Transform);
+    t.qx[this.eid] = 0;
+    t.qz[this.eid] = 0;
+    t.qy[this.eid] = Math.sin(this.facing / 2);
+    t.qw[this.eid] = Math.cos(this.facing / 2);
+    animation.setParam(this.eid, 'speed', this.speed);
+    this.flash.fixedUpdate(now);
+  }
+
+  // ---- perception helpers ------------------------------------------------------
+
+  private sense(player: OperatorView): { visible: boolean; distance: number; inCone: boolean; stance: Stance; speed: number } {
+    this.toPlayer.copy(this.playerFeet).sub(this.feetPos);
+    const distance = Math.hypot(this.toPlayer.x, this.toPlayer.z);
+    if (player.dead || distance > AWARENESS.sightRange) return { visible: false, distance, inCone: false, stance: player.stance, speed: player.speed };
+    const bearing = Math.atan2(this.toPlayer.x, this.toPlayer.z);
+    const inCone = Math.abs(wrapAngle(bearing - this.facing)) <= THREE.MathUtils.degToRad(AWARENESS.fovDeg / 2);
+    // Line of sight: eye to chest, blocked by the world only.
+    this.eye.copy(this.feetPos);
+    this.eye.y += EYE_HEIGHT;
+    this.tmpA.copy(this.playerFeet);
+    this.tmpA.y += CHEST_HEIGHT;
+    this.tmpB.copy(this.tmpA).sub(this.eye);
+    const len = this.tmpB.length();
+    const hit = this.deps.physics.raycast(this.eye, this.tmpB, len, { layers: 'world', excludeEid: this.eid });
+    const visible = hit === null;
+    return { visible, distance, inCone, stance: player.stance, speed: player.speed };
+  }
+
+  private becomeAlert(now: number): void {
+    if (this.dead) return;
+    if (this.state !== 'alert') {
+      this.alertSince = now;
+      this.nextBurstAt = now + REACTION_SECONDS;
+    }
+    this.state = 'alert';
+    this.awareness = 1;
+    this.lastSeenAt = Math.max(this.lastSeenAt, now - AWARENESS.loseAfter + 1.5);
+    this.lookUntil = -1;
+    this.repathAt = 0;
+  }
+
+  private investigate(position: THREE.Vector3, now: number): void {
+    this.lastKnown.copy(position);
+    this.state = this.state === 'searching' ? 'searching' : 'suspicious';
+    this.lookUntil = -1;
+    this.repathAt = 0;
+    void now;
+  }
+
+  // ---- movement helpers ----------------------------------------------------------
+
+  /** Walk the route; wait at each point. Returns whether we are moving. */
+  private patrol(now: number): boolean {
+    const route = this.spec.route;
+    if (route.length < 2) return false;
+    if (now < this.waitUntil) return false;
+    const target = route[this.routeIndex % route.length] as THREE.Vector3;
+    if (!this.follower.hasPath || this.pathTarget.distanceToSquared(target) > 0.01) {
+      this.pathTarget.copy(target);
+      this.requestPath(target);
+    }
+    const moving = this.follower.steer(this.feetPos, this.steer);
+    if (!moving) {
+      this.routeIndex = (this.routeIndex + 1) % route.length;
+      this.waitUntil = now + PATROL_WAIT;
+      this.follower.clear();
+    }
+    return moving;
+  }
+
+  /** Path to the last known position, then stand and look for `lookSeconds`. Returns whether we are moving. */
+  private goLook(now: number, lookSeconds: number): boolean {
+    if (this.lookUntil >= 0) return false;
+    const moving = this.pathTo(this.lastKnown, now);
+    if (!moving) this.lookUntil = now + lookSeconds;
+    return moving;
+  }
+
+  /** Follow a path toward `target`, repathing on a timer. Returns whether we are moving. */
+  private pathTo(target: THREE.Vector3, now: number): boolean {
+    if (now >= this.repathAt || !this.follower.hasPath || this.pathTarget.distanceToSquared(target) > 1) {
+      this.pathTarget.copy(target);
+      this.requestPath(target);
+      this.repathAt = now + REPATH_SECONDS;
+    }
+    return this.follower.steer(this.feetPos, this.steer);
+  }
+
+  private requestPath(target: THREE.Vector3): void {
+    const reached = this.deps.navigation.findPath(this.feetPos, target, this.corners);
+    void reached;
+    this.follower.setPath(this.corners);
+  }
+
+  // ---- fire -------------------------------------------------------------------------
+
+  private shoot(sample: { distance: number }, player: OperatorView, now: number): void {
+    const { physics, audio, random, impacts, shotSound } = this.deps;
+    // Burst rhythm: fire for a beat, pause for a beat, from the seeded stream.
+    if (now >= this.nextBurstAt && now >= this.burstUntil) {
+      this.burstUntil = now + random.range(0.25, 0.45);
+      this.nextBurstAt = this.burstUntil + random.range(0.5, 1.1);
+    }
+    this.weapon.trigger = now < this.burstUntil;
+    if (this.weapon.ammo === 0) this.weapon.reloadRequested = true;
+    const shots = this.weapon.fixedUpdate(1 / 60, { stance: 'stand', speed: this.speed, grounded: true, aiming: true }, random);
+    if (shots.length === 0) return;
+
+    const settled = Math.min(1, (now - this.alertSince) / 2.5);
+    const spreadDeg = BOT_SPREAD_UNSETTLED_DEG + (BOT_SPREAD_DEG - BOT_SPREAD_UNSETTLED_DEG) * settled + (this.speed > 0.5 ? 1.5 : 0);
+    for (let i = 0; i < shots.length; i++) {
+      this.eye.copy(this.feetPos);
+      this.eye.y += EYE_HEIGHT;
+      this.shotDir.copy(this.playerFeet);
+      this.shotDir.y += CHEST_HEIGHT;
+      this.shotDir.sub(this.eye).normalize();
+      applySpread(this.shotDir, spreadDeg, random, this.tmpA, this.tmpB);
+      this.tmpA.copy(this.eye).addScaledVector(this.shotDir, 0.6);
+      this.flash.fire(this.tmpA, this.shotDir, now);
+      if (shotSound) audio.playAt(shotSound, this.eid, { spatial: { refDistance: 4, rolloff: 1, maxDistance: 80 }, volume: 0.8 });
+      const hit = physics.raycast(this.eye, this.shotDir, ENEMY_RIFLE.range, { layers: ['world', 'player'], excludeEid: this.eid });
+      if (!hit) continue;
+      if (hit.eid === player.eid) {
+        this.tmpA.set(hit.point.x, hit.point.y, hit.point.z);
+        player.feet(this.tmpB);
+        const zone = hitZoneAt((this.tmpA.y - this.tmpB.y) / OPERATOR.height);
+        player.takeDamage(Math.round(damageAt(ENEMY_RIFLE, hit.distance)), zone, now);
+      } else {
+        this.tmpA.set(hit.point.x, hit.point.y, hit.point.z);
+        this.tmpB.set(hit.normal.x, hit.normal.y, hit.normal.z);
+        impacts.world(this.tmpA, this.tmpB, hit.eid);
+      }
+    }
+    void sample;
+  }
+
+  dispose(): void {
+    const { entities, animation, scene, labels, physics } = this.deps;
+    labels.detach(this.eid);
+    animation.detach(this.eid);
+    if (!this.dead) {
+      this.controller.detach(this.eid);
+      physics.removeBody(this.eid);
+    }
+    this.controller.dispose();
+    this.flash.dispose();
+    this.disposeTinted();
+    scene.remove(this.root);
+    entities.destroy(this.eid);
+  }
+}

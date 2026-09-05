@@ -1,11 +1,12 @@
-import type { UIHost } from '@spark/engine';
+import { createBar, type UIHost } from '@spark/engine';
 import type { Stance } from '../actors/Operator';
 
 /**
- * The bare operator HUD: a crosshair whose ring opens with the weapon's
- * spread and tightens on aim, an ammo counter with reload progress, a stance
- * and speed readout, and the click-to-play prompt that pointer lock needs.
- * Plain DOM in the engine's `hud` layer; no game state lives here.
+ * The operator HUD: a crosshair whose ring opens with the weapon's spread,
+ * ammo with reload progress, health with a damage vignette, the enemies'
+ * loudest awareness state, stance and speed, a score line, the click-to-play
+ * prompt pointer lock needs, and the mission-failed card. Plain DOM in the
+ * engine's `hud` layer; no game state lives here.
  */
 export interface OperatorHud {
   setLocked(locked: boolean): void;
@@ -13,8 +14,12 @@ export interface OperatorHud {
   /** Crosshair spread, degrees of cone half-angle. */
   setSpread(spreadDeg: number): void;
   setAmmo(ammo: number, reserve: number, reloading: boolean, reloadProgress: number): void;
+  /** 0..1 health and 0..1 vignette strength. */
+  setHealth(health: number, hurt: number): void;
+  setAlert(level: 'undetected' | 'suspicious' | 'alert'): void;
   setStatus(stance: Stance, speed: number, grounded: boolean): void;
-  setScore(hits: number, kills: number): void;
+  setScore(hits: number, kills: number, enemiesLeft: number): void;
+  setFailed(visible: boolean): void;
   dispose(): void;
 }
 
@@ -22,6 +27,12 @@ const MONO = 'ui-monospace, Consolas, monospace';
 /** Ring radius in px per degree of spread, on top of the base radius. */
 const PX_PER_DEGREE = 26;
 const RING_BASE_PX = 10;
+
+const ALERT_STYLE = {
+  undetected: { text: 'undetected', color: '#8fd3a5' },
+  suspicious: { text: 'suspicious', color: '#ffd166' },
+  alert: { text: 'ALERT', color: '#ff5a5a' },
+} as const;
 
 export function createOperatorHud(ui: UIHost): OperatorHud {
   const dot = document.createElement('div');
@@ -55,6 +66,15 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
     pointerEvents: 'none',
   } satisfies Partial<CSSStyleDeclaration>);
 
+  const vignette = document.createElement('div');
+  Object.assign(vignette.style, {
+    position: 'absolute',
+    inset: '0',
+    boxShadow: 'inset 0 0 140px 40px rgba(255, 24, 24, 0.85)',
+    opacity: '0',
+    pointerEvents: 'none',
+  } satisfies Partial<CSSStyleDeclaration>);
+
   const ammo = document.createElement('div');
   Object.assign(ammo.style, {
     position: 'absolute',
@@ -70,6 +90,30 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
   Object.assign(ammoSub.style, { font: `11px/1.4 ${MONO}`, color: '#9aa4bd', letterSpacing: '0.08em', textTransform: 'uppercase' } satisfies Partial<CSSStyleDeclaration>);
   const ammoMain = document.createElement('div');
   ammo.append(ammoMain, ammoSub);
+
+  const healthWrap = document.createElement('div');
+  Object.assign(healthWrap.style, {
+    position: 'absolute',
+    left: '16px',
+    bottom: '40px',
+    width: '200px',
+    pointerEvents: 'none',
+  } satisfies Partial<CSSStyleDeclaration>);
+  const health = createBar({ label: 'health', color: '#ff5a5a' });
+  healthWrap.appendChild(health.element);
+
+  const alert = document.createElement('div');
+  Object.assign(alert.style, {
+    position: 'absolute',
+    left: '50%',
+    top: '14px',
+    transform: 'translateX(-50%)',
+    font: `12px/1.5 ${MONO}`,
+    letterSpacing: '0.18em',
+    textTransform: 'uppercase',
+    color: ALERT_STYLE.undetected.color,
+    pointerEvents: 'none',
+  } satisfies Partial<CSSStyleDeclaration>);
 
   const status = document.createElement('div');
   Object.assign(status.style, {
@@ -96,7 +140,7 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
   } satisfies Partial<CSSStyleDeclaration>);
 
   const prompt = document.createElement('div');
-  prompt.textContent = 'click to take control · WASD move · Shift sprint · C crouch · X prone · Space jump · LMB fire · RMB aim · R reload · Esc release';
+  prompt.textContent = 'click to take control · WASD move · Shift sprint · C crouch · X prone · Space jump · LMB fire · RMB aim · R reload · F4 navmesh · Esc release';
   Object.assign(prompt.style, {
     position: 'absolute',
     left: '50%',
@@ -113,9 +157,29 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
     pointerEvents: 'none',
   } satisfies Partial<CSSStyleDeclaration>);
 
-  for (const el of [dot, ring, ammo, status, score, prompt]) ui.mount('hud', el);
+  const failed = document.createElement('div');
+  failed.innerHTML = '<div style="font-size:26px;letter-spacing:0.3em;color:#ff5a5a">MISSION FAILED</div><div style="margin-top:10px;color:#9aa4bd;letter-spacing:0.08em">press Enter to retry from the checkpoint</div>';
+  Object.assign(failed.style, {
+    position: 'absolute',
+    left: '50%',
+    top: '42%',
+    transform: 'translate(-50%, -50%)',
+    padding: '22px 36px',
+    font: `13px/1.5 ${MONO}`,
+    textAlign: 'center',
+    textTransform: 'uppercase',
+    background: 'rgba(8, 10, 16, 0.85)',
+    border: '1px solid #3a1c22',
+    borderRadius: '4px',
+    pointerEvents: 'none',
+  } satisfies Partial<CSSStyleDeclaration>);
+  failed.hidden = true;
+
+  const all = [vignette, dot, ring, ammo, healthWrap, alert, status, score, prompt, failed];
+  for (const el of all) ui.mount('hud', el);
 
   let lastRadius = -1;
+  let lastAlert = '';
   return {
     setLocked(locked) {
       prompt.hidden = locked;
@@ -141,14 +205,27 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
       ammoMain.style.color = rounds === 0 && !reloading ? '#ff6a4a' : '#dfe6ff';
       ammoSub.textContent = reloading ? `reloading ${Math.round(reloadProgress * 100)}%` : rounds === 0 ? 'press R' : 'M4A1';
     },
+    setHealth(value, hurt) {
+      health.set(value);
+      vignette.style.opacity = hurt.toFixed(3);
+    },
+    setAlert(level) {
+      if (level === lastAlert) return;
+      lastAlert = level;
+      alert.textContent = ALERT_STYLE[level].text;
+      alert.style.color = ALERT_STYLE[level].color;
+    },
     setStatus(stance, speed, grounded) {
       status.textContent = `${stance} · ${speed.toFixed(1)} m/s${grounded ? '' : ' · airborne'}`;
     },
-    setScore(hits, kills) {
-      score.textContent = `hits ${hits} · down ${kills}`;
+    setScore(hits, kills, enemiesLeft) {
+      score.textContent = `hits ${hits} · down ${kills} · hostiles ${enemiesLeft}`;
+    },
+    setFailed(visible) {
+      failed.hidden = !visible;
     },
     dispose() {
-      for (const el of [dot, ring, ammo, status, score, prompt]) ui.unmount(el);
+      for (const el of all) ui.unmount(el);
     },
   };
 }

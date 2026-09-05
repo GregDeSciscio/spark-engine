@@ -11,6 +11,7 @@ import {
   type WorldLabels,
 } from '@spark/engine';
 import { OPERATOR } from './Operator';
+import type { Damageable } from '../combat/Damageable';
 import type { HitZone } from '../combat/weapons';
 
 /**
@@ -53,7 +54,7 @@ export interface TargetDummyDeps {
   readonly labels: WorldLabels;
 }
 
-export class TargetDummy {
+export class TargetDummy implements Damageable {
   readonly eid: Entity;
   readonly name: string;
   health = MAX_HEALTH;

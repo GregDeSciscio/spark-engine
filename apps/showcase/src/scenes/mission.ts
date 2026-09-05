@@ -1,8 +1,12 @@
 import * as THREE from 'three/webgpu';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { DisposeBag, Navigation, RenderSync, ShoulderCamera, initNavigation, renderAllPlaceholders, type SceneDefinition, type SceneInstance } from '@spark/engine';
-import { Operator } from '../actors/Operator';
+import { Enemy } from '../actors/Enemy';
+import { OPERATOR_MAX_HEALTH, Operator } from '../actors/Operator';
 import { TargetDummy } from '../actors/TargetDummy';
+import { AWARENESS, overallState } from '../ai/Awareness';
+import type { Damageable } from '../combat/Damageable';
+import { Impacts } from '../combat/effects';
 import { Gunplay } from '../combat/Gunplay';
 import { RIFLE_BASELINE } from '../combat/weapons';
 import { buildBlockout } from '../levels/blockout';
@@ -15,11 +19,15 @@ const FREELOOK = new URLSearchParams(location.search).get('freelook') === '1';
 const NAV_OVERLAY = new URLSearchParams(location.search).get('nav') === '1';
 const SOUND_SHOT = 'rifle-shot';
 const SOUND_HIT = 'impact';
+/** Seconds the damage vignette takes to fade. */
+const HURT_FADE = 0.8;
 
 /**
- * Milestone 5, second step: the operator with the baseline rifle in a
- * grey-box night street, shooting range dummies. No enemy AI or objective
- * yet; those land next (`docs/design/mission-shape.md`).
+ * Milestone 5, third step: the operator with the baseline rifle against
+ * three riflemen patrolling a grey-box night street on a baked navmesh, with
+ * the awareness ladder from `docs/design/mission-shape.md`. Dying shows the
+ * failed card; Enter reloads the checkpoint (spawn, full health, enemies
+ * reset). Objectives are next.
  */
 export const missionScene: SceneDefinition = {
   name: 'mission',
@@ -69,9 +77,27 @@ export const missionScene: SceneDefinition = {
       (navLines.material as THREE.Material).dispose();
     });
 
+    // ---- audio: placeholder cues until real samples land ------------------------
+    const placeholders = await renderAllPlaceholders();
+    const impact = placeholders.get('placeholder-impact');
+    const shotSound = impact ? SOUND_SHOT : null;
+    const hitSound = impact ? SOUND_HIT : null;
+    if (impact) {
+      audio.defineSound({ name: SOUND_SHOT, bus: 'sfx', buffer: impact, volume: 0.9, pitchVariance: 2, cooldownMs: 30, maxInstances: 8 });
+      audio.defineSound({ name: SOUND_HIT, bus: 'sfx', buffer: impact, volume: 0.5, pitchVariance: 5, cooldownMs: 40, maxInstances: 6 });
+      bag.add(() => {
+        audio.undefineSound(SOUND_SHOT);
+        audio.undefineSound(SOUND_HIT);
+        audio.stopAll(0.1);
+      });
+    }
+
     // ---- actors ----------------------------------------------------------------
     const model = await assets.loadModel(MANNEQUIN_URL);
     bag.add(() => assets.release(MANNEQUIN_URL));
+    const effects = { entities, vfx, scene };
+    const impacts = new Impacts({ ...effects, audio, random: random.fork(), worldMeshes: level.meshes, hitSound });
+    bag.add(impacts);
     const operator = new Operator({ entities, physics, animation, renderSync, scene, model }, level.spawn, level.spawnYaw);
     bag.add(operator);
     const dummies = level.targetSpots.map((spot, i) => {
@@ -79,6 +105,15 @@ export const missionScene: SceneDefinition = {
       bag.add(dummy);
       return dummy;
     });
+    const enemies = level.patrols.map((spec) => {
+      const enemy = new Enemy(
+        { ...effects, physics, animation, renderSync, model, labels: ui.labels, navigation, random: random.fork(), audio, impacts, shotSound },
+        spec,
+      );
+      bag.add(enemy);
+      return enemy;
+    });
+    const targets: Damageable[] = [...dummies, ...enemies];
 
     // ---- camera --------------------------------------------------------------
     const camera = new ShoulderCamera({ aspect: ctx.renderer.aspect, near: 0.05, far: 200 });
@@ -102,27 +137,39 @@ export const missionScene: SceneDefinition = {
     syncCamera();
     camera.snap(occluder);
 
-    // ---- audio: placeholder cues until real samples land ------------------------
-    const placeholders = await renderAllPlaceholders();
-    const impact = placeholders.get('placeholder-impact');
-    const sounds = impact ? { shot: SOUND_SHOT, hit: SOUND_HIT } : null;
-    if (impact) {
-      audio.defineSound({ name: SOUND_SHOT, bus: 'sfx', buffer: impact, volume: 0.9, pitchVariance: 2, cooldownMs: 30, maxInstances: 6 });
-      audio.defineSound({ name: SOUND_HIT, bus: 'sfx', buffer: impact, volume: 0.5, pitchVariance: 5, cooldownMs: 40, maxInstances: 6 });
-      bag.add(() => {
-        audio.undefineSound(SOUND_SHOT);
-        audio.undefineSound(SOUND_HIT);
-        audio.stopAll(0.1);
-      });
-    }
-
-    // ---- gunplay ---------------------------------------------------------------
+    // ---- gunplay and hearing -------------------------------------------------------
+    let now = 0;
     const gunplay = new Gunplay(
-      { entities, physics, vfx, audio, labels: ui.labels, scene, random: random.fork(), camera, operator, dummies, worldMeshes: level.meshes, sounds },
+      {
+        ...effects,
+        physics,
+        audio,
+        labels: ui.labels,
+        random: random.fork(),
+        camera,
+        operator,
+        targets,
+        impacts,
+        shotSound,
+        onShot: (position, loudness) => {
+          for (const e of enemies) e.hear(position, loudness, now);
+        },
+      },
       RIFLE_BASELINE,
       operator.muzzle,
     );
     bag.add(gunplay);
+    const enemyFeet = new THREE.Vector3();
+    const otherFeet = new THREE.Vector3();
+    const onAlert = (source: Enemy): void => {
+      source.feet(enemyFeet);
+      operator.feet(feet);
+      for (const other of enemies) {
+        if (other === source) continue;
+        other.feet(otherFeet);
+        if (otherFeet.distanceTo(enemyFeet) <= AWARENESS.warnRadius) other.warn(feet, now);
+      }
+    };
 
     // ---- HUD and pointer lock ------------------------------------------------
     const hud = createOperatorHud(ui);
@@ -133,7 +180,17 @@ export const missionScene: SceneDefinition = {
     ctx.config.container.addEventListener('pointerdown', onPointerDown);
     bag.add(() => ctx.config.container.removeEventListener('pointerdown', onPointerDown));
 
-    logger.info(`mission: operator at (${level.spawn.x.toFixed(1)}, ${level.spawn.z.toFixed(1)}), ${dummies.length} targets, ${ctx.lighting.budget} local lights in budget`);
+    const retry = (): void => {
+      operator.respawn(level.spawn, level.spawnYaw);
+      camera.setLook(level.spawnYaw, THREE.MathUtils.degToRad(6));
+      for (const e of enemies) e.reset();
+      gunplay.resetAmmo();
+      hud.setFailed(false);
+    };
+
+    logger.info(
+      `mission: operator at (${level.spawn.x.toFixed(1)}, ${level.spawn.z.toFixed(1)}), ${enemies.length} hostiles, ${dummies.length} targets, ${ctx.lighting.budget} local lights in budget`,
+    );
 
     return {
       scene,
@@ -146,6 +203,7 @@ export const missionScene: SceneDefinition = {
         }
         operator.update(input, camera);
         if (input.wasPressed('F4')) navLines.visible = !navLines.visible;
+        if (operator.dead && input.wasPressed('Enter')) retry();
         // The click that takes control must not also fire.
         gunplay.update(locked && input.isButtonDown(0), locked && input.wasButtonPressed(0), input.wasPressed('KeyR'));
         const weapon = gunplay.weapon;
@@ -153,12 +211,18 @@ export const missionScene: SceneDefinition = {
         hud.setAiming(operator.aiming);
         hud.setSpread(gunplay.spreadNow());
         hud.setAmmo(weapon.ammo, weapon.reserve, weapon.reloading, weapon.reloadProgress);
+        hud.setHealth(operator.health / OPERATOR_MAX_HEALTH, Math.max(0, 1 - (now - operator.lastHitAt) / HURT_FADE) * (operator.dead ? 1 : 0.85));
+        hud.setAlert(overallState(enemies.filter((e) => !e.dead).map((e) => e.state)));
         hud.setStatus(operator.stance, operator.speed, operator.grounded);
-        hud.setScore(gunplay.stats.hits, gunplay.stats.kills);
+        hud.setScore(gunplay.stats.hits, gunplay.stats.kills, enemies.filter((e) => !e.dead).length);
+        hud.setFailed(operator.dead);
       },
       fixedUpdate(fixedDt) {
+        now += fixedDt;
         operator.fixedUpdate(fixedDt);
         gunplay.fixedUpdate(fixedDt);
+        for (const d of dummies) d.fixedUpdate(now);
+        for (const e of enemies) e.fixedUpdate(fixedDt, now, operator, onAlert);
       },
       lateUpdate(dt) {
         syncCamera();

@@ -35,6 +35,8 @@ export interface Blockout {
   readonly meshes: ReadonlyMap<Entity, THREE.Mesh>;
   /** Where the target dummies stand (feet), facing the spawn. */
   readonly targetSpots: readonly { readonly position: THREE.Vector3; readonly yaw: number }[];
+  /** Enemy patrol loops (feet positions); the first point of each is the spawn. */
+  readonly patrols: readonly { readonly name: string; readonly route: readonly THREE.Vector3[] }[];
   /** Collision geometry as triangle soup, for the navmesh bake (ADR-009). */
   readonly navSoup: TriangleSoup;
   dispose(): void;
@@ -102,7 +104,7 @@ export function buildBlockout(
     barrier.dispose();
   });
 
-  physics.layers.define('world', 'player', 'target');
+  physics.layers.define('world', 'player', 'target', 'enemy');
 
   const addBox = (box: Box, material: THREE.Material, options: { shadow?: boolean; body?: boolean } = {}): THREE.Mesh => {
     const mesh = new THREE.Mesh(unitBox, material);
@@ -186,12 +188,16 @@ export function buildBlockout(
     moon.dispose();
   });
 
-  // Range targets down the street, facing back toward the spawn.
+  // Range targets on the right sidewalk near the spawn, out of the patrol lanes.
   const targetSpots = [
-    { position: new THREE.Vector3(0.5, 0, 20), yaw: 0 },
-    { position: new THREE.Vector3(3.5, 0, 6), yaw: 0 },
-    { position: new THREE.Vector3(-5, 0, -10), yaw: 0 },
-    { position: new THREE.Vector3(1, 0, -26), yaw: 0 },
+    { position: new THREE.Vector3(9.5, 0.15, 24), yaw: 0 },
+    { position: new THREE.Vector3(9.5, 0.15, 16), yaw: 0 },
+  ];
+  // Three riflemen: one close, two deeper in, each on a short loop.
+  const patrols = [
+    { name: 'Rifleman 1', route: [new THREE.Vector3(5, 0, -4), new THREE.Vector3(-2, 0, -12), new THREE.Vector3(-4, 0, 6)] },
+    { name: 'Rifleman 2', route: [new THREE.Vector3(4, 0, -24), new THREE.Vector3(-5, 0, -34)] },
+    { name: 'Rifleman 3', route: [new THREE.Vector3(0, 0, -52), new THREE.Vector3(6, 0, -42), new THREE.Vector3(-6, 0, -44)] },
   ];
 
   return {
@@ -199,6 +205,7 @@ export function buildBlockout(
     spawnYaw: 0,
     meshes,
     targetSpots,
+    patrols,
     navSoup,
     dispose: () => bag.dispose(),
   };
