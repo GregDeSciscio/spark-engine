@@ -40,10 +40,10 @@ export function parseArgs(argv) {
 export const CHROMIUM_ARGS = ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--use-angle=d3d11'];
 export const CHROMIUM_CHANNEL = 'chromium';
 
-export async function startServer(port = 0) {
+export async function startServer(port = 0, app = 'benchmark') {
   const server = await createServer({
-    root: path.join(repoRoot, 'apps', 'benchmark'),
-    configFile: path.join(repoRoot, 'apps', 'benchmark', 'vite.config.ts'),
+    root: path.join(repoRoot, 'apps', app),
+    configFile: path.join(repoRoot, 'apps', app, 'vite.config.ts'),
     logLevel: 'error',
     server: { port: port || 4900 + Math.floor(Math.random() * 100), strictPort: false, host: '127.0.0.1' },
   });

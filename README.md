@@ -15,7 +15,7 @@ pnpm install
 pnpm dev
 ```
 
-Then open **http://localhost:5173** and pick a scene from the menu. Start with **Rainy Alley** — that's the showpiece.
+Then open **http://localhost:5173** and pick a scene from the menu. The featured card is **the showcase**, the customer game in progress (ADR-005); it runs as its own app, so start it alongside with `pnpm dev:showcase`. Of the engine scenes, start with **Rainy Alley**.
 
 The first load of a scene spends a few seconds on "Compiling shaders"; that's expected and only happens once per scene per session. If your machine struggles, drop the quality preset in the menu to `medium` or `low`. If it flies, try `cinematic`.
 
@@ -25,7 +25,7 @@ The menu at the root URL launches any of these. You can also go straight to one 
 
 | Scene | What it is | Controls |
 |---|---|---|
-| **`alley`** | **Start here.** A rainy cyberpunk alley: procedural brick and wet asphalt with puddle ripples, projected decals, volumetric fog and godrays, screen-space reflections, GPU rain, and an animated hero. | **WASD** move (camera-relative) · **Shift** walk · **Space** attack. Leave it alone and the hero walks itself. |
+| **`alley`** | A rainy cyberpunk alley: procedural brick and wet asphalt with puddle ripples, projected decals, volumetric fog and godrays, screen-space reflections, GPU rain, and an animated hero. | **WASD** move (camera-relative) · **Shift** walk · **Space** attack. Leave it alone and the hero walks itself. |
 | `hud` | Audio and UI on top of the animation scene — health/stamina HUD, floating name plates and health bars, damage numbers, footsteps, spatial neon buzz, a rain bed, and adaptive music. | **WASD** move · **Shift** walk · **Space** attack · **Esc** menu · **drag** to orbit |
 | `streaming` | A 960 m procedural district streamed in 24 m chunks around a flying camera, with LOD swaps, frustum culling, and a loaded level at the origin plaza. | **WASD**/arrows steer (A/D turn, W/S throttle) · **Q/E** altitude · **F3** physics wireframe. Hands off = autopilot. |
 | `physics` | A Rapier arena: 300 dynamic boxes and spheres in a seeded pile, a ramp, a sensor volume, a character controller, and pointer hover highlighting. | **WASD**/arrows move · **Space** jump · **hover** to highlight · **F3** physics wireframe |

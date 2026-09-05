@@ -7,7 +7,8 @@
  * Reuses the capture harness: each scene boots on the fixed clock, steps the
  * same frame count its visual golden uses (so the pile has settled and the
  * particles have spawned), and the canvas is written as a JPEG into
- * `apps/benchmark/public/thumbs/`. JPEG rather than PNG because these ship in
+ * `apps/benchmark/public/thumbs/`. The `showcase` entry is the showcase app
+ * itself (served from apps/showcase), shot in free look at its spawn. JPEG rather than PNG because these ship in
  * the bundle — the goldens are 160 KB–1 MB each, which is not menu material.
  *
  * Re-run it whenever a scene's look changes; the images are committed.
@@ -26,6 +27,7 @@ const OUT_DIR = path.join(repoRoot, 'apps', 'benchmark', 'public', 'thumbs');
  * thumbnail shows the same settled moment its golden does.
  */
 const SCENES = [
+  { scene: 'showcase', app: 'showcase', preset: 'high', frames: 120, params: { freelook: '1' } },
   { scene: 'alley', preset: 'high', frames: 30 },
   { scene: 'lights', preset: 'high', frames: 60 },
   { scene: 'hud', preset: 'high', frames: 90 },
@@ -45,7 +47,6 @@ async function shoot(browser, baseUrl, entry, { width, height, quality }) {
   page.on('pageerror', (err) => errors.push(String(err)));
 
   const params = new URLSearchParams({
-    scene: entry.scene,
     backend: 'webgpu',
     preset: entry.preset,
     fixedclock: '60',
@@ -53,6 +54,8 @@ async function shoot(browser, baseUrl, entry, { width, height, quality }) {
     size: `${width}x${height}`,
     seed: '1',
     overlay: '0',
+    ...(entry.app ? {} : { scene: entry.scene }),
+    ...(entry.params ?? {}),
   });
   await page.goto(`${baseUrl}?${params}`, { waitUntil: 'load' });
   await page.waitForFunction(() => window.__spark && (window.__spark.ready || window.__spark.error), null, {
@@ -96,12 +99,16 @@ async function main() {
   if (wanted.length === 0) throw new Error(`unknown scene "${only}"`);
 
   await mkdir(OUT_DIR, { recursive: true });
-  const { server, url } = await startServer();
+  const servers = new Map();
+  const serve = async (app) => {
+    if (!servers.has(app)) servers.set(app, await startServer(0, app));
+    return servers.get(app).url;
+  };
   const browser = await launchBrowser(false);
   const results = [];
   try {
     for (const entry of wanted) {
-      const result = await shoot(browser, url, entry, { width, height, quality });
+      const result = await shoot(browser, await serve(entry.app ?? 'benchmark'), entry, { width, height, quality });
       results.push(result);
       if (result.ok) {
         console.log(`${result.scene.padEnd(10)} ${String(Math.round(result.bytes / 1024)).padStart(4)} KB  ${path.relative(repoRoot, result.file)}`);
@@ -111,7 +118,7 @@ async function main() {
     }
   } finally {
     await browser.close();
-    await server.close();
+    for (const { server } of servers.values()) await server.close();
   }
 
   const files = await readdir(OUT_DIR);
