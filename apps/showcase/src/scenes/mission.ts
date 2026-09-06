@@ -241,6 +241,7 @@ export const missionScene: SceneDefinition = {
     bag.add(mission);
     let interactHeld = false;
     let wasAlert = false;
+    let hitsShown = 0;
     const listenerPos = new THREE.Vector3();
 
     // ---- HUD and pointer lock ------------------------------------------------
@@ -372,7 +373,7 @@ export const missionScene: SceneDefinition = {
         gunplay.update((locked && input.isButtonDown(0)) || autoFire > 0, (locked && input.wasButtonPressed(0)) || autoFire > 0, input.wasPressed('KeyR') || (autoFire > 0 && gunplay.weapon.ammo === 0));
         const weapon = gunplay.weapon;
         operator.reloading = weapon.reloading;
-        hud.setLocked(locked, freelook && !FREELOOK ? 'pointer lock refused by this view: free look, cursor stays visible. Open http://localhost:5174 in a browser tab for the real thing' : null);
+        hud.setLocked(locked, freelook && !FREELOOK ? 'free look: pointer lock is unavailable in this view. Open the page in a browser tab for mouse look.' : null);
         hud.setAiming(operator.aiming);
         const viewportHeight = ctx.config.container.clientHeight || 720;
         hud.setSpread(camera.projectAngleRadius(THREE.MathUtils.degToRad(gunplay.spreadNow()), viewportHeight));
@@ -388,12 +389,16 @@ export const missionScene: SceneDefinition = {
         wasAlert = alertState === 'alert';
         hud.setStatus(operator.stance, operator.speed, operator.grounded);
         hud.setScore(gunplay.stats.hits, gunplay.stats.kills, enemies.filter((e) => !e.dead).length);
+        if (gunplay.stats.hits !== hitsShown) {
+          hitsShown = gunplay.stats.hits;
+          hud.hit();
+        }
         hud.setFailed(operator.dead);
         const ms = mission.status();
         sfx.setPlantProgress(ms.objective?.kind === 'plant' ? ms.progress : 0);
         const promptText =
           ms.objective?.kind === 'plant' && ms.inRange ? (ms.progress > 0 ? 'setting charge' : 'hold F to set the charge') : null;
-        hud.setObjective(ms.index, ms.total, ms.objective?.label ?? null, ms.distance, ms.progress, promptText);
+        hud.setObjective(ms.index, ms.total, ms.objective?.kind ?? null, ms.objective?.label ?? null, ms.distance, ms.progress, promptText);
         hud.setComplete(ms.complete);
       },
       fixedUpdate(fixedDt) {
