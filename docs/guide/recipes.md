@@ -52,4 +52,6 @@ Reinforcements are built dormant at load and deployed with a pose, never instant
 
 ## Probe a running game from the console
 
-`window.__spark.game` in the showcase: `lookAt`, `fire`, `aim`, `move`, `stance`, `hurt`, `anim`, `audio`, `stats`. `mission.ts` defines them; they are how the repo verifies gameplay without a mouse. Give your own scene a probe object through `exposeForCapture` and `api.game`.
+`window.__spark.game` in the showcase: `lookAt`, `fire`, `aim`, `move`, `stance`, `hurt`, `anim`, `audio`, `alert`, `objective`, `stats`. `mission.ts` defines them; they are how the repo verifies gameplay without a mouse. Give your own scene a probe object through `exposeForCapture` and `api.game`.
+
+`pnpm probe` is the same surface driven headless as a regression suite: the showcase on a fixed clock and seed, six probes covering the alert ladder, lockdown, checkpoint reload, stealth and objective flow. `tools/probes/README.md` says how to add one.

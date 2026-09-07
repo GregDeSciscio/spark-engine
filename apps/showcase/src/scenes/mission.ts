@@ -334,10 +334,40 @@ export const missionScene: SceneDefinition = {
       stance: (next: 'stand' | 'crouch' | 'prone') => operator.setStance(next),
       /** Take damage as if an enemy round landed. */
       hurt: (damage: number) => operator.takeDamage(damage, 'torso', now),
+      /** Let rounds pass through, so a probe about something else can cross a hot street. */
+      invulnerable: (on: boolean) => {
+        operator.invulnerable = on;
+      },
+      /**
+       * Damage a named hostile the way a round would (alert, barks, ragdoll on
+       * death). The probe suite makes casualties with this so that a test of
+       * the alert ladder is not also a test of marksmanship. Returns whether
+       * it killed, or null if no such live hostile.
+       */
+      damage: (name: string, amount: number): boolean | null => {
+        const target = enemies.find((e) => e.name === name && !e.dead && !e.dormant);
+        return target ? target.hit('torso', amount, now) : null;
+      },
       /** The audio layer: cue count, beds, emitters in range and playing. */
       audio: () => sfx.stats(),
       /** The sector's alert tier, what it still has to send, and what it has sent. */
       alert: () => ({ ...director.status(now), tier: alertTier }),
+      /** The mission's current objective, its hold progress and the live checkpoint. */
+      objective: () => {
+        const ms = mission.status();
+        return {
+          id: ms.objective?.id ?? null,
+          kind: ms.objective?.kind ?? null,
+          label: ms.objective?.label ?? null,
+          index: ms.index,
+          total: ms.total,
+          distance: ms.distance,
+          inRange: ms.inRange,
+          progress: ms.progress,
+          complete: ms.complete,
+          checkpoint: mission.checkpoint.position.toArray(),
+        };
+      },
       /** Current animation state per layer, plus the blend parameters. */
       anim: () => ({
         base: animation.getState(operator.eid),
@@ -374,7 +404,16 @@ export const missionScene: SceneDefinition = {
         targets: dummies.map((d) => ({ name: d.name, health: d.health, dead: d.dead, feet: d.feet(new THREE.Vector3()).toArray() })),
         enemies: enemies
           .filter((e) => !e.dormant)
-          .map((e) => ({ name: e.name, state: e.state, posture: e.posture, health: e.health, dead: e.dead, feet: e.feet(new THREE.Vector3()).toArray(), ...e.coverState() })),
+          .map((e) => ({
+            name: e.name,
+            state: e.state,
+            posture: e.posture,
+            awareness: e.awareness,
+            health: e.health,
+            dead: e.dead,
+            feet: e.feet(new THREE.Vector3()).toArray(),
+            ...e.coverState(),
+          })),
         alert: alertTier,
       }),
     };

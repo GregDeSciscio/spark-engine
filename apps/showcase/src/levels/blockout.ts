@@ -147,7 +147,8 @@ export function buildBlockout(scene: THREE.Scene, entities: EntityWorld, physics
     { name: 'Rifleman 1', route: [new THREE.Vector3(5, 0, -4), new THREE.Vector3(-2, 0, -12), new THREE.Vector3(-4, 0, 6)] },
     { name: 'Rifleman 2', route: [new THREE.Vector3(4, 0, -24), new THREE.Vector3(-5, 0, -34)] },
     { name: 'Rifleman 3', route: [new THREE.Vector3(0, 0, -52), new THREE.Vector3(6, 0, -42), new THREE.Vector3(-6, 0, -44)] },
-    { name: 'Rifleman 4', route: [new THREE.Vector3(6, 0, 20), new THREE.Vector3(-3, 0, 14), new THREE.Vector3(5, 0, 8)] },
+    // Kept off the insert: closer than this and the operator is seen before they move.
+    { name: 'Rifleman 4', route: [new THREE.Vector3(7, 0, 12), new THREE.Vector3(-4, 0, 6), new THREE.Vector3(6, 0, 2)] },
     { name: 'Rifleman 5', route: [new THREE.Vector3(-6, 0, -18), new THREE.Vector3(6, 0, -14), new THREE.Vector3(-2, 0, -6)] },
     { name: 'Rifleman 6', route: [new THREE.Vector3(-5, 0, -62), new THREE.Vector3(5, 0, -64), new THREE.Vector3(2, 0, -56)] },
     { name: 'Rifleman 7', route: [new THREE.Vector3(-6, 0, -28), new THREE.Vector3(6, 0, -36), new THREE.Vector3(-4, 0, -40)] },

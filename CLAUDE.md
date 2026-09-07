@@ -27,6 +27,7 @@ A `SceneDefinition` is `{ name, create(ctx) }`; `create` returns a `SceneInstanc
 - Audio cues are data (a manifest module); the engine's `SoundBank` reads the built manifest and missing cues are silent no-ops.
 - `pnpm lint`, `pnpm typecheck` and `pnpm test` (vitest, engine package) must pass. Add a test for engine behaviour you add.
 - Verify in a browser. `window.__spark` exposes the engine, `stepFrames(n)`, stats, and in the showcase `window.__spark.game` for scripted probes. The desktop app's browser pane refuses pointer lock; feel checks need a real Chrome tab.
+- `pnpm probe` runs the gameplay suite: the showcase headless on a fixed clock and seed, driven through that probe surface, asserting mechanics end to end (`tools/probes/`). Add a probe for gameplay you add; assert budgets, not frame counts.
 - Commit messages explain the why; the lessons doc records anything the game taught the engine.
 
 ## Where to look

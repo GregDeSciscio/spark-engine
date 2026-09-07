@@ -23,6 +23,7 @@
     "visual": "node tools/capture/visual.mjs",
     "thumbnails": "node tools/capture/thumbnails.mjs",
     "perf": "node tools/benchmarks/perf.mjs",
+    "probe": "node tools/probes/probe.mjs",
     "assets": "node tools/asset-pipeline/pipeline.mjs",
     "level:street": "node tools/level-authoring/build.mjs",
     "props:fetch": "node tools/asset-pipeline/fetch-polyhaven.mjs --kit=street",

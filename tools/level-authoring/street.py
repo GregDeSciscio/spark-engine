@@ -433,7 +433,10 @@ def build(level: Level):
         'Rifleman 1': [(5, 0, -4), (-2, 0, -12), (-4, 0, 6)],
         'Rifleman 2': [(4, 0, -24), (-5, 0, -34)],
         'Rifleman 3': [(0, 0, -52), (6, 0, -42), (-6, 0, -44)],
-        'Rifleman 4': [(6, 0, 20), (-3, 0, 14), (5, 0, 8)],
+        # Kept off the insert: a route that reaches z=20 puts a rifleman 14 m
+        # from the spawn, which is inside his sight cone before the player has
+        # moved. The mission opens quiet or it is not a stealth mission.
+        'Rifleman 4': [(7, 0, 12), (-4, 0, 6), (6, 0, 2)],
         'Rifleman 5': [(-6, 0, -18), (6, 0, -14), (-2, 0, -6)],
         'Rifleman 6': [(-5, 0, -62), (5, 0, -64), (2, 0, -56)],
         'Rifleman 7': [(-6, 0, -28), (6, 0, -36), (-4, 0, -40)],

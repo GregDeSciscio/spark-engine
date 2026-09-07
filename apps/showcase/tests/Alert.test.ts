@@ -175,6 +175,22 @@ describe('AlertDirector', () => {
     expect(h.deployed.length).toBe(sent * 2);
   });
 
+  it('stands down the wave a tier above it when the sector calms', () => {
+    // Nothing can deploy while the level is at its hostile cap, so the queue
+    // is still full when the sector settles: the lockdown points must stand
+    // down with the lockdown, or a calmed street keeps receiving its wave.
+    const h = harness();
+    h.run(0.5, { contacts: 2, live: ALERT.maxLiveHostiles });
+    expect(h.director.tier).toBe('lockdown');
+    expect(h.director.status().pending).toBe(POINTS.length);
+    h.run(ALERT.settleAfter + 1, { contacts: 0, searching: 0, live: ALERT.maxLiveHostiles });
+    expect(h.director.tier).toBe('alerted');
+    expect(h.director.status().pending).toBe(POINTS.filter((p) => p.wave === 'alerted').length);
+    h.run(ALERT.settleAfter + 1, { contacts: 0, searching: 0, live: ALERT.maxLiveHostiles });
+    expect(h.director.tier).toBe('quiet');
+    expect(h.director.status().pending).toBe(0);
+  });
+
   it('reports what it has left to send', () => {
     const h = harness();
     h.run(0.1, { contacts: 1 });

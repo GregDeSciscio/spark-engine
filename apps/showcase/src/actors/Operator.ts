@@ -161,6 +161,12 @@ export class Operator {
   reloading = false;
   health = OPERATOR_MAX_HEALTH;
   dead = false;
+  /**
+   * Rounds pass through. A test seam for the probe suite (`tools/probes`): a
+   * probe about objective volumes and checkpoints should not also have to win
+   * a firefight to reach the marker. Never set by the game.
+   */
+  invulnerable = false;
   /** 0..1 how lit the operator is this tick, from the lighting query. Written by the scene. */
   lit = 1;
   /** Set when damage lands this tick, cleared by whoever reads it (the HUD flash). */
@@ -294,7 +300,7 @@ export class Operator {
 
   /** Damage from an enemy. Returns true when this killed the operator. */
   takeDamage(damage: number, zone: HitZone, now: number): boolean {
-    if (this.dead) return false;
+    if (this.dead || this.invulnerable) return false;
     this.health = Math.max(0, this.health - damage);
     this.lastHitAt = now;
     if (this.health === 0) {

@@ -32,6 +32,29 @@ function slug(s) {
     .replace(/^-|-$/g, '');
 }
 
+/**
+ * One vite server per app, started on first use. The benchmark app takes a
+ * `scene` parameter; the showcase boots its one mission and ignores it, which
+ * is how the game itself gets a perf baseline alongside the engine's scenes.
+ */
+function serverPool() {
+  const servers = new Map();
+  return {
+    async urlFor(app) {
+      let entryServer = servers.get(app);
+      if (!entryServer) {
+        entryServer = await startServer(0, app);
+        servers.set(app, entryServer);
+      }
+      return entryServer.url;
+    },
+    async closeAll() {
+      for (const s of servers.values()) await s.server.close();
+      servers.clear();
+    },
+  };
+}
+
 async function runScene(browser, baseUrl, entry, seconds) {
   const context = await browser.newContext({ viewport: { width: entry.width, height: entry.height }, deviceScaleFactor: 1 });
   const page = await context.newPage();
@@ -103,7 +126,7 @@ async function main() {
   const manifest = JSON.parse(await readFile(path.join(perfDir, 'manifest.json'), 'utf8'));
   await mkdir(baselineDir, { recursive: true });
 
-  const { server, url } = await startServer();
+  const pool = serverPool();
   const browser = await launchBrowser(false);
   const results = {};
   let adapterDescription = 'unknown-gpu';
@@ -112,6 +135,7 @@ async function main() {
       const name = `${entry.scene}-${entry.backend}-${entry.preset}`;
       if (filter && !name.includes(filter)) continue;
       const full = { width: manifest.defaults.width, height: manifest.defaults.height, ...entry };
+      const url = await pool.urlFor(entry.app ?? 'benchmark');
       const r = await runScene(browser, url, full, seconds);
       if (r.bootError) {
         console.log(`${name}: BOOT ERROR ${r.bootError}`);
@@ -127,14 +151,19 @@ async function main() {
     }
   } finally {
     await browser.close();
-    await server.close();
+    await pool.closeAll();
   }
 
   const machineId = slug(`${os.hostname()}-${os.platform()}-${adapterDescription}`);
   const baselinePath = path.join(baselineDir, `${machineId}.json`);
   if (record || !existsSync(baselinePath)) {
-    await writeFile(baselinePath, JSON.stringify({ machineId, recordedAt: new Date().toISOString(), cpu: os.cpus()[0]?.model, results }, null, 2));
-    console.log(`\nbaseline ${record ? 'recorded' : 'created'}: ${path.relative(repoRoot, baselinePath)}`);
+    // Merge, so `--record --filter=<one>` adds or refreshes that entry instead
+    // of throwing away every entry this run did not measure.
+    const existing = existsSync(baselinePath) ? JSON.parse(await readFile(baselinePath, 'utf8')).results ?? {} : {};
+    const merged = { ...existing, ...results };
+    await writeFile(baselinePath, JSON.stringify({ machineId, recordedAt: new Date().toISOString(), cpu: os.cpus()[0]?.model, results: merged }, null, 2));
+    const touched = Object.keys(results);
+    console.log(`\nbaseline ${record ? 'recorded' : 'created'}: ${path.relative(repoRoot, baselinePath)} (${touched.length} entr${touched.length === 1 ? 'y' : 'ies'}: ${touched.join(', ')})`);
     process.exit(0);
   }
   const baseline = JSON.parse(await readFile(baselinePath, 'utf8'));

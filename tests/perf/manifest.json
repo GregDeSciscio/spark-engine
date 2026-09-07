@@ -43,6 +43,12 @@
       "scene": "lights",
       "backend": "webgpu",
       "preset": "high"
+    },
+    {
+      "app": "showcase",
+      "scene": "mission",
+      "backend": "webgpu",
+      "preset": "high"
     }
   ]
 }

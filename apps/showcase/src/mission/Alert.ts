@@ -141,7 +141,9 @@ export class AlertDirector {
       this.lastContactAt = now;
       this.casualtiesAtTier = sample.casualties;
       this.nextHuntAt = this.tier === 'quiet' ? Infinity : now + ALERT.huntEvery;
-      if (this.tier === 'quiet') this.queue = [];
+      // A wave belongs to the tier that called it, so calming down stands the
+      // rest of it down: a street that has gone quiet stops receiving hostiles.
+      this.queue = this.queue.filter((p) => RANK[p.wave] <= RANK[this.tier]);
       this.deps.onTier(this.tier, previous);
     }
 
