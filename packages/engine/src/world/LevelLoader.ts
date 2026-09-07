@@ -248,6 +248,32 @@ export function propsWorthInstancing(
   return worth;
 }
 
+/**
+ * Clear `castShadow` on meshes whose world-space bounding radius is under
+ * `minRadius`. Returns how many were cleared. Exported for the tests: the rule
+ * is size in the world, not size in the model, so a small mesh scaled up keeps
+ * its shadow and a large one scaled down loses it.
+ */
+export function dropTinyShadowCasters(root: THREE.Object3D, minRadius: number): number {
+  if (minRadius <= 0) return 0;
+  let dropped = 0;
+  const scale = new THREE.Vector3();
+  root.updateMatrixWorld(true);
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.castShadow) return;
+    const geometry = mesh.geometry;
+    if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+    const radius = geometry.boundingSphere?.radius ?? 0;
+    mesh.matrixWorld.decompose(_v, _quaternion, scale);
+    const world = radius * Math.max(Math.abs(scale.x), Math.abs(scale.y), Math.abs(scale.z));
+    if (world >= minRadius) return;
+    mesh.castShadow = false;
+    dropped++;
+  });
+  return dropped;
+}
+
 export interface LevelLoaderOptions {
   entities: EntityWorld;
   assets: AssetManager;
@@ -283,6 +309,14 @@ export interface LevelLoaderOptions {
   instanced?: InstancedRenderSync | undefined;
   /** Placements of one prop needed before it is worth a batch. Default 4. */
   instanceThreshold?: number | undefined;
+  /**
+   * Stop meshes smaller than this (world-space bounding radius, in metres)
+   * from casting shadows. A bolt, a cable clip or a door handle costs a draw
+   * in the shadow pass for a shadow nobody can resolve; on the showcase's
+   * street a third of the casters are under 0.35 m. Zero (the default) leaves
+   * every mesh casting.
+   */
+  shadowMinRadius?: number | undefined;
 }
 
 export interface LoadedLevel extends Disposable {
@@ -403,6 +437,11 @@ export class LevelLoader {
     if (physics) physics.layers.define('world', 'trigger');
 
     const pendingProps: Promise<void>[] = [];
+    // Prop objects live under the scene, not the level root, so they are
+    // collected here for the shadow-size pass after the load. Declared before
+    // the descriptor pass: a prop model that is already cached resolves its
+    // promise inside that pass, and the callback pushes here.
+    const propObjects: THREE.Object3D[] = [];
     for (const descriptor of descriptors) {
       const object = objects[nodes.indexOf(descriptor.node)];
       switch (descriptor.kind) {
@@ -436,6 +475,7 @@ export class LevelLoader {
                 if (!entities.exists(eid)) return;
                 const instance = asset.instantiate({ castShadow: this.options.castShadow, receiveShadow: this.options.receiveShadow, name: `prop:${descriptor.prop}` });
                 scene.add(instance);
+                propObjects.push(instance);
                 renderSync.attach(entities, eid, instance);
               }),
             );
@@ -543,6 +583,7 @@ export class LevelLoader {
         for (const eid of placements) {
           const instance = asset.instantiate({ castShadow: this.options.castShadow, receiveShadow: this.options.receiveShadow, name: `prop:${propUrl}` });
           scene.add(instance);
+          propObjects.push(instance);
           renderSync.attach(entities, eid, instance);
         }
         continue;
@@ -563,6 +604,16 @@ export class LevelLoader {
       prototypes.push(prototype);
       this.log.debug(`prop ${propUrl}: ${placements.length} placements → ${parts.length} instanced draw${parts.length === 1 ? '' : 's'}`);
     }
+    // Small meshes stop casting: the level's own geometry, the props placed as
+    // objects, and the instanced batches (one decision covers every instance).
+    const minRadius = this.options.shadowMinRadius ?? 0;
+    if (minRadius > 0) {
+      let dropped = dropTinyShadowCasters(root, minRadius);
+      for (const object of propObjects) dropped += dropTinyShadowCasters(object, minRadius);
+      for (const batch of batches) dropped += dropTinyShadowCasters(batch.mesh, minRadius);
+      if (dropped > 0) this.log.info(`level: ${dropped} meshes under ${minRadius} m no longer cast shadows`);
+    }
+
     if (batches.length > 0) {
       // Fill the matrices now so the first frame is right even if the system
       // has not run yet.

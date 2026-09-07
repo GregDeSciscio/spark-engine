@@ -193,7 +193,7 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
 
   const navUrl = url.replace(/\.glb$/i, '.navmesh.bin');
   const [level, navBytes] = await Promise.all([
-    new LevelLoader({ entities, assets, renderSync, scene, physics, props: PROP_URLS, teams: ['player'], castShadow: true, receiveShadow: true, instanced, instanceThreshold: 2 }).load(url),
+    new LevelLoader({ entities, assets, renderSync, scene, physics, props: PROP_URLS, teams: ['player'], castShadow: true, receiveShadow: true, instanced, instanceThreshold: 2, shadowMinRadius: 0.35 }).load(url),
     fetch(navUrl).then(async (r) => {
       if (!r.ok) throw new Error(`${navUrl}: ${r.status}`);
       return new Uint8Array(await r.arrayBuffer());

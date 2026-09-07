@@ -111,3 +111,20 @@ The first read of those mesh names overcounted: "27 street-lamp posts" was nine 
 Triangles go up because an `InstancedMesh` is not frustum-culled per instance: every batched prop in the level is submitted every frame. That is the right trade while the frame is draw-bound and the GPU is at 3 ms of a 16 ms budget, and it would stop being right on a level that instanced thousands of pieces spread over kilometres.
 
 Alternating A/B, two rounds: cpu 17.71 and 18.18 ms with, against 18.12 and 20.15 ms without — consistently ahead, by somewhere between 0.4 and 1.2 ms depending on how much of the control's drift you attribute to the machine. Smaller than the shadow box's 2.5 ms, and worth having: draw count is what binds this frame, and a prop-dense level would gain more.
+
+### Shadow casters below a size (same day)
+
+A third change, cheaper than either: `LevelLoader` takes a `shadowMinRadius`, and a mesh whose world-space bounding radius is under it stops casting. A bolt, a cable clip or a door handle costs a draw in the shadow pass for a shadow that never resolves — on the street, at 0.35 m, eighty-four of the visible casters qualified.
+
+| | draws | triangles |
+| --- | --- | --- |
+| instanced props only | 752 | 1.36 M |
+| plus `shadowMinRadius: 0.35` | 719 | 1.23 M |
+
+Fewer draws saved than eighty-four suggests, because the shadow pass draws what is in the shadow box rather than what is on screen, and because one decision covers all of a batch's instances. Free either way: the capture is pixel-identical.
+
+The rule reads size *in the world*, not in the model, since a level places the same kit piece at wildly different scales. `dropTinyShadowCasters` and its tests live in the engine.
+
+### Where that leaves the frame
+
+1053 draw calls at the start of the day and 719 at the end, for one viewpoint of one mission, with no visible difference in any capture along the way. What remains is 296 visible meshes, the post stack, and 96 skinned meshes across sixteen characters — six sub-meshes each but only four distinct materials, so merging the pairs that share one is worth perhaps sixty draws. That is a character-pipeline change rather than a runtime one, and it is the next thing to try if this frame needs to get cheaper.
