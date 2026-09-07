@@ -60,30 +60,68 @@ export interface VfxSpot {
   readonly direction: THREE.Vector3;
 }
 
+/**
+ * Half-width of the moon's shadow box, in metres. The street is 110 m long and
+ * the old box covered all of it, which put 351 casters in the shadow pass —
+ * a third of the frame's draw calls — to shadow buildings the player cannot
+ * make out through the fog. A box that follows the operator covers what is
+ * actually on screen, and spends the same shadow map on a quarter of the area,
+ * so near shadows come out sharper as well as cheaper.
+ */
+const SHADOW_HALF = 40;
+/** The moon's offset from whatever it is lighting. Constant, so its direction never changes. */
+const MOON_OFFSET = new THREE.Vector3(-18, 40, -10);
+const ORIGIN = new THREE.Vector3(0, 0, 0);
+const WORLD_UP = new THREE.Vector3(0, 1, 0);
+
 /** Night sky, moon, fog: the scene-level look every level shares until levels carry their own lighting rigs. */
-export function applyAtmosphere(scene: THREE.Scene, quality: QualitySettings): { readonly moon: THREE.DirectionalLight; dispose(): void } {
+export function applyAtmosphere(
+  scene: THREE.Scene,
+  quality: QualitySettings,
+): { readonly moon: THREE.DirectionalLight; follow(x: number, z: number): void; dispose(): void } {
   scene.background = new THREE.Color(0x05060a);
   // Fog reaches full opacity around 120 m: the level's own sightline limit (ADR-004).
   const fog = createHeightFog({ color: 0x0a0e1c, density: 0.014, groundY: 0, falloff: 5, groundBoost: 1.0 });
   scene.fogNode = fog.node;
 
   const moon = new THREE.DirectionalLight(0x6f88d0, 2.2);
-  moon.position.set(-18, 40, -10);
-  moon.target.position.set(0, 0, -20);
+  moon.position.copy(MOON_OFFSET);
+  moon.target.position.set(0, 0, 0);
   moon.castShadow = quality.shadows;
   moon.shadow.mapSize.set(quality.shadowMapSize, quality.shadowMapSize);
-  moon.shadow.camera.near = 5;
+  moon.shadow.camera.near = 1;
   moon.shadow.camera.far = 120;
-  moon.shadow.camera.left = -40;
-  moon.shadow.camera.right = 40;
-  moon.shadow.camera.top = 60;
-  moon.shadow.camera.bottom = -60;
+  moon.shadow.camera.left = -SHADOW_HALF;
+  moon.shadow.camera.right = SHADOW_HALF;
+  moon.shadow.camera.top = SHADOW_HALF;
+  moon.shadow.camera.bottom = -SHADOW_HALF;
   moon.shadow.bias = -0.0006;
   moon.shadow.normalBias = 0.04;
   const hemi = new THREE.HemisphereLight(0x2a3a66, 0x0e0b08, 1.4);
   scene.add(moon, moon.target, hemi);
+
+  // Light-space basis, for snapping the box to shadow-map texels. Without it a
+  // box that follows the player crawls: every sub-texel move of the box
+  // re-rasterises every shadow edge slightly differently and the whole scene
+  // shimmers. The offset is constant, so the basis is computed once.
+  const toWorld = new THREE.Matrix4().lookAt(MOON_OFFSET, ORIGIN, WORLD_UP);
+  const toLight = toWorld.clone().transpose();
+  const texel = (SHADOW_HALF * 2) / Math.max(1, quality.shadowMapSize);
+  const snapped = new THREE.Vector3();
+
   return {
     moon,
+    /** Centre the shadow box on a point, snapped to the shadow map's own grid. */
+    follow(x: number, z: number): void {
+      snapped.set(x, 0, z).applyMatrix4(toLight);
+      snapped.x = Math.round(snapped.x / texel) * texel;
+      snapped.y = Math.round(snapped.y / texel) * texel;
+      snapped.applyMatrix4(toWorld);
+      moon.target.position.copy(snapped);
+      moon.position.copy(snapped).add(MOON_OFFSET);
+      moon.target.updateMatrixWorld();
+      moon.updateMatrixWorld();
+    },
     dispose() {
       scene.remove(moon, moon.target, hemi);
       moon.dispose();

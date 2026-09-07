@@ -72,3 +72,28 @@ Measured 2026-09-04 with `tools/capture/out/probe-lights.mjs` (same machine and 
 Going from 13 to 256 lights costs **0.5 ms of GPU at 1080p** (0.15 ms at 720p) and 0.4 ms of CPU (the per-frame view-z sort and texture upload of 256 lights), with the lit shaders unchanged (4 lit programs, 33.5 KB fragment WGSL at most, whatever N is; pipelines 32 / programs 49 at every N). The frame stays rAF-bound at 165 fps at both sizes: the **256-light gate (60 fps or better at 1280×720) passes** with a wide margin, and 1080p holds it too. The alley (63 lights, 60 clustered) at 1080p went from 5.9 ms to 4.0 ms of GPU against its 13-light unrolled version, see the cold-start doc.
 
 Where the cost is: the fragment loop is bounded by the lights in the fragment's cluster (two to four in these scenes), so it scales with light density on screen rather than light count; the compute pass is one thread per cluster (48 960 on high) looping over the lights whose view-z range overlaps the cluster's slice. The WebGL2 tier runs none of this (budget capped at 8 unrolled local lights).
+
+## Where the mission's draw calls go (added 2026-09-07)
+
+Measured on the showcase mission at the insert viewpoint, 1280×720, preset high, seed 7, WebGPU, by walking the scene graph in the page and reading `window.__spark.snapshot()`.
+
+| bucket | count | note |
+| --- | --- | --- |
+| meshes in the graph | 606 | |
+| drawn | 375 | all single-material, so 375 meshes = 375 main-pass draws |
+| `COL_*` collision twins | 79 | in the graph, never visible: free |
+| pooled decals | 152 | idle pool, invisible until a round lands: free |
+| skinned | 96 | 16 characters × 6 submeshes, in the main pass and again in the shadow pass |
+| shadow casters | 351 | |
+| **total draw calls** | **1053** | main + shadow + the post stack (~325: ao, traa, ssr, volumetrics, bloom, grade) |
+
+The frame is bound by draw submission, not by the GPU: `renderMs` 12–13 against `gpuMs` around 3. Fewer, bigger draws is the axis that matters here; heavier shaders are not the problem.
+
+Two levers were measured against that:
+
+| change | draws | triangles | note |
+| --- | --- | --- | --- |
+| moon shadows off entirely | 729 | 953 k | −322 draws, render 12.0 → 9.4 ms. Almost invisible in a neon-lit street — but it flattens the long shadows the buildings cast across the road, which is most of the depth in the shot |
+| shadow box follows the operator, 80×80 instead of a static 80×120 | 896 | 1.16 M | −157 draws, about −2.5 ms of CPU per frame (alternating A/B, four runs), no visible difference at the reference viewpoint. **Shipped** |
+
+The biggest lever still untaken is **instancing the repeated props**. The street places roughly 170 meshes drawn from about a dozen distinct kit pieces — 33 and 32 of two cube variants, 27 street-lamp posts, 22 crates, 16 of another — each one its own mesh, so each one is a draw in the main pass and another in the shadow pass. Instancing them would take roughly a third of the frame's draw calls out. That is a `LevelLoader` change rather than a level change: the engine already has `InstancedRenderSync` and the streaming benchmark already uses it.

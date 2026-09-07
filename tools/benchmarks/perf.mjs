@@ -268,9 +268,9 @@ async function main() {
       for (const p of problems) console.log(`  ${p}`);
       console.log(
         `\n${new Set(problems.map((p) => p.slice(0, p.indexOf('.')))).size} of ${compared.length} entries moved together. A code change makes one thing slower.\n` +
-          'Every frameMs landing on the same number means the ceiling is outside the scene: something else is holding the\n' +
-          'GPU, or presentation is being paced. Close other GPU work (a preview tab rendering the game counts), re-run, and\n' +
-          'only re-record the baseline once you are sure the machine, not the engine, changed.',
+          'Every frameMs landing on the same number means the ceiling is outside the scene — headless Chromium paces rAF\n' +
+          'at about 126 Hz, so a baseline recorded above that is simply not comparable. Close other GPU work (a preview tab\n' +
+          'rendering the game counts), re-run, and only re-record once you are sure the machine, not the engine, changed.',
       );
       process.exit(1);
     }

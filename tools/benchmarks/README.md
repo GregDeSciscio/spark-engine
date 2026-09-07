@@ -39,9 +39,13 @@ Each entry is `{ scene, backend, preset }`, plus an optional `app` (default `ben
 
 A code change makes one thing slower. A machine change makes everything slower together — a display switching refresh rate, another process on the GPU, a laptop on battery, a hot room. When three quarters of the compared entries regress in the same run, the suite says so in as many words instead of printing a wall of findings that share one cause, and tells you to check the machine before touching the baseline.
 
-The tell is `frameMs`. Every benchmark scene finishes its work in 2–6 ms and then waits to present, so `frameMs` measures whatever paces presentation — the compositor, the driver, another process holding the GPU — and not the engine. When every scene in a run lands on the same number (7.9 ms here, against a baseline of 6.1 ms), that number is a ceiling outside the scene: they cannot all have got slower by the same amount for the same reason. Do not assume it is the monitor without checking; a 164 Hz display was still handing out 127 fps to every scene while something else had the GPU.
+The tell is `frameMs`. Every benchmark scene finishes its work in 2–6 ms and then waits to present, so `frameMs` measures whatever paces presentation, not the engine. **Headless Chromium paces rAF at about 126 Hz** (`docs/rendering/effect-costs.md` records the same ceiling), which is why every scene in a run lands on the same 7.9 ms. A baseline holding 6.1 ms across the board was recorded under a pacing that no longer applies — it is not evidence that the engine got slower, and re-recording is the fix for it, not investigation.
 
-Because of that, `frameMs` is only reported when `cpuMs`, `renderMs` or `gpuMs` moved as well. The showcase mission is the one entry doing enough work to be measuring itself rather than the ceiling.
+Because of that, `frameMs` is only reported when `cpuMs`, `renderMs` or `gpuMs` moved as well. The showcase mission, at 14 ms of CPU, is the one entry doing enough work to be measuring itself rather than the ceiling.
+
+## What is worth trusting on a busy machine
+
+`drawCalls` and `triangles` are exact — trust them completely. `cpuMs`, `renderMs` and `gpuMs` are medians of a few seconds and move with whatever else the machine is doing: over one session the showcase mission measured 66, 64, 71 and 57 fps on identical code. If a change matters at the couple-of-millisecond level, alternate A/B/A/B runs rather than believing one reading, and prefer a deterministic counter as the headline number when you have one.
 
 ## Reading the numbers
 

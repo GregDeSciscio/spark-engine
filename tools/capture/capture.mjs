@@ -174,13 +174,17 @@ async function main() {
   const outDir = path.resolve(repoRoot, String(args.out ?? 'tools/capture/out'));
   const headed = Boolean(args.headed);
   const allowErrors = Boolean(args['allow-errors']);
+  // `--app=showcase` captures the game rather than a benchmark scene; the
+  // showcase boots its one mission and ignores `--scene`.
+  const app = String(args.app ?? 'benchmark');
+  const label = args.label ? String(args.label) : undefined;
 
-  const { server, url } = await startServer();
+  const { server, url } = await startServer(0, app);
   const browser = await launchBrowser(headed);
   let failed = false;
   try {
     for (const backend of backends) {
-      const result = await captureOne(browser, url, { scene, backend, preset, frames, width, height, seed, outDir });
+      const result = await captureOne(browser, url, { scene, backend, preset, frames, width, height, seed, outDir, label });
       console.log(summarize(result));
       for (const e of result.pageErrors) console.log(`  pageerror: ${e}`);
       for (const c of result.console) console.log(`  console.${c.type}: ${c.text}`);

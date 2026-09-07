@@ -543,6 +543,8 @@ export const missionScene: SceneDefinition = {
       lateUpdate(dt) {
         syncCamera();
         camera.update(dt, occluder);
+        // The shadow box travels with the operator; everything past it is fog anyway.
+        sky.follow(feet.x, feet.z);
         weather.update(feet);
         sfx.update(dt, camera.camera.getWorldPosition(listenerPos));
       },
