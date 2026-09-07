@@ -16,6 +16,12 @@ Each scene runs twice by default and the better pass counts, metric by metric. C
 
 This matters more than it sounds. Two consecutive runs of the old single-pass suite on a busy machine flagged completely different scenes — bootstrap, entities and physics the first time, streaming and lights the second — while nothing in the engine had changed at all. A suite that cries wolf gets ignored, and then it is worth nothing when it is right.
 
+## The current baseline's provenance (2026-09-07)
+
+`desktop-pn02eil-win32-nvidia-lovelace.json` was recorded on a quiet machine, and the showcase mission's row predates a day of draw-call work (1053 draws then, 719 now). Comparing against it today reads as a regression on `cpuMs` for **every** entry, including scenes nothing has touched — bootstrap is +23% on CPU while its `gpuMs` and its 165 fps are back at baseline exactly. That is a machine with forty-six Chrome processes and seven gigabytes resident, not an engine that got slower.
+
+Re-record it on an idle machine before trusting an absolute comparison. Until then the trustworthy numbers are the deterministic counters and same-session A/B runs.
+
 ## Baselines are per machine
 
 Results land in `tests/perf/baselines/<hostname>-<platform>-<gpu>.json`, so two machines never fight over one file, and a run on an unknown machine records rather than fails. `--record` **merges**: recording one entry keeps every other entry that run did not measure.
