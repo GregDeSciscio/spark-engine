@@ -971,7 +971,9 @@ export class Enemy implements Damageable {
     if (this.animated) animation.detach(this.eid);
     for (const m of this.tinted) m.dispose();
     this.rifle.dispose();
-    if (!this.dead) {
+    // A dead one lost its body to the ragdoll; a dormant one never had it in
+    // the world. Only a live, deployed hostile has anything to release here.
+    if (!this.dead && !this.dormant) {
       this.controller.detach(this.eid);
       physics.removeBody(this.eid);
     }

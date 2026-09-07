@@ -39,4 +39,7 @@ A `SceneDefinition` is `{ name, create(ctx) }`; `create` returns a `SceneInstanc
 | Do a specific thing (level, character, weapon, sound) | `docs/guide/recipes.md` (each points into the showcase) |
 | Know why a decision was made | `docs/decisions/ADR-*.md` |
 | Avoid a known pitfall | `docs/architecture/lessons-from-the-showcase.md` |
+| Prove a mechanic still works | `pnpm probe`, `tools/probes/README.md` |
+| See whether it got slower | `pnpm perf`, `tools/benchmarks/README.md` |
+| Look at what it draws | `pnpm capture`, `pnpm visual`, `tools/capture/README.md` |
 | Check the machine | `pnpm doctor` |
