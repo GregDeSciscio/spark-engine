@@ -1,6 +1,6 @@
 {
   "machineId": "desktop-pn02eil-win32-nvidia-lovelace",
-  "recordedAt": "2026-09-04T21:11:38.613Z",
+  "recordedAt": "2026-09-07T15:53:36.723Z",
   "cpu": "AMD Ryzen 7 3700X 8-Core Processor             ",
   "results": {
     "bootstrap-webgpu-high": {
@@ -74,6 +74,15 @@
       "gpuMs": 1.3629440000000002,
       "drawCalls": 36,
       "triangles": 312727
+    },
+    "mission-webgpu-high": {
+      "fps": 65.5594405602945,
+      "frameMs": 15.25333333313465,
+      "cpuMs": 14.338333333283662,
+      "renderMs": 12.896666666120291,
+      "gpuMs": 3.261439999999999,
+      "drawCalls": 1053,
+      "triangles": 1346352
     }
   }
 }
