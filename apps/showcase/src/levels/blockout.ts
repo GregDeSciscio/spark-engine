@@ -142,10 +142,16 @@ export function buildBlockout(scene: THREE.Scene, entities: EntityWorld, physics
     { position: new THREE.Vector3(9.5, 0.15, 16), yaw: 0 },
   ];
   // Three riflemen: one close, two deeper in, each on a short loop.
+  // The same garrison the street authors, so the two levels play the same.
   const patrols = [
     { name: 'Rifleman 1', route: [new THREE.Vector3(5, 0, -4), new THREE.Vector3(-2, 0, -12), new THREE.Vector3(-4, 0, 6)] },
     { name: 'Rifleman 2', route: [new THREE.Vector3(4, 0, -24), new THREE.Vector3(-5, 0, -34)] },
     { name: 'Rifleman 3', route: [new THREE.Vector3(0, 0, -52), new THREE.Vector3(6, 0, -42), new THREE.Vector3(-6, 0, -44)] },
+    { name: 'Rifleman 4', route: [new THREE.Vector3(6, 0, 20), new THREE.Vector3(-3, 0, 14), new THREE.Vector3(5, 0, 8)] },
+    { name: 'Rifleman 5', route: [new THREE.Vector3(-6, 0, -18), new THREE.Vector3(6, 0, -14), new THREE.Vector3(-2, 0, -6)] },
+    { name: 'Rifleman 6', route: [new THREE.Vector3(-5, 0, -62), new THREE.Vector3(5, 0, -64), new THREE.Vector3(2, 0, -56)] },
+    { name: 'Rifleman 7', route: [new THREE.Vector3(-6, 0, -28), new THREE.Vector3(6, 0, -36), new THREE.Vector3(-4, 0, -40)] },
+    { name: 'Rifleman 8', route: [new THREE.Vector3(7, 0, -2), new THREE.Vector3(7, 0, -20), new THREE.Vector3(2, 0, -30)] },
   ];
   // Ingress points for the alert director; the street authors the same set as
   // `spark.type=reinforce` empties (see `tools/level-authoring/street.py`).

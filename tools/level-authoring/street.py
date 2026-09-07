@@ -426,10 +426,18 @@ def build(level: Level):
             {'type': 'objective', 'id': oid, 'kind': kind, 'label': label, 'radius': radius, 'hold': hold, 'order': order},
             display='CIRCLE', size=radius,
         )
+    # The garrison: eight riflemen on loops that overlap enough to cover every
+    # lane, spread from the insert end to the depot (Milestone 10 wants 8 to 12
+    # with routes). Reinforcements land on top of these, capped at 12 live.
     patrols = {
         'Rifleman 1': [(5, 0, -4), (-2, 0, -12), (-4, 0, 6)],
         'Rifleman 2': [(4, 0, -24), (-5, 0, -34)],
         'Rifleman 3': [(0, 0, -52), (6, 0, -42), (-6, 0, -44)],
+        'Rifleman 4': [(6, 0, 20), (-3, 0, 14), (5, 0, 8)],
+        'Rifleman 5': [(-6, 0, -18), (6, 0, -14), (-2, 0, -6)],
+        'Rifleman 6': [(-5, 0, -62), (5, 0, -64), (2, 0, -56)],
+        'Rifleman 7': [(-6, 0, -28), (6, 0, -36), (-4, 0, -40)],
+        'Rifleman 8': [(7, 0, -2), (7, 0, -20), (2, 0, -30)],
     }
     for route, points in patrols.items():
         for index, (x, y, z) in enumerate(points):
