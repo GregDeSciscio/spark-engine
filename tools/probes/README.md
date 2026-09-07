@@ -46,6 +46,10 @@ The rule: when a probe would fail for a reason it is not about, give it a seam r
 
 Append to `PROBES` in `probe.mjs`: a `name`, a one-line `describe`, and `run(p)`. The `p` handle gives you `step`, `run(seconds)`, `until`, `expect`, `stats`, `alert`, `objective`, `call` (any `window.__spark.game` method) and `key`. Anything a probe needs to see has to be on the game's probe surface — add it to the `qa` object in `apps/showcase/src/scenes/mission.ts` rather than reaching into the scene.
 
+## Editing while it runs
+
+You can. The vite server these tools start has file watching and HMR turned off (`startServer` in `tools/capture/capture.mjs`), because a save in the editor used to reload the page out from under a probe and fail it with "execution context was destroyed" — a confusing way to be told nothing was wrong. The trade is that a run always tests the files as they were when it started; there is no live reload to wait for.
+
 ## Cost
 
 Each probe boots its own page, which means its own shader warm-up: about thirty seconds a probe on this machine, most of it compiling pipelines. That is why the suite is a handful of probes covering mechanics rather than dozens covering cases.

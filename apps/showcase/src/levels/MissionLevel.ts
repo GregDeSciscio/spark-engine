@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import {
   DisposeBag,
+  InstancedRenderSync,
   LevelLoader,
   Navigation,
   SurfaceLibrary,
@@ -181,9 +182,18 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
   const { entities, physics, assets, renderSync, scene, logger, lighting } = deps;
   const bag = new DisposeBag();
 
+  // Repeated kit pieces become instanced batches instead of an object each:
+  // one draw per sub-mesh however many times the piece is placed, in the
+  // shadow pass as well as the main one. The street is not especially
+  // repetitive — nine lamp posts, six trash bags, a handful of barrels — so
+  // the threshold comes down to two, which is worth 142 draw calls here
+  // (docs/rendering/effect-costs.md has the measurement).
+  const instanced = new InstancedRenderSync(entities);
+  bag.add(entities.addSystem(instanced));
+
   const navUrl = url.replace(/\.glb$/i, '.navmesh.bin');
   const [level, navBytes] = await Promise.all([
-    new LevelLoader({ entities, assets, renderSync, scene, physics, props: PROP_URLS, teams: ['player'], castShadow: true, receiveShadow: true }).load(url),
+    new LevelLoader({ entities, assets, renderSync, scene, physics, props: PROP_URLS, teams: ['player'], castShadow: true, receiveShadow: true, instanced, instanceThreshold: 2 }).load(url),
     fetch(navUrl).then(async (r) => {
       if (!r.ok) throw new Error(`${navUrl}: ${r.status}`);
       return new Uint8Array(await r.arrayBuffer());

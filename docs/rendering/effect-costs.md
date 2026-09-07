@@ -96,4 +96,18 @@ Two levers were measured against that:
 | moon shadows off entirely | 729 | 953 k | −322 draws, render 12.0 → 9.4 ms. Almost invisible in a neon-lit street — but it flattens the long shadows the buildings cast across the road, which is most of the depth in the shot |
 | shadow box follows the operator, 80×80 instead of a static 80×120 | 896 | 1.16 M | −157 draws, about −2.5 ms of CPU per frame (alternating A/B, four runs), no visible difference at the reference viewpoint. **Shipped** |
 
-The biggest lever still untaken is **instancing the repeated props**. The street places roughly 170 meshes drawn from about a dozen distinct kit pieces — 33 and 32 of two cube variants, 27 street-lamp posts, 22 crates, 16 of another — each one its own mesh, so each one is a draw in the main pass and another in the shadow pass. Instancing them would take roughly a third of the frame's draw calls out. That is a `LevelLoader` change rather than a level change: the engine already has `InstancedRenderSync` and the streaming benchmark already uses it.
+### Instanced props (measured the same day)
+
+The first read of those mesh names overcounted: "27 street-lamp posts" was nine placements of a three-sub-mesh model, not twenty-seven lamps. The street is less repetitive than it looks — nine lamp posts, six trash bags, five barrels, four boxes — so instancing pays less here than the raw mesh histogram suggests.
+
+`LevelLoader` now takes an `instanced` (an `InstancedRenderSync`) and an `instanceThreshold`, and any prop placed at least that many times is drawn as one batch per sub-mesh, in the shadow pass as well as the main one. Props whose model is skinned or multi-material fall back to an object each.
+
+| threshold | draws | triangles |
+| --- | --- | --- |
+| off | 896 | 1.16 M |
+| 4 (the default) | 809 | 1.25 M |
+| 2 (what the showcase uses) | 754 | 1.36 M |
+
+Triangles go up because an `InstancedMesh` is not frustum-culled per instance: every batched prop in the level is submitted every frame. That is the right trade while the frame is draw-bound and the GPU is at 3 ms of a 16 ms budget, and it would stop being right on a level that instanced thousands of pieces spread over kilometres.
+
+Alternating A/B, two rounds: cpu 17.71 and 18.18 ms with, against 18.12 and 20.15 ms without — consistently ahead, by somewhere between 0.4 and 1.2 ms depending on how much of the control's drift you attribute to the machine. Smaller than the shadow box's 2.5 ms, and worth having: draw count is what binds this frame, and a prop-dense level would gain more.

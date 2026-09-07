@@ -45,7 +45,17 @@ export async function startServer(port = 0, app = 'benchmark') {
     root: path.join(repoRoot, 'apps', app),
     configFile: path.join(repoRoot, 'apps', app, 'vite.config.ts'),
     logLevel: 'error',
-    server: { port: port || 4900 + Math.floor(Math.random() * 100), strictPort: false, host: '127.0.0.1' },
+    server: {
+      port: port || 4900 + Math.floor(Math.random() * 100),
+      strictPort: false,
+      host: '127.0.0.1',
+      // No file watching and no HMR: these servers exist for one headless run,
+      // and a save in the editor while a run is in flight would reload the page
+      // out from under it. That happens — an edit mid-suite has taken out a
+      // probe with "execution context was destroyed" more than once.
+      hmr: false,
+      watch: null,
+    },
   });
   await server.listen();
   const url = server.resolvedUrls?.local[0];

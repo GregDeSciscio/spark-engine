@@ -5,6 +5,7 @@ import type { Disposable } from '../core/Disposable';
 import { Logger } from '../core/Logger';
 import { Renderable, Transform } from '../ecs/components/Transform';
 import type { Entity, EntityWorld } from '../ecs/EntityWorld';
+import type { InstancedBatch, InstancedRenderSync } from '../ecs/systems/InstancedRenderSync';
 import type { RenderSync } from '../ecs/systems/RenderSync';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
 import { SpawnPoint, TriggerVolume } from './components';
@@ -225,6 +226,28 @@ export interface LevelPlacement {
   scale?: number | undefined;
 }
 
+/**
+ * Which prop models a level repeats often enough to be worth an instanced
+ * batch. A placement cannot know how many siblings it has, so this counts the
+ * descriptors up front. Pure, so the rule is testable without a renderer.
+ */
+export function propsWorthInstancing(
+  descriptors: readonly LevelEntityDescriptor[],
+  library: Readonly<Record<string, string>> | undefined,
+  threshold = 4,
+): Set<string> {
+  const min = Math.max(2, threshold);
+  const counts = new Map<string, number>();
+  for (const d of descriptors) {
+    if (d.kind !== 'prop' || d.prop === null) continue;
+    const url = library?.[d.prop];
+    if (url) counts.set(url, (counts.get(url) ?? 0) + 1);
+  }
+  const worth = new Set<string>();
+  for (const [url, count] of counts) if (count >= min) worth.add(url);
+  return worth;
+}
+
 export interface LevelLoaderOptions {
   entities: EntityWorld;
   assets: AssetManager;
@@ -241,6 +264,25 @@ export interface LevelLoaderOptions {
   spawnMarker?: ((descriptor: Extract<LevelEntityDescriptor, { kind: 'spawn' }>) => THREE.Object3D | null) | undefined;
   castShadow?: boolean | undefined;
   receiveShadow?: boolean | undefined;
+  /**
+   * Draw repeated props as instances instead of one object each. Pass the
+   * scene's `InstancedRenderSync`; a prop placed at least `instanceThreshold`
+   * times becomes one draw call per sub-mesh however many times it appears, in
+   * the shadow pass as well as the main one. Nine placements of a lamp post
+   * with three sub-meshes cost fifty-four draws without this and six with it.
+   *
+   * The trade is per-instance frustum culling: an `InstancedMesh` submits every
+   * instance every frame, so a batch spread over a large level draws geometry
+   * that is nowhere near the camera. Worth it while the frame is bound by draw
+   * submission (see `docs/rendering/effect-costs.md`), not otherwise.
+   *
+   * Props whose model is not plain single-material meshes (skinned, or several
+   * materials on one mesh) fall back to an object each, so turning this on is
+   * always safe.
+   */
+  instanced?: InstancedRenderSync | undefined;
+  /** Placements of one prop needed before it is worth a batch. Default 4. */
+  instanceThreshold?: number | undefined;
 }
 
 export interface LoadedLevel extends Disposable {
@@ -328,6 +370,13 @@ export class LevelLoader {
     const twins = new Map<Entity, THREE.Mesh>();
     const teamOf = new Map<Entity, string>();
 
+    // Which props repeat often enough to instance. Counted before the pass,
+    // because a placement cannot know how many siblings it has.
+    const instanced = this.options.instanced;
+    const batchUrls = instanced ? propsWorthInstancing(descriptors, this.options.props, this.options.instanceThreshold) : new Set<string>();
+    const toBatch = new Map<string, Entity[]>();
+    for (const propUrl of batchUrls) toBatch.set(propUrl, []);
+
     const rootEntity = entities.create([
       Transform,
       { x: root.position.x, y: root.position.y, z: root.position.z, qx: root.quaternion.x, qy: root.quaternion.y, qz: root.quaternion.z, qw: root.quaternion.w, sx: root.scale.x, sy: root.scale.y, sz: root.scale.z },
@@ -374,7 +423,13 @@ export class LevelLoader {
           created.push(eid);
           props.push(eid);
           const libraryUrl = descriptor.prop !== null ? this.options.props?.[descriptor.prop] : undefined;
-          if (libraryUrl) {
+          if (libraryUrl && batchUrls.has(libraryUrl)) {
+            // Repeated enough to be worth instancing: the placements are
+            // collected and turned into batches once, after the pass. The
+            // reference is taken there too — one load for the batch, not one
+            // per placement, so acquires and releases stay matched.
+            (toBatch.get(libraryUrl) as Entity[]).push(eid);
+          } else if (libraryUrl) {
             held.push(libraryUrl);
             pendingProps.push(
               assets.loadModel(libraryUrl).then((asset) => {
@@ -462,6 +517,59 @@ export class LevelLoader {
     }
     await Promise.all(pendingProps);
 
+    // ---- instanced props ------------------------------------------------------
+    // One prototype per prop model, never added to the scene: it is read for its
+    // sub-meshes and then kept alive only so the batches keep their materials.
+    const batches: InstancedBatch[] = [];
+    const prototypes: THREE.Object3D[] = [];
+    for (const [propUrl, placements] of toBatch) {
+      if (!instanced || placements.length === 0) continue;
+      held.push(propUrl);
+      const asset = await assets.loadModel(propUrl);
+      const prototype = asset.instantiate({ castShadow: this.options.castShadow, receiveShadow: this.options.receiveShadow, name: `prop-prototype` });
+      prototype.updateMatrixWorld(true);
+      const parts: THREE.Mesh[] = [];
+      let instanceable = true;
+      prototype.traverse((o) => {
+        if (!(o as THREE.Mesh).isMesh) return;
+        const mesh = o as THREE.Mesh;
+        // A skinned prop or one with several materials on a mesh keeps an
+        // object each: correctness first, and neither appears in a prop kit.
+        if ((mesh as unknown as { isSkinnedMesh?: boolean }).isSkinnedMesh || Array.isArray(mesh.material)) instanceable = false;
+        else parts.push(mesh);
+      });
+      if (!instanceable || parts.length === 0) {
+        this.log.info(`prop ${propUrl}: not instanceable (skinned or multi-material); placed as objects`);
+        for (const eid of placements) {
+          const instance = asset.instantiate({ castShadow: this.options.castShadow, receiveShadow: this.options.receiveShadow, name: `prop:${propUrl}` });
+          scene.add(instance);
+          renderSync.attach(entities, eid, instance);
+        }
+        continue;
+      }
+      for (const part of parts) {
+        // Bake the sub-mesh's place in the model into its geometry, so one
+        // instance matrix — the entity's own transform — puts it right.
+        const geometry = part.geometry.clone();
+        geometry.applyMatrix4(part.matrixWorld);
+        const batch = instanced.createBatch(geometry, part.material as THREE.Material, placements.length, { static: true });
+        batch.mesh.castShadow = part.castShadow;
+        batch.mesh.receiveShadow = part.receiveShadow;
+        batch.mesh.name = `props:${propUrl}:${part.name || 'mesh'}`;
+        scene.add(batch.mesh);
+        for (const eid of placements) batch.add(eid);
+        batches.push(batch);
+      }
+      prototypes.push(prototype);
+      this.log.debug(`prop ${propUrl}: ${placements.length} placements → ${parts.length} instanced draw${parts.length === 1 ? '' : 's'}`);
+    }
+    if (batches.length > 0) {
+      // Fill the matrices now so the first frame is right even if the system
+      // has not run yet.
+      for (const batch of batches) batch.update(entities);
+      this.log.info(`level: ${batches.length} instanced prop batch${batches.length === 1 ? '' : 'es'} for ${toBatch.size} prop kind${toBatch.size === 1 ? '' : 's'}`);
+    }
+
     this.log.info(
       `level ${url ?? '(asset)'}: ${descriptors.length} descriptors → spawns=${spawnPoints.length} props=${props.length} triggers=${triggers.length} lights=${lights.length} colliders=${colliders.length}`,
     );
@@ -497,6 +605,15 @@ export class LevelLoader {
         disposed = true;
         for (const eid of created) entities.destroy(eid); // RenderSync removes objects, physics frees bodies
         root.removeFromParent();
+        // The batches own their baked geometry; the materials belong to the
+        // prototypes, which go when the model is released.
+        for (const batch of batches) {
+          batch.mesh.removeFromParent();
+          batch.mesh.geometry.dispose();
+          instanced?.removeBatch(batch);
+        }
+        batches.length = 0;
+        prototypes.length = 0;
         for (const u of held) assets.release(u);
       },
     };
