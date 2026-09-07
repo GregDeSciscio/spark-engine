@@ -21,6 +21,7 @@
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { TextDecoder } from 'node:util';
 import { loadManifest, manifestArg, pathArg, repoRoot } from './manifest-loader.mjs';
 
 const API = 'https://api.elevenlabs.io';
@@ -38,7 +39,7 @@ const CREDITS_PER_SECOND = 100;
 async function readEnvFile() {
   const bytes = await readFile(path.join(repoRoot, '.env'));
   const utf16 = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff);
-  return utf16 ? new TextDecoder(bytes[0] === 0xff ? 'utf-16le' : 'utf-16be').decode(bytes.subarray(2)) : bytes.toString('utf8').replace(/^﻿/, '');
+  return utf16 ? new TextDecoder(bytes[0] === 0xff ? 'utf-16le' : 'utf-16be').decode(bytes.subarray(2)) : bytes.toString('utf8').replace(/^\uFEFF/, '');
 }
 
 export async function loadApiKey() {

@@ -10,6 +10,7 @@ Everything gameplay-relevant is a custom property on an object, never a name:
     spark.type=spawn      team=player                  the operator's insertion point
     spark.type=objective  kind/label/radius/hold/order the mission, in `order`
     spark.type=patrol     route/index                  one point of an enemy loop
+    spark.type=reinforce  id/wave/route/index          an alert ingress point (wave: alerted|lockdown)
     spark.type=target     index                        a range dummy
     spark.type=light      color/intensity/range        a neon or lamp point light
     spark.type=vfx        preset/dx/dy/dz              a steam vent
@@ -433,6 +434,23 @@ def build(level: Level):
     for route, points in patrols.items():
         for index, (x, y, z) in enumerate(points):
             level.empty(f'patrol_{route.replace(" ", "_")}_{index}', x, y, z, {'type': 'patrol', 'route': route, 'index': index}, display='CONE', size=0.6)
+    # Where the sector sends hostiles in from once the alert model escalates
+    # (docs/design/mission-shape.md, apps/showcase/src/mission/Alert.ts). The
+    # alerted wave comes from the depot end the player is heading into; the
+    # lockdown wave adds the flanks and one behind, on the extraction leg, so
+    # a loud run has to fight its way back out.
+    reinforcements = [
+        ('depot_north', 'alerted', 0, 0, -66, 'Rifleman 3'),
+        ('side_west', 'alerted', -7.5, 0, -30, 'Rifleman 2'),
+        ('depot_east', 'lockdown', 7.5, 0, -60, 'Rifleman 3'),
+        ('square_east', 'lockdown', 7.5, 0, -14, 'Rifleman 1'),
+        ('extract_south', 'lockdown', -6, 0, 22, None),
+    ]
+    for index, (rid, wave, x, y, z, route) in enumerate(reinforcements):
+        props = {'type': 'reinforce', 'id': rid, 'wave': wave, 'index': index}
+        if route is not None:
+            props['route'] = route
+        level.empty(f'reinforce_{rid}', x, y, z, props, display='SPHERE', size=0.8)
     for index, (x, y, z) in enumerate([(9.5, 0.15, 24), (9.5, 0.15, 16)]):
         level.empty(f'target_{index}', x, y, z, {'type': 'target', 'index': index}, display='CUBE', size=0.4)
 

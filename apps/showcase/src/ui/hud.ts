@@ -30,6 +30,10 @@ export interface OperatorHud {
   /** 0..1 how lit the operator is: the stealth meter. */
   setVisibility(lit: number): void;
   setAlert(level: 'undetected' | 'suspicious' | 'alert'): void;
+  /** The sector's own alert tier, under the awareness dial. Quiet shows nothing. */
+  setLevelAlert(tier: 'quiet' | 'alerted' | 'lockdown'): void;
+  /** A hostile was called in: flash the banner. */
+  flashReinforcement(): void;
   setStatus(stance: Stance, speed: number, grounded: boolean): void;
   setScore(hits: number, kills: number, enemiesLeft: number): void;
   /** Current objective; `progress` 0..1 fills the hold ring, `prompt` shows the interact key. */
@@ -132,6 +136,15 @@ const STYLE = `
 .hx-alert { left: 50%; top: 16px; transform: translateX(-50%); width: 40px; height: 40px; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--hx-line); background: var(--hx-glass); backdrop-filter: blur(10px); transition: color 200ms, border-color 200ms, box-shadow 200ms; }
 .hx-alert[data-level="alert"] { animation: hx-pulse 0.7s ease-in-out infinite; }
 
+.hx-sector { left: 50%; top: 62px; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 5px 11px; border: 1px solid var(--hx-sector); background: var(--hx-glass); backdrop-filter: blur(10px); font: 600 10px/1 var(--hx-font); letter-spacing: 0.22em; text-transform: uppercase; color: var(--hx-sector); white-space: nowrap; }
+.hx-sector[data-tier="alerted"] { --hx-sector: #ffd166; }
+.hx-sector[data-tier="lockdown"] { --hx-sector: var(--hx-red); animation: hx-pulse 0.9s ease-in-out infinite; }
+.hx-sector i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }
+.hx-reinforce { left: 50%; top: 96px; display: flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid rgba(255,43,90,0.45); background: var(--hx-glass); backdrop-filter: blur(10px); font: 600 10px/1 var(--hx-font); letter-spacing: 0.2em; text-transform: uppercase; color: #ff8aa5; opacity: 0; transform: translateX(-50%); }
+.hx-reinforce .hx-ic { color: currentColor; }
+.hx-reinforce[data-flash="1"] { animation: hx-toast 2.6s ease-out; }
+@keyframes hx-toast { 0% { opacity: 0; transform: translate(-50%, -6px); } 10% { opacity: 1; transform: translate(-50%, 0); } 78% { opacity: 1; } 100% { opacity: 0; } }
+
 .hx-score { right: 18px; top: 16px; display: flex; gap: 14px; padding: 8px 14px; font: 600 14px/1 var(--hx-mono); font-variant-numeric: tabular-nums; }
 .hx-score span { display: inline-flex; align-items: center; gap: 6px; }
 .hx-score .hx-ic { color: var(--hx-dim); }
@@ -209,6 +222,14 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
   const alert = el('hx-alert', icon('eyeOff', 18));
   alert.style.color = ALERT.undetected.color;
 
+  // The sector's tier sits under the awareness dial: one word, because
+  // "they know, and they are sending more" is not an icon.
+  const sector = el('hx-sector', '<i></i><span></span>');
+  const sectorText = sector.querySelector('span') as HTMLElement;
+  sector.hidden = true;
+  const reinforce = el('hx-reinforce', `${icon('people', 14)}<span>reinforcements inbound</span>`);
+  reinforce.hidden = true;
+
   const score = el('hx-score hx-panel', `<span>${icon('skull', 15)}<b class="hx-kills">0</b></span><span>${icon('people', 15)}<b class="hx-left">0</b></span>`);
   const killsEl = score.querySelector('.hx-kills') as HTMLElement;
   const leftEl = score.querySelector('.hx-left') as HTMLElement;
@@ -248,7 +269,7 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
   complete.dataset['kind'] = 'complete';
   complete.hidden = true;
 
-  const all = [vignette, dot, ring, hitMarker, vitals, stance, ammo, alert, score, objective, interact, prompt, failed, complete];
+  const all = [vignette, dot, ring, hitMarker, vitals, stance, ammo, alert, sector, reinforce, score, objective, interact, prompt, failed, complete];
   for (const node of all) ui.mount('hud', node);
 
   let lastRadius = -1;
@@ -258,7 +279,9 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
   let lastY = 0;
   let lastAmmo = '';
   let lastObjective = '';
+  let lastTier = '';
   let hitTimer = 0;
+  let reinforceTimer = 0;
 
   return {
     setLocked(locked, note = null) {
@@ -337,6 +360,22 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
       alert.style.boxShadow = level === 'undetected' ? 'none' : `0 0 14px ${spec.color}66`;
       alert.dataset['level'] = level;
     },
+    setLevelAlert(tier) {
+      if (tier === lastTier) return;
+      lastTier = tier;
+      sector.hidden = tier === 'quiet';
+      sector.dataset['tier'] = tier;
+      sectorText.textContent = tier === 'lockdown' ? 'sector lockdown' : 'sector alerted';
+    },
+    flashReinforcement() {
+      reinforce.hidden = false;
+      reinforce.dataset['flash'] = '0';
+      window.clearTimeout(reinforceTimer);
+      // Restart the toast even when one is still running.
+      reinforceTimer = window.setTimeout(() => {
+        reinforce.dataset['flash'] = '1';
+      }, 0);
+    },
     setStatus(stanceNow) {
       if (stanceNow === lastStance) return;
       lastStance = stanceNow;
@@ -367,6 +406,7 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
     },
     dispose() {
       window.clearTimeout(hitTimer);
+      window.clearTimeout(reinforceTimer);
       for (const node of all) ui.unmount(node);
       style.remove();
     },

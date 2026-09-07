@@ -28,6 +28,7 @@ import { createAtmosphere } from '../levels/atmosphere';
 import { buildBlockout } from '../levels/blockout';
 import { applyAtmosphere, loadStreetLevel, type MissionLevel } from '../levels/MissionLevel';
 import { MissionRunner } from '../mission/Objectives';
+import { AlertDirector, type LevelAlert } from '../mission/Alert';
 import { createOperatorHud } from '../ui/hud';
 
 /** `?freelook=1`: treat the pointer as locked without asking the browser. For headless capture and probes, where pointer lock cannot be granted. */
@@ -140,14 +141,26 @@ export const missionScene: SceneDefinition = {
       bag.add(dummy);
       return dummy;
     });
+    const enemyDeps = { ...effects, physics, animation, renderSync, model, labels: ui.labels, navigation, random: random.fork(), audio, impacts, sfx, ragdolls, gore };
     const enemies = level.patrols.map((spec) => {
-      const enemy = new Enemy(
-        { ...effects, physics, animation, renderSync, model, labels: ui.labels, navigation, random: random.fork(), audio, impacts, sfx, ragdolls, gore },
-        spec,
-      );
+      const enemy = new Enemy(enemyDeps, spec);
       bag.add(enemy);
       return enemy;
     });
+    // Reinforcements: one dormant hostile per authored ingress point, built now
+    // so an arrival costs a pose. Each adopts the patrol its point names once
+    // its sweep runs out, so a called-in rifleman ends up somewhere useful.
+    const routeOf = new Map(level.patrols.map((p) => [p.name, p.route]));
+    const reinforcements = level.reinforcements.map((point, i) => {
+      const ingress = new THREE.Vector3(point.position.x, point.position.y, point.position.z);
+      const adopted = point.route === null ? [] : (routeOf.get(point.route) ?? []);
+      const enemy = new Enemy(enemyDeps, { name: `Reinforcement ${i + 1}`, route: [ingress, ...adopted], reinforcement: true });
+      bag.add(enemy);
+      return enemy;
+    });
+    enemies.push(...reinforcements);
+    /** Hostiles that exist right now: the dormant reinforcements are not in the world yet. */
+    const liveHostiles = (): Enemy[] => enemies.filter((e) => !e.dead && !e.dormant);
     const targets: Damageable[] = [...dummies, ...enemies];
     // Ragdoll hips touching the world: the body landing.
     bag.add(
@@ -256,6 +269,36 @@ export const missionScene: SceneDefinition = {
     ctx.config.container.addEventListener('pointerdown', onPointerDown);
     bag.add(() => ctx.config.container.removeEventListener('pointerdown', onPointerDown));
 
+    // ---- the sector's alert state: Quiet -> Alerted -> Lockdown -------------------
+    // Per-enemy awareness says what one rifleman knows; this says what the
+    // street knows. Going loud calls hostiles in from the authored ingress
+    // points and puts everyone still on patrol into a sweep.
+    const reinforcementByPoint = new Map(level.reinforcements.map((point, i) => [point.id, reinforcements[i] as Enemy]));
+    const lastContact = new THREE.Vector3();
+    let hadContact = false;
+    let alertTier: LevelAlert = 'quiet';
+    const director = new AlertDirector({
+      points: level.reinforcements,
+      deploy: (point, target) => {
+        const enemy = reinforcementByPoint.get(point.id);
+        if (!enemy || !enemy.dormant) return false;
+        enemy.deploy(now, target);
+        logger.info(`mission: reinforcement in at "${point.id}" (${point.wave})`);
+        return true;
+      },
+      hunt: (target) => {
+        for (const e of liveHostiles()) e.hunt(target, now);
+      },
+      onTier: (tier, previous) => {
+        alertTier = tier;
+        hud.setLevelAlert(tier);
+        if (tier === 'quiet') for (const e of enemies) e.relax();
+        if (tier === 'lockdown') sfx.lockdownStinger();
+        logger.info(`mission: sector ${previous} -> ${tier}`);
+      },
+      onReinforcement: () => hud.flashReinforcement(),
+    });
+
     // Checkpoint reload: back to the last completed objective; dead hostiles stay dead, the rest reset.
     const reticle = { x: 0, y: 0 };
 
@@ -293,6 +336,8 @@ export const missionScene: SceneDefinition = {
       hurt: (damage: number) => operator.takeDamage(damage, 'torso', now),
       /** The audio layer: cue count, beds, emitters in range and playing. */
       audio: () => sfx.stats(),
+      /** The sector's alert tier, what it still has to send, and what it has sent. */
+      alert: () => ({ ...director.status(now), tier: alertTier }),
       /** Current animation state per layer, plus the blend parameters. */
       anim: () => ({
         base: animation.getState(operator.eid),
@@ -327,7 +372,10 @@ export const missionScene: SceneDefinition = {
         colliderHeight: operator.colliderHeight,
         feet: operator.feet(new THREE.Vector3()).toArray(),
         targets: dummies.map((d) => ({ name: d.name, health: d.health, dead: d.dead, feet: d.feet(new THREE.Vector3()).toArray() })),
-        enemies: enemies.map((e) => ({ name: e.name, state: e.state, health: e.health, dead: e.dead, feet: e.feet(new THREE.Vector3()).toArray(), ...e.coverState() })),
+        enemies: enemies
+          .filter((e) => !e.dormant)
+          .map((e) => ({ name: e.name, state: e.state, posture: e.posture, health: e.health, dead: e.dead, feet: e.feet(new THREE.Vector3()).toArray(), ...e.coverState() })),
+        alert: alertTier,
       }),
     };
     let qaAim = false;
@@ -341,7 +389,11 @@ export const missionScene: SceneDefinition = {
       const cp = mission.checkpoint;
       operator.respawn(cp.position, cp.yaw);
       camera.setLook(cp.yaw, THREE.MathUtils.degToRad(6));
-      for (const e of enemies) if (!e.dead) e.reset();
+      // Hostiles who were on the level stay dead; reinforcements were called in
+      // by an alert this reload undoes, so they go back out of the world.
+      for (const e of enemies) if (!e.dead || e.isReinforcement) e.reset();
+      director.reset(now);
+      hadContact = false;
       gunplay.resetAmmo();
       mission.resetProgress();
       hud.setFailed(false);
@@ -383,12 +435,13 @@ export const missionScene: SceneDefinition = {
         hud.setHealth(operator.health / OPERATOR_MAX_HEALTH, Math.max(0, 1 - (now - operator.lastHitAt) / HURT_FADE) * (operator.dead ? 1 : 0.85));
         sfx.setHeartbeat(operator.dead ? 0 : operator.health / OPERATOR_MAX_HEALTH);
         hud.setVisibility(operator.lit);
-        const alertState = overallState(enemies.filter((e) => !e.dead).map((e) => e.state));
+        const live = liveHostiles();
+        const alertState = overallState(live.map((e) => e.state));
         hud.setAlert(alertState);
         if (alertState === 'alert' && !wasAlert) sfx.alertStinger();
         wasAlert = alertState === 'alert';
         hud.setStatus(operator.stance, operator.speed, operator.grounded);
-        hud.setScore(gunplay.stats.hits, gunplay.stats.kills, enemies.filter((e) => !e.dead).length);
+        hud.setScore(gunplay.stats.hits, gunplay.stats.kills, live.length);
         if (gunplay.stats.hits !== hitsShown) {
           hitsShown = gunplay.stats.hits;
           hud.hit();
@@ -420,8 +473,28 @@ export const missionScene: SceneDefinition = {
           if (!r) continue;
           if (live.length - i > MAX_RAGDOLLS || r.age > RAGDOLL_SECONDS) enemies.find((e) => e.eid === r.owner)?.retireRagdoll();
         }
+        // ---- the sector reads the fight and answers it -------------------------
+        const hostiles = liveHostiles();
+        let contacts = 0;
+        let searching = 0;
+        for (const e of hostiles) {
+          if (e.state === 'alert') contacts++;
+          else if (e.state === 'suspicious' || e.state === 'searching') searching++;
+        }
         operator.feet(feet);
-        mission.fixedUpdate(fixedDt, feet, interactHeld, enemies.filter((e) => !e.dead).length);
+        if (contacts > 0) {
+          lastContact.copy(feet);
+          hadContact = true;
+        }
+        director.fixedUpdate(fixedDt, now, {
+          contacts,
+          searching,
+          casualties: enemies.filter((e) => e.dead).length,
+          live: hostiles.length,
+          lastKnown: hadContact ? lastContact : null,
+        });
+
+        mission.fixedUpdate(fixedDt, feet, interactHeld, hostiles.length);
         if (mission.justCompleted) {
           logger.info(`mission: objective "${mission.justCompleted.id}" complete, checkpoint moved`);
           sfx.objectiveComplete(mission.justCompleted.kind, mission.complete);

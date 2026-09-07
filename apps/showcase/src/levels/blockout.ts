@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { DisposeBag, Navigation, SurfaceLibrary, Transform, TriangleSoup, type Entity, type EntityWorld, type PhysicsWorld, type Random } from '@spark/engine';
 import type { ObjectiveDef } from '../mission/Objectives';
+import type { ReinforcementPoint } from '../mission/Alert';
 import { STREET_BOUNDS, type MissionLevel } from './MissionLevel';
 
 /**
@@ -146,6 +147,15 @@ export function buildBlockout(scene: THREE.Scene, entities: EntityWorld, physics
     { name: 'Rifleman 2', route: [new THREE.Vector3(4, 0, -24), new THREE.Vector3(-5, 0, -34)] },
     { name: 'Rifleman 3', route: [new THREE.Vector3(0, 0, -52), new THREE.Vector3(6, 0, -42), new THREE.Vector3(-6, 0, -44)] },
   ];
+  // Ingress points for the alert director; the street authors the same set as
+  // `spark.type=reinforce` empties (see `tools/level-authoring/street.py`).
+  const reinforcements: ReinforcementPoint[] = [
+    { id: 'depot_north', wave: 'alerted', position: new THREE.Vector3(0, 0, -66), route: 'Rifleman 3' },
+    { id: 'side_west', wave: 'alerted', position: new THREE.Vector3(-7.5, 0, -30), route: 'Rifleman 2' },
+    { id: 'depot_east', wave: 'lockdown', position: new THREE.Vector3(7.5, 0, -60), route: 'Rifleman 3' },
+    { id: 'square_east', wave: 'lockdown', position: new THREE.Vector3(7.5, 0, -14), route: 'Rifleman 1' },
+    { id: 'extract_south', wave: 'lockdown', position: new THREE.Vector3(-6, 0, 22), route: null },
+  ];
 
   // Insert at the near end, cross the street, set the charge at the far wall, come back out.
   const objectives: ObjectiveDef[] = [
@@ -160,6 +170,7 @@ export function buildBlockout(scene: THREE.Scene, entities: EntityWorld, physics
     meshes,
     targetSpots,
     patrols,
+    reinforcements,
     objectives,
     navigation,
     vfx: [],

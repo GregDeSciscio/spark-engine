@@ -16,6 +16,7 @@ import {
   type RenderSync,
 } from '@spark/engine';
 import type { ObjectiveDef, ObjectiveKind } from '../mission/Objectives';
+import type { ReinforcementPoint, ReinforcementWave } from '../mission/Alert';
 
 /**
  * What the mission scene needs from a level, however it was made: the
@@ -36,6 +37,8 @@ export interface MissionLevel {
   readonly meshes: ReadonlyMap<Entity, THREE.Mesh>;
   readonly targetSpots: readonly { readonly position: THREE.Vector3; readonly yaw: number }[];
   readonly patrols: readonly PatrolSpec[];
+  /** Where the sector sends hostiles in from once it is alerted (`mission/Alert.ts`). */
+  readonly reinforcements: readonly ReinforcementPoint[];
   readonly objectives: readonly ObjectiveDef[];
   /** Baked offline for authored levels, at load for the blockout (ADR-009). */
   readonly navigation: Navigation;
@@ -131,10 +134,10 @@ function str(v: unknown, fallback: string): string {
 /**
  * The Blender-authored level (tools/level-authoring/street.py) through the
  * engine's level loader (ADR-008). The loader turns COL_ nodes, spawns and
- * lights into entities; the gameplay-only types (objective, patrol, target)
- * come back as `unknown` descriptors and are read here, the one place the
- * showcase interprets its own extras. The navmesh was baked by the asset
- * pipeline and sits beside the GLB.
+ * lights into entities; the gameplay-only types (objective, patrol, target,
+ * reinforce, vfx) come back as `unknown` descriptors and are read here, the
+ * one place the showcase interprets its own extras. The navmesh was baked by
+ * the asset pipeline and sits beside the GLB.
  */
 export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/street.glb'): Promise<MissionLevel> {
   const { entities, physics, assets, renderSync, scene, logger, lighting } = deps;
@@ -162,6 +165,7 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
   let colliderIndex = 0;
   const objectives: (ObjectiveDef & { order: number })[] = [];
   const routes = new Map<string, { index: number; position: THREE.Vector3 }[]>();
+  const reinforcements: (ReinforcementPoint & { order: number })[] = [];
   const targets: { index: number; position: THREE.Vector3 }[] = [];
   const vfx: VfxSpot[] = [];
   let spawnYaw = 0;
@@ -201,6 +205,20 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
         routes.set(route, list);
         break;
       }
+      case 'reinforce': {
+        // `wave` says which alert tier calls this ingress in; `route` is the
+        // patrol the arrival adopts once its sweep runs out.
+        const wave = str(s.wave, 'alerted') === 'lockdown' ? 'lockdown' : ('alerted' as ReinforcementWave);
+        const route = s.route === undefined ? null : str(s.route, '');
+        reinforcements.push({
+          id: str(s.id, d.node.name),
+          wave,
+          position: positionOf(d),
+          route: route === '' ? null : route,
+          order: num(s.index, reinforcements.length),
+        });
+        break;
+      }
       case 'target':
         targets.push({ index: num(s.index, targets.length), position: positionOf(d) });
         break;
@@ -228,10 +246,11 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([name, points]) => ({ name, route: points.sort((a, b) => a.index - b.index).map((p) => p.position) }));
   targets.sort((a, b) => a.index - b.index);
+  reinforcements.sort((a, b) => a.order - b.order);
 
   const stats = navigation.stats();
   logger.info(
-    `street: ${level.entities.length} entities, ${level.colliders.length} colliders (${meshes.size} with render twins), ${level.lights.length} lights, ${level.props.length} props, ${surfaced} surfaced meshes, ${vfx.length} vfx spots, ${objectives.length} objectives, ${patrols.length} patrols, navmesh ${stats.polys} polys`,
+    `street: ${level.entities.length} entities, ${level.colliders.length} colliders (${meshes.size} with render twins), ${level.lights.length} lights, ${level.props.length} props, ${surfaced} surfaced meshes, ${vfx.length} vfx spots, ${objectives.length} objectives, ${patrols.length} patrols, ${reinforcements.length} ingress points, navmesh ${stats.polys} polys`,
   );
 
   return {
@@ -240,6 +259,7 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
     meshes,
     targetSpots: targets.map((t) => ({ position: t.position, yaw: 0 })),
     patrols,
+    reinforcements: reinforcements.map(({ order: _order, ...r }) => r),
     objectives: objectives.map(({ order: _order, ...o }) => o),
     navigation,
     vfx,

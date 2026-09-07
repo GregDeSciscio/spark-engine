@@ -610,6 +610,20 @@ export const CUES = [
     stereo: true,
     note: 'the moment the first hostile goes alert',
   },
+  {
+    name: 'ui-lockdown',
+    kind: 'sfx',
+    prompt: 'heavy descending industrial klaxon swell, two low blares over a rising dread pad, cyberpunk sector lockdown, no melody',
+    seconds: 2.6,
+    variants: 1,
+    influence: 0.55,
+    bus: 'ui',
+    volume: 0.7,
+    cooldownMs: 8000,
+    maxInstances: 1,
+    stereo: true,
+    note: 'the sector escalates to lockdown and sends the second wave (mission/Alert.ts); until it is generated the alert sting stands in',
+  },
 ];
 
 export function cueByName(name) {

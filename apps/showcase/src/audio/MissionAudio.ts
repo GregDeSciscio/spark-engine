@@ -293,6 +293,11 @@ export class MissionAudio {
   }
 
   /** The first hostile going alert. */
+  /** The sector locked down: its own cue when the set has one, the alert sting when it does not. */
+  lockdownStinger(): void {
+    this.play(this.has('ui-lockdown') ? 'ui-lockdown' : 'ui-alert');
+  }
+
   alertStinger(): void {
     this.play('ui-alert');
   }

@@ -42,6 +42,8 @@ Per enemy:    Unaware -> Suspicious -> Alert -> Searching -> Unaware
 Level-wide:   Quiet -> Alerted (reinforcements, changed routes) -> Lockdown
 ```
 
+Built 2026-09-07: the per-enemy ladder is `apps/showcase/src/ai/Awareness.ts` with the state machine in `actors/Enemy.ts`; the level-wide tiers are `apps/showcase/src/mission/Alert.ts`, covered by `apps/showcase/tests/Alert.test.ts`. Alerted and lockdown each call in a wave of hostiles from ingress points authored in the level (`spark.type=reinforce`), and put every hostile still on patrol into a hunting posture: faster sweeps, slower forgetting, converging on the last known position. The sector settles one tier per quiet stretch, and a checkpoint reload undoes the alert and the reinforcements with it.
+
 - Awareness accumulates from sight (distance, lighting, stance, movement) and sound (weapon loudness, footsteps, breaking glass). Task Unit's "information footprint" weapon concern becomes a real stat.
 - Suppressed weapons and the dark aesthetic are not just flavour: lighting is a gameplay input, so the clustered lighting system needs a cheap "how lit is this point" query.
 - Level alert states change patrol routes and spawn reinforcements from authored points, which is how the same level supports both a stealth run and a loud run.

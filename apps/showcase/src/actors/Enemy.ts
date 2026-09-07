@@ -63,7 +63,21 @@ export interface EnemySpec {
   readonly name: string;
   /** Patrol loop, feet positions. The first point is the spawn. */
   readonly route: readonly THREE.Vector3[];
+  /**
+   * Built dormant and held out of the world until the alert director sends it
+   * in (`mission/Alert.ts`). Reinforcements are constructed at load so an
+   * arrival costs a pose, not a model instantiation, and a checkpoint reload
+   * puts them back in the box.
+   */
+  readonly reinforcement?: boolean;
 }
+
+/**
+ * How the sector has told this rifleman to carry himself. Hunting is what an
+ * alerted or locked-down level does to everyone who is not already in
+ * contact: patrol faster, and hold on to suspicion longer.
+ */
+export type Posture = 'relaxed' | 'hunting';
 
 export interface EnemyDeps extends EffectsDeps {
   readonly physics: PhysicsWorld;
@@ -85,6 +99,10 @@ export const ENEMY_RIFLE: WeaponDefinition = { ...RIFLE_BASELINE, id: 'rifle_ene
 
 const MAX_HEALTH = 100;
 const PATROL_SPEED = 1.8;
+/** Patrol speed once the sector is alerted: a sweep, not a stroll. */
+const HUNT_PATROL_SPEED = 2.9;
+/** Awareness drains this much slower while hunting: an alerted sector stays twitchy. */
+const HUNT_DECAY_SCALE = 0.5;
 const INVESTIGATE_SPEED = 3.2;
 const CHASE_SPEED = 4.2;
 const ENGAGE_RANGE = 32;
@@ -204,6 +222,9 @@ export class Enemy implements Damageable {
   awareness = 0;
   health = MAX_HEALTH;
   dead = false;
+  /** Held out of the world: no body, no label, no thinking. Reinforcements start here. */
+  dormant = false;
+  posture: Posture = 'relaxed';
 
   private readonly deps: EnemyDeps;
   private readonly spec: EnemySpec;
@@ -250,6 +271,7 @@ export class Enemy implements Damageable {
   private readonly shotDir = new THREE.Vector3();
   private readonly tmpA = new THREE.Vector3();
   private readonly tmpB = new THREE.Vector3();
+  private readonly huntPoint = new THREE.Vector3();
 
   constructor(deps: EnemyDeps, spec: EnemySpec) {
     this.deps = deps;
@@ -278,6 +300,13 @@ export class Enemy implements Damageable {
     labels.attach(this.eid, { kind: 'healthbar', text: spec.name, offsetY: 2.05 });
     this.flash = new MuzzleFlash(deps, ENEMY_RIFLE.muzzle.flashColor, ENEMY_RIFLE.muzzle.flashIntensity);
     this.rifle = new RifleProp(this.root, findBone(visual, BONES.weapon), new THREE.Vector3(0.26, 1.32 - OPERATOR.height / 2, 0.12), 0x33363c);
+    // A reinforcement is built now and held: the arrival costs a pose, not a model load.
+    if (spec.reinforcement) this.sleep();
+  }
+
+  /** Whether this one only exists when the sector calls for it. */
+  get isReinforcement(): boolean {
+    return this.spec.reinforcement === true;
   }
 
   private fadeUpper(target: number): void {
@@ -401,7 +430,7 @@ export class Enemy implements Damageable {
 
   /** A sound reached this enemy: `position` is where, `loudness` how far it carries. */
   hear(position: THREE.Vector3, loudness: number, now: number): void {
-    if (this.dead) return;
+    if (this.dead || this.dormant) return;
     this.feet(this.feetPos);
     const d = this.feetPos.distanceTo(position);
     if (d > loudness) return;
@@ -422,13 +451,133 @@ export class Enemy implements Damageable {
 
   /** Another enemy went alert nearby: go and look where they say the player is. */
   warn(position: THREE.Vector3, now: number): void {
-    if (this.dead || this.state === 'alert') return;
+    if (this.dead || this.dormant || this.state === 'alert') return;
     this.awareness = Math.max(this.awareness, AWARENESS.suspiciousAt + 0.3);
     this.investigate(position, now);
   }
 
+  /**
+   * The sector points everyone at a place (`mission/Alert.ts`). Unlike `warn`
+   * this carries no distance test: an alerted level is a radio net, not a
+   * shout, so the far end of the street sweeps too.
+   */
+  hunt(position: { x: number; y: number; z: number }, now: number): void {
+    if (this.dead || this.dormant) return;
+    this.posture = 'hunting';
+    if (this.state === 'alert') return;
+    this.awareness = Math.max(this.awareness, AWARENESS.suspiciousAt + 0.2);
+    this.huntPoint.set(position.x, position.y, position.z);
+    this.investigate(this.huntPoint, now);
+  }
+
+  /** The sector calmed down: back to a patrol pace. */
+  relax(): void {
+    this.posture = 'relaxed';
+  }
+
+  /** Out of the world: no body, no label, no thinking. */
+  private sleep(): void {
+    if (this.dormant) return;
+    this.dormant = true;
+    if (!this.dead) {
+      this.controller.detach(this.eid);
+      this.deps.physics.removeBody(this.eid);
+    }
+    this.root.visible = false;
+    this.deps.labels.detach(this.eid);
+    this.velocity.set(0, 0, 0);
+    this.nav.clear();
+  }
+
+  /**
+   * Sent in: stand the hostile up at its ingress point, facing the sweep, and
+   * put it straight into a hunt. Called by the alert director, never by the
+   * enemy itself.
+   */
+  deploy(now: number, target: { x: number; y: number; z: number } | null): void {
+    if (!this.dormant) return;
+    const { entities, physics, animation, labels } = this.deps;
+    const spawn = this.spec.route[0] ?? new THREE.Vector3();
+    if (this.dead) {
+      this.dead = false;
+      this.retireRagdoll();
+      this.reanimate();
+      animation.setParam(this.eid, 'dead', 0);
+      animation.setTrigger(this.eid, 'respawn');
+    }
+    this.dormant = false;
+    this.clearCombatState();
+    this.health = MAX_HEALTH;
+    this.facing = target ? Math.atan2(target.x - spawn.x, target.z - spawn.z) : this.facing;
+    const t = entities.store(Transform);
+    t.x[this.eid] = spawn.x;
+    t.y[this.eid] = spawn.y + OPERATOR.height / 2;
+    t.z[this.eid] = spawn.z;
+    t.qx[this.eid] = 0;
+    t.qz[this.eid] = 0;
+    t.qy[this.eid] = Math.sin(this.facing / 2);
+    t.qw[this.eid] = Math.cos(this.facing / 2);
+    this.addBody();
+    physics.setPose(this.eid, { x: spawn.x, y: spawn.y + OPERATOR.height / 2, z: spawn.z });
+    this.controller.attach(this.eid);
+    const ch = entities.store(Character);
+    ch.vy[this.eid] = 0;
+    this.root.visible = true;
+    labels.attach(this.eid, { kind: 'healthbar', text: this.name, offsetY: 2.05 });
+    labels.setValue(this.eid, 1);
+    this.applyTint();
+    this.posture = 'hunting';
+    if (target) this.hunt(target, now);
+  }
+
+  /** A reinforcement goes back in the box: on a checkpoint reload it was never here. */
+  private retire(): void {
+    const { animation } = this.deps;
+    if (this.dead) {
+      this.dead = false;
+      this.retireRagdoll();
+      this.reanimate();
+      animation.setParam(this.eid, 'dead', 0);
+      animation.setTrigger(this.eid, 'respawn');
+      this.dormant = true;
+      this.root.visible = false;
+      this.deps.labels.detach(this.eid);
+    } else {
+      this.sleep();
+    }
+    this.clearCombatState();
+    this.health = MAX_HEALTH;
+    this.applyTint();
+  }
+
+  /** Everything a fight leaves behind: awareness, cover, the burst clock. */
+  private clearCombatState(): void {
+    this.state = 'unaware';
+    this.awareness = 0;
+    this.posture = 'relaxed';
+    this.routeIndex = 0;
+    this.waitUntil = 0;
+    this.nav.clear();
+    this.lookUntil = -1;
+    this.burstUntil = -1;
+    this.lastSeenAt = -100;
+    this.alertSince = -100;
+    this.hasCover = false;
+    this.inCover = false;
+    this.peeking = false;
+    this.velocity.set(0, 0, 0);
+    this.weapon.ammo = ENEMY_RIFLE.magazineSize;
+    this.aiming = false;
+    this.aimPitch = 0;
+  }
+
   /** Back to the start of the route, full health, unaware: a checkpoint reload. */
   reset(): void {
+    // Reinforcements were called in by an alert that the reload undoes.
+    if (this.isReinforcement) {
+      this.retire();
+      return;
+    }
     const { entities, physics, animation, labels } = this.deps;
     const spawn = this.spec.route[0] ?? new THREE.Vector3();
     const t = entities.store(Transform);
@@ -451,26 +600,11 @@ export class Enemy implements Damageable {
     this.health = MAX_HEALTH;
     labels.setValue(this.eid, 1);
     this.applyTint();
-    this.state = 'unaware';
-    this.awareness = 0;
-    this.routeIndex = 0;
-    this.waitUntil = 0;
-    this.nav.clear();
-    this.lookUntil = -1;
-    this.burstUntil = -1;
-    this.lastSeenAt = -100;
-    this.alertSince = -100;
-    this.hasCover = false;
-    this.inCover = false;
-    this.peeking = false;
-    this.velocity.set(0, 0, 0);
-    this.nav.clear();
-    this.weapon.ammo = ENEMY_RIFLE.magazineSize;
-    this.aiming = false;
-    this.aimPitch = 0;
+    this.clearCombatState();
   }
 
   fixedUpdate(dt: number, now: number, player: OperatorView, onAlert: (enemy: Enemy) => void): void {
+    if (this.dormant) return;
     if (this.dead) {
       this.flash.fixedUpdate(now);
       // The rifle stays with the hand as the ragdoll settles.
@@ -490,7 +624,9 @@ export class Enemy implements Damageable {
       this.lastKnown.copy(this.playerFeet);
       this.lastSeenAt = now;
     } else if (this.state !== 'alert') {
-      this.awareness = Math.max(0, this.awareness - AWARENESS.decayPerSecond * dt);
+      // A hunting sector lets go of a contact slowly.
+      const decay = AWARENESS.decayPerSecond * (this.posture === 'hunting' ? HUNT_DECAY_SCALE : 1);
+      this.awareness = Math.max(0, this.awareness - decay * dt);
     }
 
     if (this.awareness >= 1 && !player.dead) this.becomeAlert(now);
@@ -503,7 +639,7 @@ export class Enemy implements Damageable {
     let wantsMove = false;
     switch (this.state) {
       case 'unaware':
-        moveSpeed = PATROL_SPEED;
+        moveSpeed = this.posture === 'hunting' ? HUNT_PATROL_SPEED : PATROL_SPEED;
         wantsMove = this.patrol(now);
         break;
       case 'suspicious':

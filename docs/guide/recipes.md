@@ -27,6 +27,12 @@ Any rigged glTF with clips works without the retarget: point the config's `model
 
 `apps/showcase/src/actors/Enemy.ts` with `apps/showcase/src/ai/Awareness.ts`: a `NavAgent` on the level's baked navmesh, an awareness ladder driven by `lineOfSight`, `inViewCone`, distance, the player's stance and how lit they are (`lighting.illuminanceAt`), cover from `findCover` and `peekPoint`, bursts with spread. `docs/design/mission-shape.md` is the design it implements.
 
+## Make the level notice
+
+`apps/showcase/src/mission/Alert.ts`: the sector's own state machine, `Quiet -> Alerted -> Lockdown`, over the top of the per-enemy ladder. It reads a handful of numbers each fixed step (who is in contact, who is searching, who is down, how many hostiles are alive) and answers with three things: reinforcements from ingress points authored in the level (`spark.type=reinforce`, wave and patrol route as extras), a level-wide hunt that puts everyone still on patrol into a sweep, and a tier for the HUD and the stingers. It escalates on a second simultaneous contact, on casualties, or on a contact that drags; it settles back one tier per quiet stretch. No three.js and no ECS, so `apps/showcase/tests/Alert.test.ts` covers the whole ladder.
+
+Reinforcements are built dormant at load and deployed with a pose, never instantiated mid-fight (`Enemy.deploy` / `sleep`); a checkpoint reload retires them, because the alert that called them in is being undone.
+
 ## Add sound
 
 1. Write cues as data: `apps/showcase/audio/manifest.mjs` (prompt, length, loop, variants, bus, gain, variance, cooldown, spatial role).
