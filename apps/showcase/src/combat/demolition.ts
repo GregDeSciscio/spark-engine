@@ -133,6 +133,8 @@ export interface DemolitionDeps extends EffectsDeps {
   /** Level meshes by physics entity, for clipping the scorch mark. */
   readonly worldMeshes: ReadonlyMap<Entity, THREE.Mesh>;
   readonly sfx: MissionAudio;
+  /** Where the charge will be set, if known: a centimetre of scorch goes there at load so the decal compiles in the warm-up. */
+  readonly site?: THREE.Vector3;
 }
 
 function scorchMaterial(): THREE.MeshStandardNodeMaterial {
@@ -224,6 +226,14 @@ export class Demolition {
     this.bag.add(this.decals);
     this.scorch = scorchMaterial();
     this.bag.add(() => this.scorch.dispose());
+    // A decal mesh stays hidden until something is spawned on it, so the
+    // warm-up never saw the scorch's pipeline and the blast compiled it on its
+    // own frame (half a second on the WebGL2 tier). A centimetre of scorch at
+    // the plant site now compiles it with the level; the real one covers it.
+    const ground = [...deps.worldMeshes.values()].find((m) => m.name === 'ground');
+    if (deps.site && ground) {
+      this.decals.spawn({ position: new THREE.Vector3(deps.site.x, 0, deps.site.z), normal: new THREE.Vector3(0, 1, 0), size: 0.01, rotation: 0, target: ground, material: this.scorch });
+    }
 
     this.emitters = {
       fireball: this.emitter(FIREBALL),

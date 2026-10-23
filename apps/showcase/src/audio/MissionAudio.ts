@@ -370,7 +370,8 @@ export class MissionAudio {
     const lamps: THREE.Vector3[] = [];
     scene.traverse((o) => {
       const light = o as THREE.PointLight;
-      if (!light.isPointLight || light.intensity < 5) return;
+      // The WebGL2 tier's budget proxies copy real lights; counting them would hum every sign twice.
+      if (!light.isPointLight || light.intensity < 5 || light.userData['sparkLightProxy'] === true) return;
       const c = light.color;
       const saturation = Math.max(c.r, c.g, c.b) - Math.min(c.r, c.g, c.b);
       const position = light.getWorldPosition(light.position.clone());

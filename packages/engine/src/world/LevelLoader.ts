@@ -8,6 +8,7 @@ import type { Entity, EntityWorld } from '../ecs/EntityWorld';
 import type { InstancedBatch, InstancedRenderSync } from '../ecs/systems/InstancedRenderSync';
 import type { RenderSync } from '../ecs/systems/RenderSync';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
+import type { LightingSystem } from '../rendering/LightingSystem';
 import { SpawnPoint, TriggerVolume } from './components';
 
 // ---- pure part: glTF nodes → entity descriptors (ADR-008) ---------------------
@@ -317,6 +318,14 @@ export interface LevelLoaderOptions {
    * every mesh casting.
    */
   shadowMinRadius?: number | undefined;
+  /**
+   * The engine's lighting system. Pass it and the level's lights are its
+   * entity-driven lights (`LightingSystem.attachEntity`): their transform,
+   * intensity and range sync from the entity, the light budget owns their
+   * visibility, and `lighting.lights.get(eid)` finds them. Without it they
+   * are plain objects in the scene graph, budgeted only as adopted lights.
+   */
+  lighting?: LightingSystem | undefined;
 }
 
 export interface LoadedLevel extends Disposable {
@@ -515,7 +524,8 @@ export class LevelLoader {
             light = new THREE.PointLight(descriptor.color, descriptor.intensity, descriptor.range);
           }
           if (light !== object) scene.add(light);
-          renderSync.attach(entities, eid, light);
+          if (this.options.lighting) this.options.lighting.attachEntity(entities, eid, light as THREE.Light);
+          else renderSync.attach(entities, eid, light);
           created.push(eid);
           lights.push(eid);
           break;

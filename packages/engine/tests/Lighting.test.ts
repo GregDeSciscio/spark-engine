@@ -8,7 +8,10 @@ import {
   clusterStorageBytes,
   isClusterableLight,
 } from '../src/rendering/ClusteredLights';
-import { COMPAT_LIGHT_CAP, effectiveLightBudget, lightImportance, selectLights } from '../src/rendering/LightingSystem';
+import { COMPAT_LIGHT_CAP, LIGHT_PROXY_NAME, LightingSystem, effectiveLightBudget, lightImportance, selectLights } from '../src/rendering/LightingSystem';
+import { getQualitySettings } from '../src/rendering/QualityPresets';
+import { EntityWorld } from '../src/ecs/EntityWorld';
+import type { SparkRenderer } from '../src/rendering/Renderer';
 import { QUALITY_PRESETS } from '../src/core/Config';
 
 describe('light importance', () => {
@@ -102,5 +105,106 @@ describe('clusterable lights', () => {
     expect(isClusterableLight(new THREE.DirectionalLight())).toBe(false);
     expect(isClusterableLight(new THREE.HemisphereLight())).toBe(false);
     expect(isClusterableLight(new THREE.AmbientLight())).toBe(false);
+  });
+});
+
+describe('light budget on the unrolled tier', () => {
+  /** A WebGL2-tier lighting system (nothing clustered), budget 4, over a row of ten unshadowed point lights 10 m apart along x. */
+  function row(cameraX: number) {
+    const renderer = { capabilities: { backend: 'webgl', timestampQuery: false } } as unknown as SparkRenderer;
+    const lighting = new LightingSystem(new EntityWorld({ capacity: 16 }), renderer, { ...getQualitySettings('low'), maxDynamicLights: 4 });
+    const scene = new THREE.Scene();
+    const lights = Array.from({ length: 10 }, (_, i) => {
+      const light = new THREE.PointLight(0xffffff, 10, 6);
+      light.position.set(i * 10, 3, 0);
+      scene.add(light);
+      return light;
+    });
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(cameraX, 2, 0);
+    return { lighting, scene, lights, camera, world: new EntityWorld({ capacity: 16 }) };
+  }
+  /** Point lights the renderer would draw: visible and on a layer the default camera sees. What a program's light count is made of. */
+  const rendered = (scene: THREE.Scene) => {
+    const out: THREE.PointLight[] = [];
+    scene.traverse((o) => {
+      const l = o as THREE.PointLight;
+      if (l.isPointLight && l.visible && (l.layers.mask & 1) !== 0) out.push(l);
+    });
+    return out;
+  };
+  /** Which real lights (by index) the proxies are copying, from their positions. */
+  const copied = (scene: THREE.Scene) =>
+    rendered(scene)
+      .filter((l) => l.intensity > 0)
+      .map((l) => Math.round(l.position.x / 10))
+      .sort((a, b) => a - b);
+
+  it('draws a fixed pool of proxies instead of the real lights, picked near the camera before anything has rendered', () => {
+    const { lighting, scene, lights, camera } = row(90);
+    // No render has updated a world matrix. Read stale, every light and the
+    // camera sit at the origin and the tie-break picks 0 to 3.
+    lighting.attach(scene, camera);
+    const drawn = rendered(scene);
+    expect(drawn).toHaveLength(4);
+    expect(drawn.every((l) => l.name === LIGHT_PROXY_NAME)).toBe(true);
+    expect(copied(scene)).toEqual([6, 7, 8, 9]);
+    // The real lights are off by layer, not by `visible`, which stays the scene's switch.
+    expect(lights.every((l) => l.visible)).toBe(true);
+    expect(lighting.getStats()).toMatchObject({ active: 4, culled: 6, unrolled: 4, clusteredPath: false });
+  });
+
+  it('moves the selection through uniforms: the renderer sees the same four lights wherever the camera goes', () => {
+    const { lighting, scene, camera, world } = row(0);
+    lighting.attach(scene, camera);
+    const proxies = rendered(scene);
+    expect(copied(scene)).toEqual([0, 1, 2, 3]);
+    for (const x of [30, 60, 90]) {
+      camera.position.x = x;
+      camera.updateMatrixWorld();
+      lighting.run(world);
+      // Same objects, same count: no program changes, only their values.
+      expect(rendered(scene)).toEqual(proxies);
+    }
+    expect(copied(scene)).toEqual([6, 7, 8, 9]);
+  });
+
+  it('lets a flash take a slot for as long as it is lit, then gives it back', () => {
+    const { lighting, scene, lights, camera, world } = row(0);
+    lighting.attach(scene, camera);
+    const far = lights[9] as THREE.PointLight;
+    far.intensity = 50_000;
+    lighting.run(world);
+    expect(copied(scene)).toContain(9);
+    expect(rendered(scene)).toHaveLength(4);
+    far.intensity = 0;
+    lighting.run(world);
+    expect(copied(scene)).toEqual([0, 1, 2, 3]);
+  });
+
+  it('is not undone by another system turning the real lights back on every frame', () => {
+    const { lighting, scene, lights, camera, world } = row(0);
+    lighting.attach(scene, camera);
+    for (let frame = 0; frame < 3; frame++) {
+      // What RenderSync does to entity-attached lights before this system runs.
+      for (const l of lights) l.visible = true;
+      lighting.run(world);
+      expect(rendered(scene)).toHaveLength(4);
+    }
+  });
+
+  it('still counts every real light, drawn or not, for the gameplay light query', () => {
+    const { lighting, scene, camera } = row(0);
+    lighting.attach(scene, camera);
+    // Light 9 is far from the camera and not in the pool; standing under it is still standing in its light.
+    expect(lighting.illuminanceAt(new THREE.Vector3(90, 1, 0))).toBeGreaterThan(0);
+    expect(lighting.illuminanceAt(new THREE.Vector3(45, 1, 40))).toBe(0);
+  });
+
+  it('gives the lights back on detach', () => {
+    const { lighting, scene, lights, camera } = row(0);
+    lighting.attach(scene, camera);
+    lighting.detach();
+    expect(rendered(scene)).toEqual(lights);
   });
 });

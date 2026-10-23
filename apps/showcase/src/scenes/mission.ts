@@ -147,7 +147,8 @@ export const missionScene: SceneDefinition = {
     bag.add(gore);
     const ragdolls = new RagdollWorld(entities, physics);
     bag.add(ragdolls);
-    const demolition = new Demolition({ ...effects, physics, worldMeshes: level.meshes, sfx });
+    const plantSite = level.objectives.find((o) => o.kind === 'plant')?.position;
+    const demolition = new Demolition({ ...effects, physics, worldMeshes: level.meshes, sfx, ...(plantSite ? { site: plantSite } : {}) });
     bag.add(demolition);
     bag.add(entities.addSystem(ragdolls.system()));
     const operator = new Operator({ entities, physics, animation, renderSync, scene, model, sfx }, level.spawn, level.spawnYaw);

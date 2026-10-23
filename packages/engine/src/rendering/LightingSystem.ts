@@ -26,21 +26,30 @@ import type { SparkRenderer } from './Renderer';
  *    (point and spot lights that cast no shadow). Over budget, the lights
  *    with the highest importance (`lightImportance`: intensity over the
  *    squared gap between the camera and the light's radius) stay on and the
- *    rest are switched off (`visible = false`; restored when they make the
- *    cut again). Directional, hemisphere, ambient, rect-area and every
- *    shadow-casting light is pinned: it is never budgeted, because on either
- *    tier it is a term of the material shaders and toggling it would
- *    recompile them.
+ *    rest are switched off. Switched off means a layer mask no camera sees,
+ *    so three leaves the light out of its lights list while `visible` stays
+ *    the scene's own switch (RenderSync writes `visible` from the entity
+ *    every frame, and used to switch every culled level light back on).
+ *    Directional, hemisphere, ambient, rect-area and every shadow-casting
+ *    light is pinned: it is never budgeted, because on either tier it is a
+ *    term of the material shaders and toggling it would recompile them.
  * 2. **Clustered path (WebGPU only, ADR-001).** On WebGPU the scene's lights
  *    node is a `SparkClusteredLightsNode`: unshadowed point and spot lights
  *    are culled per screen cluster on the GPU and looped over in the shader,
  *    so the lit shaders no longer grow with the light count and changing the
  *    local light set changes buffers, never programs. The cluster grid follows
  *    the preset (`clusterGridForPreset`) and is fixed for the attached scene.
- *    On the WebGL2 tier nothing is clustered: the budget just caps how many
- *    local lights are unrolled (`COMPAT_LIGHT_CAP`, 8) so the compat shaders
- *    stay compact, and the selection is re-evaluated at a low cadence with
- *    hysteresis so a moving camera does not thrash the program cache.
+ *    On the WebGL2 tier nothing is clustered, and every local light the
+ *    renderer sees is unrolled into every lit shader, so a change in the set
+ *    is a recompile of every lit material: on the showcase, twenty seconds of
+ *    synchronous compiles each time the camera moved enough to swap one. So
+ *    on that tier the real local lights are all switched off and the budget
+ *    drives a fixed pool of proxy lights instead (`COMPAT_LIGHT_CAP`, 8, at
+ *    most), sized once at attach: each frame the proxies copy position,
+ *    colour, intensity and range from the most important real lights. The
+ *    selection changes uniforms, never programs ("vary by uniform, not by
+ *    graph", docs/performance/cold-start.md), so it runs every frame and a
+ *    muzzle flash can take a slot for the frames it is lit.
  */
 
 /** A light driven by an entity: `intensity` and `range` (three `distance`) are copied to the three light each frame. */
@@ -73,11 +82,11 @@ export interface LightingStats {
 /** Unrolled local lights the compat tier accepts regardless of preset. */
 export const COMPAT_LIGHT_CAP = 8;
 
-/** Frames between budget re-evaluations on the unrolled tier (each change is a shader recompile there). */
-const UNROLLED_REEVALUATE_FRAMES = 120;
-/** A candidate must beat the weakest active light by this factor to swap in (clustered tier: cheap, mild). */
+/** A candidate must beat the weakest active light by this factor to swap in: a swap is cheap on both tiers, but a light flickering in and out of the set pops. */
 const CLUSTERED_HYSTERESIS = 1.25;
-const UNROLLED_HYSTERESIS = 2;
+const POOL_HYSTERESIS = 1.5;
+/** Name and userData flag of the unrolled tier's proxy lights, for anything that walks the scene for lights. */
+export const LIGHT_PROXY_NAME = 'spark:light-proxy';
 
 /**
  * Pure: how much a local light matters to the camera. Intensity over the
@@ -116,8 +125,50 @@ interface Entry {
   readonly light: THREE.Light;
   /** Switched off by the budget (as opposed to hidden by the scene). */
   culled: boolean;
+  /** The light's own layer mask while the budget has it switched off. */
+  mask: number;
   /** Registered from the scene graph on attach; released on detach. */
   adopted: boolean;
+  /** Unrolled tier: the proxy slot this light is copied into, or -1. */
+  slot: number;
+}
+
+/** Unrolled tier: the proxies the renderer sees instead of the real local lights. Sized once; never changes shape while attached. */
+interface ProxyPool {
+  readonly points: THREE.PointLight[];
+  readonly spots: THREE.SpotLight[];
+  /** The entry each slot copies this frame (null: the slot is dark). */
+  readonly pointOwners: (Entry | null)[];
+  readonly spotOwners: (Entry | null)[];
+}
+
+/** Switch a light off for the budget, or back on: by layer, never by `visible`. */
+function setCulled(entry: Entry, culled: boolean): void {
+  if (culled === entry.culled) return;
+  entry.culled = culled;
+  if (culled) {
+    entry.mask = entry.light.layers.mask;
+    entry.light.layers.mask = 0;
+  } else entry.light.layers.mask = entry.mask;
+}
+
+/** Copy what a proxy needs from a real local light: its world position (and a spot's aim), colour and falloff. */
+function copyLight(from: THREE.Light, to: THREE.PointLight | THREE.SpotLight): void {
+  from.updateWorldMatrix(true, false);
+  to.position.setFromMatrixPosition(from.matrixWorld);
+  to.color.copy(from.color);
+  to.intensity = from.intensity;
+  const local = from as THREE.PointLight;
+  to.distance = local.distance;
+  to.decay = local.decay;
+  const spot = from as THREE.SpotLight;
+  if (spot.isSpotLight && (to as THREE.SpotLight).isSpotLight) {
+    const proxy = to as THREE.SpotLight;
+    proxy.angle = spot.angle;
+    proxy.penumbra = spot.penumbra;
+    spot.target.updateWorldMatrix(true, false);
+    proxy.target.position.setFromMatrixPosition(spot.target.matrixWorld);
+  }
 }
 
 interface LightingHost {
@@ -146,6 +197,7 @@ export class LightingSystem implements System, Disposable {
   private scene: THREE.Scene | null = null;
   private camera: THREE.Camera | null = null;
   private node: SparkClusteredLightsNode | null = null;
+  private pool: ProxyPool | null = null;
   private hostOverridden = false;
   private frames = 0;
   private dirty = true;
@@ -184,7 +236,7 @@ export class LightingSystem implements System, Disposable {
     this.camera = camera;
     scene.traverse((object) => {
       const light = object as THREE.Light;
-      if (light.isLight === true && !this.entries.has(light)) this.entries.set(light, { light, culled: false, adopted: true });
+      if (light.isLight === true && !this.entries.has(light) && light.userData['sparkLightProxy'] !== true) this.entries.set(light, { light, culled: false, mask: light.layers.mask, adopted: true, slot: -1 });
     });
     if (this.clusteredTier) {
       const grid = clusterGridForPreset(this.quality.preset);
@@ -196,6 +248,12 @@ export class LightingSystem implements System, Disposable {
       this.hostOverridden = true;
       this.log.debug(`clustered lighting: grid ${grid.tilesX}×${grid.tilesY}×${grid.zSlices}, ${grid.maxLightsPerCluster} lights/cluster, capacity ${CLUSTERED_LIGHT_CAPACITY}`);
     }
+    // The first selection reads world matrices, and nothing has rendered yet to
+    // update them: a camera still at the origin picks lights the first real
+    // re-evaluation then swaps out, which on the unrolled tier recompiles every
+    // lit material a few frames into the scene.
+    scene.updateMatrixWorld();
+    camera.updateMatrixWorld();
     this.dirty = true;
     this.applyBudget(true);
   }
@@ -203,11 +261,10 @@ export class LightingSystem implements System, Disposable {
   /** Forget the attached scene: adopted lights are released, culled lights restored, the clustered node removed. */
   detach(): void {
     for (const entry of this.entries.values()) {
-      if (entry.culled) {
-        entry.light.visible = true;
-        entry.culled = false;
-      }
+      setCulled(entry, false);
+      entry.slot = -1;
     }
+    this.releasePool();
     for (const [light, entry] of this.entries) if (entry.adopted) this.entries.delete(light);
     if (this.hostOverridden) {
       delete (this.renderer.three.lighting as unknown as Partial<LightingHost>).getNode;
@@ -226,7 +283,7 @@ export class LightingSystem implements System, Disposable {
   /** Track a light the scene added after attach (or one it wants budgeted). Returns the unregister function. */
   register(light: THREE.Light): () => void {
     if (!this.entries.has(light)) {
-      this.entries.set(light, { light, culled: false, adopted: false });
+      this.entries.set(light, { light, culled: false, mask: light.layers.mask, adopted: false, slot: -1 });
       this.dirty = true;
     }
     return () => this.unregister(light);
@@ -235,7 +292,7 @@ export class LightingSystem implements System, Disposable {
   unregister(light: THREE.Light): void {
     const entry = this.entries.get(light);
     if (!entry) return;
-    if (entry.culled) light.visible = true;
+    setCulled(entry, false);
     this.entries.delete(light);
     this.dirty = true;
   }
@@ -345,13 +402,13 @@ export class LightingSystem implements System, Disposable {
   }
 
   /**
-   * Select the local lights within budget. Clustered tier: every frame (the
-   * selection changes a buffer). Unrolled tier: only when the registered set
-   * changed, or every `UNROLLED_REEVALUATE_FRAMES`, with stronger hysteresis.
+   * Select the local lights within budget, every frame. Clustered tier: the
+   * selection switches real lights on and off, which changes a buffer.
+   * Unrolled tier: the real lights stay off and the selection decides which
+   * of them the proxy pool copies, which changes uniforms.
    */
   private applyBudget(force: boolean): void {
     const clusteredPath = this.node !== null;
-    const reevaluate = force || this.dirty || clusteredPath || this.frames % UNROLLED_REEVALUATE_FRAMES === 0;
     const budget = this.budget;
     let pinned = 0;
     const candidates = this.candidates;
@@ -363,50 +420,153 @@ export class LightingSystem implements System, Disposable {
         continue;
       }
       // Hidden by the scene itself: not a candidate, not counted as culled.
-      if (!light.visible && !entry.culled) continue;
+      if (!light.visible) {
+        setCulled(entry, false);
+        continue;
+      }
       candidates.push(entry);
     }
 
-    if (reevaluate) {
-      this.dirty = false;
-      const camera = this.camera;
-      if (camera) _cameraPosition.setFromMatrixPosition(camera.matrixWorld);
-      else _cameraPosition.set(0, 0, 0);
-      const importance = this.importance;
-      const active = this.active;
-      importance.length = candidates.length;
-      active.length = candidates.length;
-      for (let i = 0; i < candidates.length; i++) {
-        const entry = candidates[i] as Entry;
-        const light = entry.light as THREE.PointLight;
-        _lightPosition.setFromMatrixPosition(light.matrixWorld);
-        importance[i] = lightImportance(light.intensity, _lightPosition.distanceTo(_cameraPosition), light.distance);
-        active[i] = !entry.culled;
-      }
-      const selected = selectLights(importance, budget, active, clusteredPath ? CLUSTERED_HYSTERESIS : UNROLLED_HYSTERESIS);
-      for (let i = 0; i < candidates.length; i++) {
-        const entry = candidates[i] as Entry;
-        const keep = selected[i] as boolean;
-        if (keep === !entry.culled) continue;
-        entry.culled = !keep;
-        entry.light.visible = keep;
-      }
+    const camera = this.camera;
+    if (camera) _cameraPosition.setFromMatrixPosition(camera.matrixWorld);
+    else _cameraPosition.set(0, 0, 0);
+    const importance = this.importance;
+    importance.length = candidates.length;
+    for (let i = 0; i < candidates.length; i++) {
+      const light = (candidates[i] as Entry).light as THREE.PointLight;
+      _lightPosition.setFromMatrixPosition(light.matrixWorld);
+      importance[i] = lightImportance(light.intensity, _lightPosition.distanceTo(_cameraPosition), light.distance);
     }
 
-    let culled = 0;
-    for (const entry of candidates) if (entry.culled) culled++;
-    const activeLocal = candidates.length - culled;
+    let lit = 0;
+    if (clusteredPath || this.scene === null) {
+      const active = this.active;
+      active.length = candidates.length;
+      for (let i = 0; i < candidates.length; i++) active[i] = !(candidates[i] as Entry).culled;
+      const selected = selectLights(importance, budget, active, CLUSTERED_HYSTERESIS);
+      for (let i = 0; i < candidates.length; i++) {
+        setCulled(candidates[i] as Entry, !(selected[i] as boolean));
+        if (selected[i]) lit++;
+      }
+    } else {
+      if (force || this.dirty || !this.pool) this.sizePool(candidates, budget);
+      lit = this.fillPool(candidates, importance);
+    }
+    this.dirty = false;
+
+    const poolSize = this.pool ? this.pool.points.length + this.pool.spots.length : 0;
     this.stats = {
       registered: this.entries.size,
-      active: pinned + activeLocal,
-      clustered: clusteredPath ? activeLocal : 0,
-      unrolled: pinned + (clusteredPath ? 0 : activeLocal),
-      culled,
+      active: pinned + lit,
+      clustered: clusteredPath ? lit : 0,
+      unrolled: pinned + (clusteredPath ? 0 : poolSize),
+      culled: candidates.length - lit,
       budget,
       clusteredPath,
       grid: this.node?.grid ?? null,
       computeMs: clusteredPath ? this.computeMs : null,
     };
+  }
+
+  /**
+   * Unrolled tier: give the pool one proxy per budget slot the scene can use,
+   * split between point and spot lights by how many of each it has. Only a
+   * change of size rebuilds it (and recompiles); attach sizes it before the
+   * warm-up, so a scene whose lights are all made at load never does.
+   */
+  private sizePool(candidates: readonly Entry[], budget: number): void {
+    const scene = this.scene;
+    if (!scene) return;
+    let points = 0;
+    let spots = 0;
+    for (const entry of candidates) {
+      if ((entry.light as THREE.SpotLight).isSpotLight) spots++;
+      else points++;
+    }
+    const pointSlots = Math.min(budget, points);
+    const spotSlots = Math.min(budget - pointSlots, spots);
+    if (this.pool && this.pool.points.length === pointSlots && this.pool.spots.length === spotSlots) return;
+    this.releasePool();
+    const tag = (light: THREE.PointLight | THREE.SpotLight): void => {
+      light.name = LIGHT_PROXY_NAME;
+      light.userData['sparkLightProxy'] = true;
+      light.castShadow = false;
+      light.intensity = 0;
+      scene.add(light);
+    };
+    const pool: ProxyPool = {
+      points: Array.from({ length: pointSlots }, () => new THREE.PointLight()),
+      spots: Array.from({ length: spotSlots }, () => new THREE.SpotLight()),
+      pointOwners: new Array<Entry | null>(pointSlots).fill(null),
+      spotOwners: new Array<Entry | null>(spotSlots).fill(null),
+    };
+    for (const light of pool.points) tag(light);
+    for (const light of pool.spots) {
+      tag(light);
+      light.target.name = `${LIGHT_PROXY_NAME}:target`;
+      scene.add(light.target);
+    }
+    this.pool = pool;
+    for (const entry of this.entries.values()) entry.slot = -1;
+    if (pointSlots + spotSlots > 0) this.log.debug(`unrolled lighting: ${pointSlots} point and ${spotSlots} spot proxies for ${candidates.length} local lights`);
+  }
+
+  /** Unrolled tier: switch every real local light off and copy the most important into the proxies. Returns how many are lit through them. */
+  private fillPool(candidates: readonly Entry[], importance: readonly number[]): number {
+    const pool = this.pool;
+    for (const entry of candidates) setCulled(entry, true);
+    if (!pool) return 0;
+    let lit = 0;
+    const fill = (spot: boolean, proxies: (THREE.PointLight | THREE.SpotLight)[], owners: (Entry | null)[]): void => {
+      const picks: number[] = [];
+      for (let i = 0; i < candidates.length; i++) if ((((candidates[i] as Entry).light as THREE.SpotLight).isSpotLight === true) === spot) picks.push(i);
+      const active = picks.map((i) => (candidates[i] as Entry).slot >= 0);
+      const selected = selectLights(picks.map((i) => importance[i] as number), proxies.length, active, POOL_HYSTERESIS);
+      // A light that stays selected keeps its slot; new ones take the freed slots.
+      const incoming: Entry[] = [];
+      for (let k = 0; k < picks.length; k++) {
+        const entry = candidates[picks[k] as number] as Entry;
+        if (!selected[k]) {
+          if (entry.slot >= 0 && owners[entry.slot] === entry) owners[entry.slot] = null;
+          entry.slot = -1;
+        } else if (entry.slot < 0 || owners[entry.slot] !== entry) {
+          entry.slot = -1;
+          incoming.push(entry);
+        }
+      }
+      for (let slot = 0; slot < owners.length && incoming.length > 0; slot++) {
+        const owner = owners[slot];
+        if (owner && owner.slot === slot && candidates.includes(owner)) continue;
+        const entry = incoming.shift() as Entry;
+        owners[slot] = entry;
+        entry.slot = slot;
+      }
+      for (let slot = 0; slot < proxies.length; slot++) {
+        const proxy = proxies[slot] as THREE.PointLight | THREE.SpotLight;
+        const owner = owners[slot] ?? null;
+        if (owner && owner.slot === slot && candidates.includes(owner)) {
+          copyLight(owner.light, proxy);
+          lit++;
+        } else {
+          owners[slot] = null;
+          proxy.intensity = 0;
+        }
+      }
+    };
+    fill(false, pool.points, pool.pointOwners);
+    fill(true, pool.spots, pool.spotOwners);
+    return lit;
+  }
+
+  private releasePool(): void {
+    const pool = this.pool;
+    if (!pool) return;
+    for (const light of [...pool.points, ...pool.spots]) {
+      light.removeFromParent();
+      light.dispose();
+    }
+    for (const light of pool.spots) light.target.removeFromParent();
+    this.pool = null;
   }
 
   private emptyStats(): LightingStats {
