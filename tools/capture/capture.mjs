@@ -98,8 +98,10 @@ export async function captureOne(browser, baseUrl, options) {
   const url = `${baseUrl}?${params.toString()}`;
   const started = Date.now();
   await page.goto(url, { waitUntil: 'load' });
+  // The showcase on the WebGL2 tier takes about 75 s to boot headless on this
+  // machine (2026-10-23), past the old 60 s: the same budget the probe suite gives it.
   await page.waitForFunction(() => window.__spark && (window.__spark.ready || window.__spark.error), null, {
-    timeout: 60_000,
+    timeout: 180_000,
   });
   const bootError = await page.evaluate(() => window.__spark?.error ?? null);
   let snapshot = null;
