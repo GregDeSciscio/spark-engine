@@ -8,8 +8,10 @@ with spark.* custom properties (ADR-008). Run headless:
 Everything gameplay-relevant is a custom property on an object, never a name:
 
     spark.type=spawn      team=player                  the operator's insertion point
-    spark.type=objective  kind/label/radius/hold/order the mission, in `order`
-    spark.type=patrol     route/index                  one point of an enemy loop
+    spark.type=objective  kind/label/radius/order      the mission, in `order` (kind: reach|plant|eliminate|extract)
+                          hold/fuse/defuse (plant)     seconds to set it, to burn, for a hostile to pull it
+                          target (eliminate)           the patrol route whose hostile must die
+    spark.type=patrol     route/index[/role]           one point of an enemy loop (role=hvt: a target)
     spark.type=reinforce  id/wave/route/index          an alert ingress point (wave: alerted|lockdown)
     spark.type=target     index                        a range dummy
     spark.type=light      color/intensity/range        a neon or lamp point light
@@ -415,18 +417,25 @@ def build(level: Level):
     # ---- gameplay ---------------------------------------------------------------------
     spawn_z = STREET_Z_MAX - 6
     level.empty('spawn_operator', 0, 0, spawn_z, {'type': 'spawn', 'team': 'player', 'yaw': 0.0}, display='ARROWS', size=1.0)
+    # Insert -> three objectives -> extract (docs/design/mission-shape.md). The
+    # broker is a tagged Eliminate: the objective names his patrol route. The
+    # charge burns for `fuse` seconds after the hold, and a hostile who stands
+    # at it for `defuse` seconds pulls it off the wall.
+    broker_at = (-7, 0, -38)
     objectives = [
-        ('square', 'reach', 'Reach the square', 0, 0, -8, 3.0, 0.0),
-        ('charge', 'plant', 'Set the charge on the depot wall', 0, 0, STREET_Z_MIN + 4, 2.2, 3.0),
-        ('extract', 'reach', 'Return to extraction', 0, 0, spawn_z, 3.0, 0.0),
+        ('square', 'reach', 'Reach the square', 0, 0, -8, 3.0, {}),
+        ('broker', 'eliminate', 'Eliminate the broker', *broker_at, 1.0, {'target': 'Broker'}),
+        # Against the depot wall itself (its face is at STREET_Z_MIN).
+        ('charge', 'plant', 'Set the charge on the depot wall', 0, 0, STREET_Z_MIN + 1.4, 2.2, {'hold': 3.0, 'fuse': 20.0, 'defuse': 4.0}),
+        ('extract', 'extract', 'Extract at the insert', 0, 0, spawn_z, 3.0, {}),
     ]
-    for order, (oid, kind, label, x, y, z, radius, hold) in enumerate(objectives):
+    for order, (oid, kind, label, x, y, z, radius, extra) in enumerate(objectives):
         level.empty(
             f'objective_{oid}', x, y, z,
-            {'type': 'objective', 'id': oid, 'kind': kind, 'label': label, 'radius': radius, 'hold': hold, 'order': order},
+            {'type': 'objective', 'id': oid, 'kind': kind, 'label': label, 'radius': radius, 'order': order, **extra},
             display='CIRCLE', size=radius,
         )
-    # The garrison: eight riflemen on loops that overlap enough to cover every
+    # The garrison: eight riflemen and the broker, on loops that overlap enough to cover every
     # lane, spread from the insert end to the depot (Milestone 10 wants 8 to 12
     # with routes). Reinforcements land on top of these, capped at 12 live.
     patrols = {
@@ -441,17 +450,25 @@ def build(level: Level):
         'Rifleman 6': [(-5, 0, -62), (5, 0, -64), (2, 0, -56)],
         'Rifleman 7': [(-6, 0, -28), (6, 0, -36), (-4, 0, -40)],
         'Rifleman 8': [(7, 0, -2), (7, 0, -20), (2, 0, -30)],
+        # The objective: a short beat under the west neon, inside Rifleman 2's
+        # and 7's loops, so reaching him quietly means slipping two watchers.
+        'Broker': [broker_at, (-3, 0, -40), (-6, 0, -34)],
     }
+    roles = {'Broker': 'hvt'}
     for route, points in patrols.items():
         for index, (x, y, z) in enumerate(points):
-            level.empty(f'patrol_{route.replace(" ", "_")}_{index}', x, y, z, {'type': 'patrol', 'route': route, 'index': index}, display='CONE', size=0.6)
+            props = {'type': 'patrol', 'route': route, 'index': index}
+            if route in roles:
+                props['role'] = roles[route]
+            level.empty(f'patrol_{route.replace(" ", "_")}_{index}', x, y, z, props, display='CONE', size=0.6)
     # Where the sector sends hostiles in from once the alert model escalates
     # (docs/design/mission-shape.md, apps/showcase/src/mission/Alert.ts). The
     # alerted wave comes from the depot end the player is heading into; the
     # lockdown wave adds the flanks and one behind, on the extraction leg, so
     # a loud run has to fight its way back out.
     reinforcements = [
-        ('depot_north', 'alerted', 0, 0, -66, 'Rifleman 3'),
+        # Off to the side of the plant site: the first arrival after the alarm comes round the corner, not out of the charge.
+        ('depot_north', 'alerted', -6.5, 0, -66, 'Rifleman 3'),
         ('side_west', 'alerted', -7.5, 0, -30, 'Rifleman 2'),
         ('depot_east', 'lockdown', 7.5, 0, -60, 'Rifleman 3'),
         ('square_east', 'lockdown', 7.5, 0, -14, 'Rifleman 1'),

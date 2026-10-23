@@ -27,6 +27,8 @@ export interface PatrolSpec {
   readonly name: string;
   /** Feet positions; the first is the spawn. */
   readonly route: readonly THREE.Vector3[];
+  /** `hvt`: a high-value target an Eliminate objective names. Dressed and labelled apart from the riflemen. */
+  readonly role?: 'hvt';
 }
 
 export interface MissionLevel {
@@ -150,6 +152,8 @@ export const PROP_KIT = [
   'portable_generator',
 ] as const;
 
+const OBJECTIVE_KINDS: readonly ObjectiveKind[] = ['reach', 'plant', 'eliminate', 'extract'];
+
 const PROP_URLS: Readonly<Record<string, string>> = Object.fromEntries(PROP_KIT.map((id) => [id, `/models/${id}.glb`]));
 
 export interface StreetLevelDeps {
@@ -213,6 +217,7 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
   let colliderIndex = 0;
   const objectives: (ObjectiveDef & { order: number })[] = [];
   const routes = new Map<string, { index: number; position: THREE.Vector3 }[]>();
+  const roles = new Map<string, 'hvt'>();
   const reinforcements: (ReinforcementPoint & { order: number })[] = [];
   const targets: { index: number; position: THREE.Vector3 }[] = [];
   const vfx: VfxSpot[] = [];
@@ -234,14 +239,21 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
     const s = d.node.spark;
     switch (d.type) {
       case 'objective': {
-        const kind = str(s.kind, 'reach') as ObjectiveKind;
+        const kind = str(s.kind, 'reach');
+        if (!OBJECTIVE_KINDS.includes(kind as ObjectiveKind)) {
+          logger.warn(`street: objective ${d.node.path} has unknown kind "${kind}"; skipped`);
+          break;
+        }
         objectives.push({
           id: str(s.id, d.node.name),
-          kind,
+          kind: kind as ObjectiveKind,
           label: str(s.label, d.node.name),
           position: positionOf(d),
           radius: num(s.radius, 3),
           holdSeconds: num(s.hold, 3),
+          fuseSeconds: num(s.fuse, 0),
+          defuseSeconds: num(s.defuse, 4),
+          ...(typeof s.target === 'string' && s.target.length > 0 ? { target: s.target } : {}),
           order: num(s.order, objectives.length),
         });
         break;
@@ -251,6 +263,7 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
         const list = routes.get(route) ?? [];
         list.push({ index: num(s.index, list.length), position: positionOf(d) });
         routes.set(route, list);
+        if (s.role === 'hvt') roles.set(route, 'hvt');
         break;
       }
       case 'reinforce': {
@@ -292,7 +305,14 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
   objectives.sort((a, b) => a.order - b.order);
   const patrols: PatrolSpec[] = [...routes.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, points]) => ({ name, route: points.sort((a, b) => a.index - b.index).map((p) => p.position) }));
+    .map(([name, points]) => {
+      const role = roles.get(name);
+      return { name, route: points.sort((a, b) => a.index - b.index).map((p) => p.position), ...(role ? { role } : {}) };
+    });
+  // An Eliminate that names a route nobody walks can never complete: say so at load, not at the end of the mission.
+  for (const o of objectives) {
+    if (o.target !== undefined && !routes.has(o.target)) logger.warn(`street: objective "${o.id}" targets "${o.target}", which no patrol route is called`);
+  }
   targets.sort((a, b) => a.index - b.index);
   reinforcements.sort((a, b) => a.order - b.order);
 

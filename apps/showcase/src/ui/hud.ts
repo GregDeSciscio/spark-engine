@@ -9,10 +9,45 @@ import type { Stance } from '../actors/Operator';
  * stance as a figure, ammo as digits with a reload ring, the hostiles' loudest
  * awareness state as one icon that changes colour, the objective as an icon
  * with a distance chip and step dots, a key cap with a hold ring for
- * interactions, the click-to-play card, and the failed / complete bands.
- * Plain DOM in the engine's `hud` layer; no game state lives here.
+ * interactions, the charge's fuse and anyone pulling it, short toasts for
+ * what just changed, the click-to-play card with the operation's briefing,
+ * the failed band and the debrief. Plain DOM in the engine's `hud` layer; no
+ * game state lives here.
  */
-export type ObjectiveKind = 'reach' | 'plant' | 'eliminate';
+export type ObjectiveKind = 'reach' | 'plant' | 'eliminate' | 'extract';
+
+/** One line of the briefing: an objective and where the run is with it. */
+export interface BriefingItem {
+  readonly kind: ObjectiveKind;
+  readonly label: string;
+  readonly state: 'done' | 'now' | 'todo';
+}
+
+/** The armed charge, for the fuse panel. */
+export interface ChargeReadout {
+  /** Seconds left. */
+  readonly fuse: number;
+  readonly total: number;
+  /** 0..1 how far a hostile has got with pulling it. */
+  readonly defuse: number;
+  /** The operator is inside the blast and it is nearly time. */
+  readonly danger: boolean;
+}
+
+/** What the debrief card shows. Numbers are formatted here. */
+export interface Debrief {
+  readonly rating: string;
+  readonly seconds: number;
+  readonly kills: number;
+  readonly shots: number;
+  readonly hits: number;
+  /** Times a hostile had eyes on the operator. */
+  readonly spotted: number;
+  readonly peakTier: 'quiet' | 'alerted' | 'lockdown';
+  readonly reloads: number;
+}
+
+export type ToastTone = 'good' | 'warn' | 'bad';
 
 export interface OperatorHud {
   /** `note` replaces the click-to-play card's hint when the browser refuses pointer lock. */
@@ -38,8 +73,15 @@ export interface OperatorHud {
   setScore(hits: number, kills: number, enemiesLeft: number): void;
   /** Current objective; `progress` 0..1 fills the hold ring, `prompt` shows the interact key. */
   setObjective(index: number, total: number, kind: ObjectiveKind | null, label: string | null, distance: number, progress: number, prompt: string | null): void;
+  /** The fuse panel while a charge burns; null hides it. */
+  setCharge(charge: ChargeReadout | null): void;
+  /** A one-line notice under the sector tier: "target down", "charge pulled". */
+  toast(text: string, tone: ToastTone): void;
+  /** The operation's name and objectives on the click-to-play card. */
+  setBriefing(title: string, items: readonly BriefingItem[]): void;
   setFailed(visible: boolean): void;
-  setComplete(visible: boolean): void;
+  /** The end of the run; null hides it. */
+  setDebrief(debrief: Debrief | null): void;
   dispose(): void;
 }
 
@@ -62,6 +104,7 @@ const ICON = {
   prone: '<circle cx="4" cy="14" r="2"/><path d="M6 15h14"/><path d="M9 15l-1 4"/><path d="M17 15l1 4"/>',
   mouse: '<rect x="7" y="3" width="10" height="18" rx="5"/><path d="M12 3v6"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  exit: '<path d="M14 3h5a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1h-5"/><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/>',
 } as const;
 
 function icon(name: keyof typeof ICON, size = 16, cls = ''): string {
@@ -78,7 +121,12 @@ const ALERT = {
   alert: { icon: 'alert', color: '#ff2b5a' },
 } as const;
 
-const OBJECTIVE_ICON: Record<ObjectiveKind, keyof typeof ICON> = { reach: 'flag', plant: 'bomb', eliminate: 'target' };
+const OBJECTIVE_ICON: Record<ObjectiveKind, keyof typeof ICON> = { reach: 'flag', plant: 'bomb', eliminate: 'target', extract: 'exit' };
+
+function clock(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
 
 const STYLE = `
 .spark-ui-root { --hx-cyan: #19c8d8; --hx-magenta: #ff2bd6; --hx-red: #ff2b5a; --hx-fg: #e6f0ff; --hx-dim: rgba(230,240,255,0.55);
@@ -180,6 +228,35 @@ const STYLE = `
 .hx-band-sub { margin-top: 14px; display: flex; justify-content: center; align-items: center; gap: 8px; font: 11px/1 var(--hx-font); letter-spacing: 0.18em; text-transform: uppercase; color: var(--hx-dim); }
 .hx-band[data-kind="failed"] { --hx-band-color: var(--hx-red); }
 .hx-band[data-kind="complete"] { --hx-band-color: #6be3a0; }
+.hx-debrief-rating { margin-top: 12px; font: 600 12px/1 var(--hx-font); letter-spacing: 0.5em; text-transform: uppercase; color: var(--hx-fg); }
+.hx-debrief-stats { margin: 18px auto 0; display: grid; grid-template-columns: repeat(6, auto); justify-content: center; gap: 4px 30px; }
+.hx-debrief-stats b { display: block; font: 600 22px/1 var(--hx-mono); font-variant-numeric: tabular-nums; color: var(--hx-fg); }
+.hx-debrief-stats span { display: block; margin-top: 6px; font: 10px/1 var(--hx-font); letter-spacing: 0.18em; text-transform: uppercase; color: var(--hx-dim); }
+
+.hx-charge { left: 18px; top: 74px; display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 4px 12px; padding: 9px 16px 10px 12px; min-width: 200px; }
+.hx-charge .hx-ic { grid-row: span 2; color: var(--hx-red); animation: hx-pulse 0.6s ease-in-out infinite; }
+.hx-charge-time { font: 600 22px/1 var(--hx-mono); font-variant-numeric: tabular-nums; color: var(--hx-fg); }
+.hx-charge-note { font: 600 10px/1.2 var(--hx-font); letter-spacing: 0.18em; text-transform: uppercase; color: var(--hx-dim); }
+.hx-charge[data-danger="1"] .hx-charge-note, .hx-charge[data-pull="1"] .hx-charge-note { color: var(--hx-red); animation: hx-pulse 0.5s ease-in-out infinite; }
+.hx-charge .hx-track { grid-column: 1 / -1; margin-top: 6px; }
+.hx-fill[data-kind="fuse"] { background: linear-gradient(90deg, #ffd166, #ff8a3a); }
+.hx-fill[data-kind="pull"] { background: var(--hx-red); box-shadow: 0 0 8px rgba(255,43,90,0.6); }
+
+.hx-toast { left: 50%; top: 130px; padding: 7px 14px; border: 1px solid var(--hx-toast); background: var(--hx-glass); backdrop-filter: blur(10px); font: 600 11px/1 var(--hx-font); letter-spacing: 0.22em; text-transform: uppercase; color: var(--hx-toast); white-space: nowrap; opacity: 0; transform: translateX(-50%); }
+.hx-toast[data-tone="good"] { --hx-toast: #6be3a0; }
+.hx-toast[data-tone="warn"] { --hx-toast: #ffd166; }
+.hx-toast[data-tone="bad"] { --hx-toast: #ff8aa5; }
+.hx-toast[data-flash="1"] { animation: hx-toast 3s ease-out; }
+
+.hx-brief { display: flex; flex-direction: column; align-items: center; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--hx-line); }
+.hx-brief[hidden] { display: none; }
+.hx-brief-title { font: 600 11px/1 var(--hx-font); letter-spacing: 0.42em; text-transform: uppercase; color: var(--hx-cyan); }
+.hx-brief-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 18px; max-width: 620px; }
+.hx-brief-list span { display: inline-flex; align-items: center; gap: 6px; font: 12px/1 var(--hx-font); letter-spacing: 0.04em; color: var(--hx-dim); }
+.hx-brief-list span .hx-ic { color: var(--hx-cyan); }
+.hx-brief-list span[data-state="done"] { text-decoration: line-through; }
+.hx-brief-list span[data-state="done"] .hx-ic { color: #6be3a0; }
+.hx-brief-list span[data-state="now"] { color: #fff; }
 `;
 
 function el(cls: string, html = ''): HTMLDivElement {
@@ -234,8 +311,11 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
   const killsEl = score.querySelector('.hx-kills') as HTMLElement;
   const leftEl = score.querySelector('.hx-left') as HTMLElement;
 
-  const objective = el('hx-objective hx-panel', `${icon('flag', 20, 'hx-obj-ic')}<div><div class="hx-objective-label"></div><div class="hx-objective-steps"></div></div><div class="hx-chip"></div>`);
-  const objectiveIconSlot = objective.querySelector('.hx-obj-ic') as SVGElement;
+  // The icon sits in a slot that keeps its place. Replacing the svg itself
+  // (outerHTML) detached the node the next update wrote to, so the icon froze
+  // on the first objective's.
+  const objective = el('hx-objective hx-panel', `<span class="hx-obj-slot">${icon('flag', 20)}</span><div><div class="hx-objective-label"></div><div class="hx-objective-steps"></div></div><div class="hx-chip"></div>`);
+  const objectiveIconSlot = objective.querySelector('.hx-obj-slot') as HTMLElement;
   const objectiveLabel = objective.querySelector('.hx-objective-label') as HTMLElement;
   const objectiveSteps = objective.querySelector('.hx-objective-steps') as HTMLElement;
   const objectiveChip = objective.querySelector('.hx-chip') as HTMLElement;
@@ -244,9 +324,23 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
   const holdArc = interact.querySelector('.fg') as SVGCircleElement;
   interact.hidden = true;
 
+  const charge = el(
+    'hx-charge hx-panel',
+    `${icon('bomb', 22)}<div class="hx-charge-time">0.0</div><div class="hx-charge-note">hold the site</div>` +
+      `<div class="hx-track"><div class="hx-fill" data-kind="fuse"></div></div>`,
+  );
+  const chargeTime = charge.querySelector('.hx-charge-time') as HTMLElement;
+  const chargeNote = charge.querySelector('.hx-charge-note') as HTMLElement;
+  const chargeFill = charge.querySelector('.hx-fill') as HTMLElement;
+  charge.hidden = true;
+
+  const toast = el('hx-toast');
+  toast.hidden = true;
+
   const prompt = el(
     'hx-prompt hx-panel',
-    `<div class="hx-prompt-title">${icon('mouse', 18)}click to play</div>` +
+    `<div class="hx-brief" hidden><div class="hx-brief-title"></div><div class="hx-brief-list"></div></div>` +
+      `<div class="hx-prompt-title">${icon('mouse', 18)}click to play</div>` +
       `<div class="hx-legend">` +
       `<span>${key('W')}${key('A')}${key('S')}${key('D')} move</span>` +
       `<span>${key('Shift')} sprint</span>` +
@@ -261,15 +355,24 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
   );
   const promptNote = prompt.querySelector('.hx-note') as HTMLElement;
   const promptTitle = prompt.querySelector('.hx-prompt-title') as HTMLElement;
+  const brief = prompt.querySelector('.hx-brief') as HTMLElement;
+  const briefTitle = prompt.querySelector('.hx-brief-title') as HTMLElement;
+  const briefList = prompt.querySelector('.hx-brief-list') as HTMLElement;
 
   const failed = el('hx-band', `<div class="hx-band-title">${icon('skull', 28)}mission failed</div><div class="hx-band-sub">${key('Enter')} retry from checkpoint</div>`);
   failed.dataset['kind'] = 'failed';
   failed.hidden = true;
-  const complete = el('hx-band', `<div class="hx-band-title">${icon('check', 28)}mission complete</div>`);
+  const complete = el(
+    'hx-band',
+    `<div class="hx-band-title">${icon('check', 28)}mission complete</div><div class="hx-debrief-rating"></div>` +
+      `<div class="hx-debrief-stats"></div><div class="hx-band-sub">${key('Enter')} play again</div>`,
+  );
   complete.dataset['kind'] = 'complete';
   complete.hidden = true;
+  const debriefRating = complete.querySelector('.hx-debrief-rating') as HTMLElement;
+  const debriefStats = complete.querySelector('.hx-debrief-stats') as HTMLElement;
 
-  const all = [vignette, dot, ring, hitMarker, vitals, stance, ammo, alert, sector, reinforce, score, objective, interact, prompt, failed, complete];
+  const all = [vignette, dot, ring, hitMarker, vitals, stance, ammo, alert, sector, reinforce, toast, score, objective, charge, interact, prompt, failed, complete];
   for (const node of all) ui.mount('hud', node);
 
   let lastRadius = -1;
@@ -280,8 +383,11 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
   let lastAmmo = '';
   let lastObjective = '';
   let lastTier = '';
+  let lastBriefing = '';
+  let lastCharge = '';
   let hitTimer = 0;
   let reinforceTimer = 0;
+  let toastTimer = 0;
 
   return {
     setLocked(locked, note = null) {
@@ -389,7 +495,7 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
       const state = `${index}|${total}|${kind}|${label}`;
       if (state !== lastObjective) {
         lastObjective = state;
-        objectiveIconSlot.outerHTML = icon(label && kind ? OBJECTIVE_ICON[kind] : 'check', 20, 'hx-obj-ic');
+        objectiveIconSlot.innerHTML = icon(label && kind ? OBJECTIVE_ICON[kind] : 'check', 20);
         objectiveLabel.textContent = label ?? 'complete';
         objectiveSteps.innerHTML = Array.from({ length: total }, (_, i) => `<i${i < index || !label ? ' data-done="1"' : i === index ? ' data-now="1"' : ''}></i>`).join('');
       }
@@ -398,15 +504,76 @@ export function createOperatorHud(ui: UIHost): OperatorHud {
       interact.hidden = promptText === null;
       if (promptText !== null) holdArc.style.strokeDashoffset = String(163 * (1 - progress));
     },
+    setCharge(state) {
+      charge.hidden = state === null;
+      if (!state) {
+        lastCharge = '';
+        return;
+      }
+      chargeTime.textContent = state.fuse.toFixed(1);
+      const pulling = state.defuse > 0;
+      const mode = pulling ? 'pull' : state.danger ? 'danger' : 'hold';
+      if (mode !== lastCharge) {
+        lastCharge = mode;
+        charge.dataset['pull'] = pulling ? '1' : '0';
+        charge.dataset['danger'] = !pulling && state.danger ? '1' : '0';
+        chargeNote.textContent = pulling ? 'charge being pulled' : state.danger ? 'clear the blast' : 'hold the site';
+        chargeFill.dataset['kind'] = pulling ? 'pull' : 'fuse';
+      }
+      const fill = pulling ? state.defuse : state.total > 0 ? state.fuse / state.total : 0;
+      chargeFill.style.transform = `scaleX(${Math.max(0, Math.min(1, fill)).toFixed(3)})`;
+    },
+    toast(text, tone) {
+      toast.hidden = false;
+      toast.textContent = text;
+      toast.dataset['tone'] = tone;
+      toast.dataset['flash'] = '0';
+      window.clearTimeout(toastTimer);
+      // Restart the animation even when a toast is still up.
+      toastTimer = window.setTimeout(() => {
+        toast.dataset['flash'] = '1';
+      }, 0);
+    },
+    setBriefing(title, items) {
+      const state = `${title}|${items.map((i) => `${i.kind}:${i.state}:${i.label}`).join('|')}`;
+      if (state === lastBriefing) return;
+      lastBriefing = state;
+      brief.hidden = items.length === 0;
+      briefTitle.textContent = title;
+      briefList.replaceChildren(
+        ...items.map((i) => {
+          const line = document.createElement('span');
+          line.dataset['state'] = i.state;
+          line.innerHTML = icon(i.state === 'done' ? 'check' : OBJECTIVE_ICON[i.kind], 14);
+          line.append(i.label);
+          return line;
+        }),
+      );
+    },
     setFailed(visible) {
       failed.hidden = !visible;
     },
-    setComplete(visible) {
-      complete.hidden = !visible;
+    setDebrief(debrief) {
+      complete.hidden = debrief === null;
+      // The run is over: what it was tracking leaves the screen with it.
+      for (const node of [alert, sector, reinforce, toast, charge, interact]) node.style.visibility = debrief ? 'hidden' : '';
+      if (!debrief) return;
+      debriefRating.textContent = debrief.rating;
+      const accuracy = debrief.shots > 0 ? `${Math.round((100 * debrief.hits) / debrief.shots)}%` : '-';
+      const cells: [string, string][] = [
+        [clock(debrief.seconds), 'time'],
+        [String(debrief.kills), 'kills'],
+        [accuracy, 'accuracy'],
+        [String(debrief.spotted), 'spotted'],
+        [debrief.peakTier, 'sector'],
+        [String(debrief.reloads), 'reloads'],
+      ];
+      debriefStats.innerHTML = cells.map(([value, name]) => `<div><b>${value}</b><span>${name}</span></div>`).join('');
     },
     dispose() {
       window.clearTimeout(hitTimer);
       window.clearTimeout(reinforceTimer);
+      window.clearTimeout(toastTimer);
       for (const node of all) ui.unmount(node);
       style.remove();
     },

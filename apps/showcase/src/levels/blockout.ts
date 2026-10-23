@@ -141,8 +141,7 @@ export function buildBlockout(scene: THREE.Scene, entities: EntityWorld, physics
     { position: new THREE.Vector3(9.5, 0.15, 24), yaw: 0 },
     { position: new THREE.Vector3(9.5, 0.15, 16), yaw: 0 },
   ];
-  // Three riflemen: one close, two deeper in, each on a short loop.
-  // The same garrison the street authors, so the two levels play the same.
+  // The same garrison the street authors (eight riflemen and the broker), so the two levels play the same.
   const patrols = [
     { name: 'Rifleman 1', route: [new THREE.Vector3(5, 0, -4), new THREE.Vector3(-2, 0, -12), new THREE.Vector3(-4, 0, 6)] },
     { name: 'Rifleman 2', route: [new THREE.Vector3(4, 0, -24), new THREE.Vector3(-5, 0, -34)] },
@@ -153,22 +152,24 @@ export function buildBlockout(scene: THREE.Scene, entities: EntityWorld, physics
     { name: 'Rifleman 6', route: [new THREE.Vector3(-5, 0, -62), new THREE.Vector3(5, 0, -64), new THREE.Vector3(2, 0, -56)] },
     { name: 'Rifleman 7', route: [new THREE.Vector3(-6, 0, -28), new THREE.Vector3(6, 0, -36), new THREE.Vector3(-4, 0, -40)] },
     { name: 'Rifleman 8', route: [new THREE.Vector3(7, 0, -2), new THREE.Vector3(7, 0, -20), new THREE.Vector3(2, 0, -30)] },
+    { name: 'Broker', role: 'hvt' as const, route: [new THREE.Vector3(-7, 0, -38), new THREE.Vector3(-3, 0, -40), new THREE.Vector3(-6, 0, -34)] },
   ];
   // Ingress points for the alert director; the street authors the same set as
   // `spark.type=reinforce` empties (see `tools/level-authoring/street.py`).
   const reinforcements: ReinforcementPoint[] = [
-    { id: 'depot_north', wave: 'alerted', position: new THREE.Vector3(0, 0, -66), route: 'Rifleman 3' },
+    { id: 'depot_north', wave: 'alerted', position: new THREE.Vector3(-6.5, 0, -66), route: 'Rifleman 3' },
     { id: 'side_west', wave: 'alerted', position: new THREE.Vector3(-7.5, 0, -30), route: 'Rifleman 2' },
     { id: 'depot_east', wave: 'lockdown', position: new THREE.Vector3(7.5, 0, -60), route: 'Rifleman 3' },
     { id: 'square_east', wave: 'lockdown', position: new THREE.Vector3(7.5, 0, -14), route: 'Rifleman 1' },
     { id: 'extract_south', wave: 'lockdown', position: new THREE.Vector3(-6, 0, 22), route: null },
   ];
 
-  // Insert at the near end, cross the street, set the charge at the far wall, come back out.
+  // Insert at the near end, cross the street, take the broker, set the charge at the far wall, come back out.
   const objectives: ObjectiveDef[] = [
     { id: 'square', kind: 'reach', label: 'Reach the square', position: new THREE.Vector3(0, 0, -8), radius: 3 },
-    { id: 'charge', kind: 'plant', label: 'Set the charge on the depot wall', position: new THREE.Vector3(0, 0, STREET_Z_MIN + 4), radius: 2.2, holdSeconds: 3 },
-    { id: 'extract', kind: 'reach', label: 'Return to extraction', position: new THREE.Vector3(0, 0, STREET_Z_MAX - 6), radius: 3 },
+    { id: 'broker', kind: 'eliminate', label: 'Eliminate the broker', position: new THREE.Vector3(-7, 0, -38), radius: 1, target: 'Broker' },
+    { id: 'charge', kind: 'plant', label: 'Set the charge on the depot wall', position: new THREE.Vector3(0, 0, STREET_Z_MIN + 1.4), radius: 2.2, holdSeconds: 3, fuseSeconds: 20, defuseSeconds: 4 },
+    { id: 'extract', kind: 'extract', label: 'Extract at the insert', position: new THREE.Vector3(0, 0, STREET_Z_MAX - 6), radius: 3 },
   ];
 
   return {

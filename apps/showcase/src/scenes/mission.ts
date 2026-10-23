@@ -13,13 +13,14 @@ import {
   type SceneDefinition,
   type SceneInstance,
 } from '@spark/engine';
-import { Enemy } from '../actors/Enemy';
+import { Enemy, type OperatorView } from '../actors/Enemy';
 import { OPERATOR_MAX_HEALTH, Operator } from '../actors/Operator';
 import { CHARACTER_URL } from '../actors/rig';
 import { MissionAudio } from '../audio/MissionAudio';
 import { TargetDummy } from '../actors/TargetDummy';
 import { AWARENESS, overallState } from '../ai/Awareness';
 import type { Damageable } from '../combat/Damageable';
+import { BLAST, Demolition, blastDamage } from '../combat/demolition';
 import { Impacts } from '../combat/effects';
 import { Gore } from '../combat/gore';
 import { Gunplay } from '../combat/Gunplay';
@@ -27,9 +28,9 @@ import { RIFLE_BASELINE } from '../combat/weapons';
 import { createAtmosphere } from '../levels/atmosphere';
 import { buildBlockout } from '../levels/blockout';
 import { applyAtmosphere, loadStreetLevel, type MissionLevel } from '../levels/MissionLevel';
-import { MissionRunner } from '../mission/Objectives';
-import { AlertDirector, type LevelAlert } from '../mission/Alert';
-import { createOperatorHud } from '../ui/hud';
+import { MissionRunner, type ObjectiveDef, type ObjectiveWorld } from '../mission/Objectives';
+import { AlertDirector, type AlertSample, type LevelAlert } from '../mission/Alert';
+import { createOperatorHud, type BriefingItem, type Debrief } from '../ui/hud';
 
 /** `?freelook=1`: treat the pointer as locked without asking the browser. For headless capture and probes, where pointer lock cannot be granted. */
 const FREELOOK = new URLSearchParams(location.search).get('freelook') === '1';
@@ -45,16 +46,29 @@ const HURT_FADE = 0.8;
 /** Ragdoll caps (docs/design/gore-scope.md): at most this many simulating, none older than this. */
 const MAX_RAGDOLLS = 6;
 const RAGDOLL_SECONDS = 12;
+const OPERATION = 'Operation Last Call';
+/** Hostiles the sector sends to pull an armed charge at once; the dead are replaced. */
+const CHARGE_WORKERS = 2;
+/** How far the blast carries as a sound the hostiles react to, metres. */
+const BLAST_HEARD = 80;
+/** The fuse panel warns an operator inside the blast this many seconds out. */
+const DANGER_SECONDS = 6;
+/** Seconds after the blast in which a hostile going alert is the explosion's doing, not a sighting. */
+const SPOTTED_AFTER_BLAST = 5;
 
 /**
- * Milestone 5 gameplay slice: the operator with the baseline rifle against
- * three riflemen patrolling a grey-box night street on a baked navmesh, with
- * the awareness ladder from `docs/design/mission-shape.md`, and a
- * three-objective mission (reach, plant, extract). Completing an objective
- * moves the checkpoint; dying shows the failed card and Enter reloads it
- * (full health and ammo, surviving hostiles reset to their routes). The level
- * is the Blender-authored street through the ADR-008 pipeline, navmesh baked
- * offline (ADR-009); the code-built blockout stays as `?level=blockout`.
+ * Milestone 10, the Task Unit sequel's vertical slice (ADR-005,
+ * `docs/design/mission-shape.md`): one mission on the Blender-authored night
+ * street. Insert, reach the square, eliminate the broker, set the charge on
+ * the depot wall and hold it until it blows, extract at the insert. Eight
+ * riflemen and the broker on patrol routes, the per-enemy awareness ladder,
+ * and the sector's Quiet → Alerted → Lockdown tiers calling reinforcements in
+ * from authored ingress points. Completing an objective moves the checkpoint;
+ * dying shows the failed band and Enter reloads it (full health and ammo,
+ * surviving hostiles back on their routes, a burning charge lost). Reaching
+ * extraction ends the run on a debrief, and Enter plays it again from the
+ * insert. The level comes through the ADR-008 pipeline with its navmesh
+ * baked offline (ADR-009); the code-built blockout stays as `?level=blockout`.
  */
 export const missionScene: SceneDefinition = {
   name: 'mission',
@@ -133,6 +147,8 @@ export const missionScene: SceneDefinition = {
     bag.add(gore);
     const ragdolls = new RagdollWorld(entities, physics);
     bag.add(ragdolls);
+    const demolition = new Demolition({ ...effects, physics, worldMeshes: level.meshes, sfx });
+    bag.add(demolition);
     bag.add(entities.addSystem(ragdolls.system()));
     const operator = new Operator({ entities, physics, animation, renderSync, scene, model, sfx }, level.spawn, level.spawnYaw);
     bag.add(operator);
@@ -252,14 +268,65 @@ export const missionScene: SceneDefinition = {
     // ---- objectives and checkpoints ----------------------------------------------
     const mission = new MissionRunner({ entities, scene, labels: ui.labels, renderSync }, level.objectives, { position: level.spawn, yaw: level.spawnYaw });
     bag.add(mission);
+    const workerFeet = new THREE.Vector3();
+    const objectiveWorld: ObjectiveWorld = {
+      get hostilesAlive() {
+        return liveHostiles().length;
+      },
+      targetPosition(name, out) {
+        const target = enemies.find((e) => e.name === name && !e.dead && !e.dormant);
+        if (!target) return false;
+        target.feet(out);
+        return true;
+      },
+      // Only a hostile kneeling at the charge works on it; one walking past on patrol does not.
+      hostileWithin(position, radius) {
+        return enemies.some((e) => e.working && Math.hypot(e.feet(workerFeet).x - position.x, workerFeet.z - position.z) <= radius);
+      },
+    };
     let interactHeld = false;
+    let qaInteract = false;
     let wasAlert = false;
     let hitsShown = 0;
     const listenerPos = new THREE.Vector3();
 
+    // ---- the run: what the debrief reports, and how it ends -----------------------
+    const run = { startedAt: 0, shots: 0, hits: 0, spotted: 0, reloads: 0, peakTier: 'quiet' as LevelAlert };
+    let debrief: Debrief | null = null;
+    const TIER_RANK: Record<LevelAlert, number> = { quiet: 0, alerted: 1, lockdown: 2 };
+    const rating = (): string => (run.spotted === 0 ? 'ghost' : run.peakTier !== 'lockdown' ? 'professional' : 'loud');
+    // Once the operator is out, the street stops trying to kill them: the
+    // hostiles are handed a view in which there is nobody left to shoot.
+    const playerView: OperatorView = {
+      get eid() {
+        return operator.eid;
+      },
+      get dead() {
+        return operator.dead || debrief !== null;
+      },
+      get stance() {
+        return operator.stance;
+      },
+      get speed() {
+        return operator.speed;
+      },
+      get lit() {
+        return operator.lit;
+      },
+      get colliderHeight() {
+        return operator.colliderHeight;
+      },
+      feet: (out) => operator.feet(out),
+      takeDamage: (damage, zone, at) => operator.takeDamage(damage, zone, at),
+    };
+
     // ---- HUD and pointer lock ------------------------------------------------
     const hud = createOperatorHud(ui);
     bag.add(hud);
+    const briefing = (): BriefingItem[] => {
+      const index = mission.status().index;
+      return mission.objectives.map((o, i) => ({ kind: o.kind, label: o.label, state: i < index ? 'done' : i === index ? 'now' : 'todo' }));
+    };
     // Free look: the pointer is treated as locked. Forced by `?freelook=1`, or adopted
     // when the browser refuses pointer lock outright (an embedding without the permission).
     let freelook = FREELOOK;
@@ -291,6 +358,7 @@ export const missionScene: SceneDefinition = {
       },
       onTier: (tier, previous) => {
         alertTier = tier;
+        if (debrief === null && TIER_RANK[tier] > TIER_RANK[run.peakTier]) run.peakTier = tier;
         hud.setLevelAlert(tier);
         if (tier === 'quiet') for (const e of enemies) e.relax();
         if (tier === 'lockdown') sfx.lockdownStinger();
@@ -298,6 +366,121 @@ export const missionScene: SceneDefinition = {
       },
       onReinforcement: () => hud.flashReinforcement(),
     });
+
+    // ---- the charge ----------------------------------------------------------------
+    // Arming it trips the depot alarm: the sector goes alerted, sends the hunt
+    // to the charge, and the nearest hostiles go to pull it. Replacements are
+    // sent as workers die. The blast hurts whatever is near, through
+    // `blastDamage`, and every hostile in earshot comes to look.
+    const chargeAt = new THREE.Vector3();
+    const blastAt = new THREE.Vector3();
+    const towardVictim = new THREE.Vector3();
+    const victimChest = new THREE.Vector3();
+    let nextWorkerCheck = 0;
+    const alertSample = (): AlertSample => {
+      const hostiles = liveHostiles();
+      return {
+        contacts: hostiles.filter((e) => e.state === 'alert').length,
+        searching: hostiles.filter((e) => e.state === 'suspicious' || e.state === 'searching').length,
+        casualties: enemies.filter((e) => e.dead).length,
+        live: hostiles.length,
+        lastKnown: hadContact ? lastContact : null,
+      };
+    };
+    const standDownWorkers = (): void => {
+      for (const e of enemies) e.assignWork(null);
+    };
+    const sendWorkers = (): void => {
+      const assigned = enemies.filter((e) => e.assigned && !e.dead && !e.dormant).length;
+      if (assigned >= CHARGE_WORKERS) return;
+      const free = liveHostiles()
+        .filter((e) => !e.assigned)
+        .map((e) => ({ e, d: e.feet(workerFeet).distanceTo(chargeAt) }))
+        .sort((a, b) => a.d - b.d)
+        .slice(0, CHARGE_WORKERS - assigned);
+      for (const { e } of free) {
+        e.assignWork(chargeAt);
+        sfx.bark(e.eid, 'defuse');
+      }
+    };
+    /** Distance from the blast to `point`, and whether the level stands between them. */
+    const blastLine = (point: THREE.Vector3): { distance: number; occluded: boolean } => {
+      towardVictim.copy(point).sub(blastAt);
+      const distance = towardVictim.length();
+      const hit = distance > 0.01 ? physics.raycast(blastAt, towardVictim, distance, { layers: 'world' }) : null;
+      return { distance, occluded: hit !== null };
+    };
+    const detonate = (): void => {
+      demolition.detonate(now);
+      standDownWorkers();
+      blastAt.copy(chargeAt);
+      blastAt.y += 0.6;
+      for (const e of liveHostiles()) {
+        e.feet(victimChest);
+        victimChest.y += 1.2;
+        const line = blastLine(victimChest);
+        const damage = blastDamage(line.distance, line.occluded);
+        if (damage > 0) {
+          towardVictim.normalize();
+          e.hit('torso', damage, now, { point: victimChest.clone(), direction: towardVictim.clone() });
+        }
+      }
+      operator.feet(victimChest);
+      victimChest.y += 1.2;
+      const line = blastLine(victimChest);
+      const damage = blastDamage(line.distance, line.occluded) * BLAST.operatorScale;
+      if (damage > 0) operator.takeDamage(damage, 'torso', now);
+      camera.shake(THREE.MathUtils.clamp(1.15 - line.distance / 60, 0.25, 1));
+      for (const e of enemies) e.hear(chargeAt, BLAST_HEARD, now);
+    };
+    const onObjectiveEvent = (kind: 'armed' | 'defused' | 'detonated' | 'completed', objective: ObjectiveDef): void => {
+      switch (kind) {
+        case 'armed':
+          chargeAt.copy(objective.position);
+          demolition.arm(chargeAt, now);
+          sfx.startAlarm(chargeAt);
+          director.raise('alerted', now, alertSample(), chargeAt);
+          nextWorkerCheck = now;
+          hud.toast('charge armed: hold the site', 'warn');
+          logger.info(`mission: charge armed at "${objective.id}", ${objective.fuseSeconds ?? 0}s fuse`);
+          break;
+        case 'defused':
+          demolition.disarm();
+          sfx.stopAlarm();
+          sfx.alertStinger();
+          standDownWorkers();
+          hud.toast('charge pulled: set it again', 'bad');
+          logger.info(`mission: charge at "${objective.id}" pulled by the garrison`);
+          break;
+        case 'detonated':
+          detonate();
+          logger.info(`mission: charge at "${objective.id}" detonated`);
+          break;
+        case 'completed':
+          logger.info(`mission: objective "${objective.id}" complete, checkpoint moved`);
+          sfx.objectiveComplete(objective.kind, mission.complete);
+          if (objective.kind === 'eliminate') hud.toast(objective.target ? 'target down' : 'area clear', 'good');
+          if (mission.complete) endRun();
+          break;
+      }
+    };
+    const endRun = (): void => {
+      debrief = {
+        rating: rating(),
+        seconds: now - run.startedAt,
+        // Hostiles down, however: the rifle's own count misses what the blast took.
+        kills: enemies.filter((e) => e.dead).length,
+        shots: gunplay.stats.shots - run.shots,
+        hits: gunplay.stats.hits - run.hits,
+        spotted: run.spotted,
+        peakTier: run.peakTier,
+        reloads: run.reloads,
+      };
+      sfx.stopAlarm();
+      hud.setDebrief(debrief);
+      if (!FREELOOK) input.exitPointerLock();
+      logger.info(`mission: extracted in ${debrief.seconds.toFixed(1)}s, ${debrief.kills} kills, spotted ${debrief.spotted}x, sector peaked ${debrief.peakTier} (${debrief.rating})`);
+    };
 
     // Checkpoint reload: back to the last completed objective; dead hostiles stay dead, the rest reset.
     const reticle = { x: 0, y: 0 };
@@ -334,6 +517,24 @@ export const missionScene: SceneDefinition = {
       stance: (next: 'stand' | 'crouch' | 'prone') => operator.setStance(next),
       /** Take damage as if an enemy round landed. */
       hurt: (damage: number) => operator.takeDamage(damage, 'torso', now),
+      /** Hold (or let go of) the interact key, the way F does. */
+      interact: (on: boolean) => {
+        qaInteract = on;
+      },
+      /**
+       * Put the operator somewhere at once, keeping health and stance: a probe
+       * about a charge being pulled needs the operator out of sight of it
+       * without a minute's walk.
+       */
+      teleport: (x: number, z: number) => {
+        const health = operator.health;
+        operator.respawn(new THREE.Vector3(x, 0, z), camera.getYaw());
+        operator.health = health;
+      },
+      /** The debrief once the run has ended at extraction, else null. */
+      debrief: () => debrief,
+      /** Enter on the debrief: the mission again from the insert. */
+      replay: () => replay(),
       /** Let rounds pass through, so a probe about something else can cross a hot street. */
       invulnerable: (on: boolean) => {
         operator.invulnerable = on;
@@ -364,8 +565,14 @@ export const missionScene: SceneDefinition = {
           distance: ms.distance,
           inRange: ms.inRange,
           progress: ms.progress,
+          phase: ms.phase,
+          fuse: ms.fuse,
+          defuse: ms.defuse,
           complete: ms.complete,
           checkpoint: mission.checkpoint.position.toArray(),
+          target: ms.objective?.target ?? null,
+          workers: enemies.filter((e) => e.assigned && !e.dead && !e.dormant).map((e) => ({ name: e.name, working: e.working })),
+          sinceBlast: demolition.sinceBlast(now),
         };
       },
       /** Current animation state per layer, plus the blend parameters. */
@@ -411,6 +618,7 @@ export const missionScene: SceneDefinition = {
             awareness: e.awareness,
             health: e.health,
             dead: e.dead,
+            role: e.maxHealth > 100 ? 'hvt' : 'rifleman',
             feet: e.feet(new THREE.Vector3()).toArray(),
             ...e.coverState(),
           })),
@@ -434,8 +642,30 @@ export const missionScene: SceneDefinition = {
       director.reset(now);
       hadContact = false;
       gunplay.resetAmmo();
+      // A charge that was burning is lost with the operator; one that blew stays blown.
+      if (mission.armedCharge) demolition.disarm();
+      sfx.stopAlarm();
       mission.resetProgress();
       hud.setFailed(false);
+      run.reloads += 1;
+    };
+    /** From the debrief: the whole mission again, from the insert, every hostile back on his route. */
+    const replay = (): void => {
+      debrief = null;
+      hud.setDebrief(null);
+      mission.restart();
+      demolition.reset();
+      sfx.stopAlarm();
+      for (const e of enemies) e.reset();
+      director.reset(now);
+      hadContact = false;
+      operator.respawn(level.spawn, level.spawnYaw);
+      camera.setLook(level.spawnYaw, THREE.MathUtils.degToRad(6));
+      gunplay.resetAmmo();
+      Object.assign(run, { startedAt: now, shots: gunplay.stats.shots, hits: gunplay.stats.hits, spotted: 0, reloads: 0, peakTier: 'quiet' });
+      wasAlert = false;
+      hud.setFailed(false);
+      logger.info('mission: replay from the insert');
     };
 
     logger.info(
@@ -458,13 +688,16 @@ export const missionScene: SceneDefinition = {
         operator.update(input, camera, now, dt);
         if (qaAim) operator.aiming = true;
         if (input.wasPressed('F4')) navLines.visible = !navLines.visible;
-        if (operator.dead && input.wasPressed('Enter')) retry();
-        interactHeld = !operator.dead && input.isDown('KeyF');
-        // The click that takes control must not also fire.
-        gunplay.update((locked && input.isButtonDown(0)) || autoFire > 0, (locked && input.wasButtonPressed(0)) || autoFire > 0, input.wasPressed('KeyR') || (autoFire > 0 && gunplay.weapon.ammo === 0));
+        if (debrief !== null && input.wasPressed('Enter')) replay();
+        else if (operator.dead && input.wasPressed('Enter')) retry();
+        interactHeld = !operator.dead && debrief === null && (input.isDown('KeyF') || qaInteract);
+        // The click that takes control must not also fire; nothing fires once the run is over.
+        const live = debrief === null;
+        gunplay.update(live && ((locked && input.isButtonDown(0)) || autoFire > 0), live && ((locked && input.wasButtonPressed(0)) || autoFire > 0), input.wasPressed('KeyR') || (autoFire > 0 && gunplay.weapon.ammo === 0));
         const weapon = gunplay.weapon;
         operator.reloading = weapon.reloading;
-        hud.setLocked(locked, freelook && !FREELOOK ? 'free look: pointer lock is unavailable in this view. Open the page in a browser tab for mouse look.' : null);
+        hud.setLocked(locked || debrief !== null, freelook && !FREELOOK ? 'free look: pointer lock is unavailable in this view. Open the page in a browser tab for mouse look.' : null);
+        hud.setBriefing(OPERATION, briefing());
         hud.setAiming(operator.aiming);
         const viewportHeight = ctx.config.container.clientHeight || 720;
         hud.setSpread(camera.projectAngleRadius(THREE.MathUtils.degToRad(gunplay.spreadNow()), viewportHeight));
@@ -474,24 +707,32 @@ export const missionScene: SceneDefinition = {
         hud.setHealth(operator.health / OPERATOR_MAX_HEALTH, Math.max(0, 1 - (now - operator.lastHitAt) / HURT_FADE) * (operator.dead ? 1 : 0.85));
         sfx.setHeartbeat(operator.dead ? 0 : operator.health / OPERATOR_MAX_HEALTH);
         hud.setVisibility(operator.lit);
-        const live = liveHostiles();
-        const alertState = overallState(live.map((e) => e.state));
+        const hostiles = liveHostiles();
+        const alertState = overallState(hostiles.map((e) => e.state));
         hud.setAlert(alertState);
-        if (alertState === 'alert' && !wasAlert) sfx.alertStinger();
+        if (alertState === 'alert' && !wasAlert && debrief === null) {
+          sfx.alertStinger();
+          // The blast puts everyone near it on edge; that is not being seen.
+          if (demolition.sinceBlast(now) > SPOTTED_AFTER_BLAST) run.spotted += 1;
+        }
         wasAlert = alertState === 'alert';
         hud.setStatus(operator.stance, operator.speed, operator.grounded);
-        hud.setScore(gunplay.stats.hits, gunplay.stats.kills, live.length);
+        hud.setScore(gunplay.stats.hits, gunplay.stats.kills, hostiles.length);
         if (gunplay.stats.hits !== hitsShown) {
           hitsShown = gunplay.stats.hits;
           hud.hit();
         }
-        hud.setFailed(operator.dead);
+        hud.setFailed(operator.dead && debrief === null);
         const ms = mission.status();
-        sfx.setPlantProgress(ms.objective?.kind === 'plant' ? ms.progress : 0);
-        const promptText =
-          ms.objective?.kind === 'plant' && ms.inRange ? (ms.progress > 0 ? 'setting charge' : 'hold F to set the charge') : null;
+        const holding = ms.phase === 'hold';
+        sfx.setPlantProgress(holding ? ms.progress : 0);
+        const promptText = holding && ms.inRange ? (ms.progress > 0 ? 'setting charge' : 'hold F to set the charge') : null;
         hud.setObjective(ms.index, ms.total, ms.objective?.kind ?? null, ms.objective?.label ?? null, ms.distance, ms.progress, promptText);
-        hud.setComplete(ms.complete);
+        if (ms.phase === 'armed' && ms.objective) {
+          operator.feet(feet);
+          const inBlast = Math.hypot(feet.x - ms.objective.position.x, feet.z - ms.objective.position.z) < BLAST.radius;
+          hud.setCharge({ fuse: ms.fuse, total: ms.objective.fuseSeconds ?? 0, defuse: ms.defuse, danger: inBlast && ms.fuse < DANGER_SECONDS });
+        } else hud.setCharge(null);
       },
       fixedUpdate(fixedDt) {
         now += fixedDt;
@@ -503,7 +744,7 @@ export const missionScene: SceneDefinition = {
         shotsSeen = gunplay.stats.shots;
         for (const d of dummies) d.fixedUpdate(now);
         sampleLit();
-        for (const e of enemies) e.fixedUpdate(fixedDt, now, operator, onAlert);
+        for (const e of enemies) e.fixedUpdate(fixedDt, now, playerView, onAlert);
         gore.fixedUpdate(fixedDt);
         // Retire ragdolls past the cap or the age limit; their bones keep the last pose.
         const live = ragdolls.list();
@@ -533,11 +774,13 @@ export const missionScene: SceneDefinition = {
           lastKnown: hadContact ? lastContact : null,
         });
 
-        mission.fixedUpdate(fixedDt, feet, interactHeld, hostiles.length);
-        if (mission.justCompleted) {
-          logger.info(`mission: objective "${mission.justCompleted.id}" complete, checkpoint moved`);
-          sfx.objectiveComplete(mission.justCompleted.kind, mission.complete);
-          mission.justCompleted = null;
+        mission.fixedUpdate(fixedDt, feet, interactHeld, objectiveWorld);
+        for (const event of mission.takeEvents()) onObjectiveEvent(event.kind, event.objective);
+        const armed = mission.status();
+        demolition.fixedUpdate(fixedDt, now, armed.fuse, armed.objective?.fuseSeconds ?? 0);
+        if (mission.armedCharge && now >= nextWorkerCheck) {
+          nextWorkerCheck = now + 1;
+          sendWorkers();
         }
       },
       lateUpdate(dt) {

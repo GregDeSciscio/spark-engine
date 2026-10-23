@@ -70,6 +70,8 @@ export interface EnemySpec {
    * puts them back in the box.
    */
   readonly reinforcement?: boolean;
+  /** `hvt`: the mission's named target. Tougher, and dressed so he reads apart in the dark. */
+  readonly role?: 'hvt';
 }
 
 /**
@@ -134,12 +136,18 @@ const PEEK_WAIT: readonly [number, number] = [0.8, 1.8];
 const PEEK_SECONDS: readonly [number, number] = [1.0, 1.8];
 /** Awareness a hostile keeps when he loses contact: suspicious enough to search hard, short of alert. */
 const LOST_CONTACT_AWARENESS = 0.85;
+/** How close to a job (an armed charge) a hostile kneels to work on it. */
+const WORK_REACH = 0.9;
 
 /** Impulse (kg·m/s) a killing round puts into the nearest ragdoll part: a real shove on a 20 kg chest, capped by the engine on light limbs. */
 const KILL_IMPULSE = 90;
 const BASE_TINT = 0x3a1f2a;
 const BLOOD_TINT = 0x2a0408;
 const ACCENT_TINT = 0x6e1624;
+/** The target: a pale coat with gold trim that glows a little, so he can be picked out of a crowd at night. */
+const HVT_TINT = 0x8c877c;
+const HVT_ACCENT = 0xd49a24;
+const HVT_HEALTH = 160;
 /** An enemy round passing within this of the operator's head is heard as a whiz. */
 const WHIZ_DISTANCE = 2.0;
 
@@ -222,7 +230,9 @@ export class Enemy implements Damageable {
   readonly name: string;
   state: AwarenessState = 'unaware';
   awareness = 0;
-  health = MAX_HEALTH;
+  /** 100 for a rifleman; the target takes more. */
+  readonly maxHealth: number;
+  health: number;
   dead = false;
   /** Held out of the world: no body, no label, no thinking. Reinforcements start here. */
   dormant = false;
@@ -234,6 +244,8 @@ export class Enemy implements Damageable {
   private readonly root: THREE.Group;
   private readonly visual: THREE.Object3D;
   private readonly tinted: THREE.MeshStandardMaterial[];
+  private readonly baseTint: number;
+  private readonly accentGlow: number;
   private readonly rifle: RifleProp;
   private animated = true;
   private upperTarget = 1;
@@ -274,11 +286,17 @@ export class Enemy implements Damageable {
   private readonly tmpA = new THREE.Vector3();
   private readonly tmpB = new THREE.Vector3();
   private readonly huntPoint = new THREE.Vector3();
+  /** A job from the sector: an armed charge to pull. Null when there is none. */
+  private work: THREE.Vector3 | null = null;
+  private atWork = false;
 
   constructor(deps: EnemyDeps, spec: EnemySpec) {
     this.deps = deps;
     this.spec = spec;
     this.name = spec.name;
+    this.maxHealth = spec.role === 'hvt' ? HVT_HEALTH : MAX_HEALTH;
+    this.health = this.maxHealth;
+    this.baseTint = spec.role === 'hvt' ? HVT_TINT : BASE_TINT;
     this.nav = new NavAgent(deps.navigation, { repathSeconds: REPATH_SECONDS, reachDistance: 0.4, arriveDistance: COVER_ARRIVE });
     const { entities, physics, animation, renderSync, scene, model, labels } = deps;
     const spawn = spec.route[0] ?? new THREE.Vector3();
@@ -294,7 +312,8 @@ export class Enemy implements Damageable {
     this.visual = visual;
     visual.position.y = -OPERATOR.height / 2;
     // A darker tint so enemies read apart from the operator and the range dummies; it bloodies as health drops.
-    this.tinted = tintCharacter(visual, BASE_TINT, ACCENT_TINT, 0.2);
+    this.tinted = spec.role === 'hvt' ? tintCharacter(visual, HVT_TINT, HVT_ACCENT, 0.9) : tintCharacter(visual, BASE_TINT, ACCENT_TINT, 0.2);
+    this.accentGlow = spec.role === 'hvt' ? 0.9 : 0.2;
     this.root.add(visual);
     scene.add(this.root);
     renderSync.attach(entities, this.eid, this.root);
@@ -334,14 +353,14 @@ export class Enemy implements Damageable {
   }
 
   private applyTint(): void {
-    const t = 1 - this.health / MAX_HEALTH;
-    const base = new THREE.Color(BASE_TINT);
+    const t = 1 - this.health / this.maxHealth;
+    const base = new THREE.Color(this.baseTint);
     const blood = new THREE.Color(BLOOD_TINT);
     for (const m of this.tinted) {
       if (/black/i.test(m.name)) continue;
       const accent = /joint|accent/i.test(m.name);
       m.color.lerpColors(accent ? m.emissive : base, blood, accent ? t * 0.5 : t * 0.85);
-      if (accent) m.emissiveIntensity = 0.2 * (1 - t);
+      if (accent) m.emissiveIntensity = this.accentGlow * (1 - t);
     }
   }
 
@@ -411,7 +430,7 @@ export class Enemy implements Damageable {
     if (this.dead) return false;
     const { animation, labels } = this.deps;
     this.health = Math.max(0, this.health - damage);
-    labels.setValue(this.eid, this.health / MAX_HEALTH);
+    labels.setValue(this.eid, this.health / this.maxHealth);
     this.applyTint();
     // Being shot is the loudest possible tell.
     this.becomeAlert(now);
@@ -472,6 +491,33 @@ export class Enemy implements Damageable {
     this.investigate(this.huntPoint, now);
   }
 
+  /**
+   * The sector sends this one to pull an armed charge (the mission's plant).
+   * He walks there at an investigating pace, kneels at it and works. The
+   * operator outranks the job: once alert he fights, and when he loses
+   * contact he goes back to it. `null` stands him down.
+   */
+  assignWork(position: { x: number; y: number; z: number } | null): void {
+    if (position === null) {
+      this.work = null;
+      this.atWork = false;
+      return;
+    }
+    if (this.dead || this.dormant) return;
+    this.work = (this.work ?? new THREE.Vector3()).set(position.x, position.y, position.z);
+    this.nav.clear();
+  }
+
+  /** Has a job, whether or not he has got there yet. */
+  get assigned(): boolean {
+    return this.work !== null;
+  }
+
+  /** Kneeling at the job right now: what counts toward a defuse. */
+  get working(): boolean {
+    return this.atWork && !this.dead && !this.dormant;
+  }
+
   /** The sector calmed down: back to a patrol pace. */
   relax(): void {
     this.posture = 'relaxed';
@@ -509,7 +555,7 @@ export class Enemy implements Damageable {
     }
     this.dormant = false;
     this.clearCombatState();
-    this.health = MAX_HEALTH;
+    this.health = this.maxHealth;
     this.facing = target ? Math.atan2(target.x - spawn.x, target.z - spawn.z) : this.facing;
     const t = entities.store(Transform);
     t.x[this.eid] = spawn.x;
@@ -548,7 +594,7 @@ export class Enemy implements Damageable {
       this.sleep();
     }
     this.clearCombatState();
-    this.health = MAX_HEALTH;
+    this.health = this.maxHealth;
     this.applyTint();
   }
 
@@ -571,6 +617,8 @@ export class Enemy implements Damageable {
     this.weapon.ammo = ENEMY_RIFLE.magazineSize;
     this.aiming = false;
     this.aimPitch = 0;
+    this.work = null;
+    this.atWork = false;
   }
 
   /** Back to the start of the route, full health, unaware: a checkpoint reload. */
@@ -599,7 +647,7 @@ export class Enemy implements Damageable {
     physics.setPose(this.eid, { x: spawn.x, y: spawn.y + OPERATOR.height / 2, z: spawn.z });
     const ch = entities.store(Character);
     ch.vy[this.eid] = 0;
-    this.health = MAX_HEALTH;
+    this.health = this.maxHealth;
     labels.setValue(this.eid, 1);
     this.applyTint();
     this.clearCombatState();
@@ -642,7 +690,15 @@ export class Enemy implements Damageable {
     let moveSpeed = 0;
     let faceTarget: THREE.Vector3 | null = null;
     let wantsMove = false;
-    switch (this.state) {
+    this.atWork = false;
+    // A job from the sector comes before the patrol and the search, never before a fight.
+    if (this.work && this.state !== 'alert') {
+      moveSpeed = INVESTIGATE_SPEED;
+      const away = Math.hypot(this.work.x - this.feetPos.x, this.work.z - this.feetPos.z);
+      wantsMove = away > WORK_REACH && this.pathTo(this.work, now);
+      this.atWork = !wantsMove && away <= WORK_REACH + 0.6;
+      if (this.atWork) faceTarget = this.work;
+    } else switch (this.state) {
       case 'unaware':
         moveSpeed = this.posture === 'hunting' ? HUNT_PATROL_SPEED : PATROL_SPEED;
         wantsMove = this.patrol(now);
@@ -710,7 +766,7 @@ export class Enemy implements Damageable {
     t.qy[this.eid] = Math.sin(this.facing / 2);
     t.qw[this.eid] = Math.cos(this.facing / 2);
     animation.setParam(this.eid, 'speed', this.speed);
-    animation.setParam(this.eid, 'crouch', this.inCover && !this.peeking && this.speed < 0.3 ? 1 : 0);
+    animation.setParam(this.eid, 'crouch', (this.inCover && !this.peeking && this.speed < 0.3) || this.atWork ? 1 : 0);
     // Aim at the player while alert with a target; the pitch follows the line to their chest.
     this.aiming = this.state === 'alert' && now - this.lastSeenAt < 1.5;
     if (this.aiming) {
