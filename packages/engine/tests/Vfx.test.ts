@@ -5,6 +5,7 @@ import {
   SpawnAccumulator,
   bakeColorCurve,
   bakeCurve,
+  emitterIsIdle,
   hash01,
   particleHashBase,
   particleRandom,
@@ -263,5 +264,15 @@ describe('spawn rate accounting', () => {
     expect(live.estimate(4.5, 64)).toBe(64);
     live.clear();
     expect(live.estimate(4.5, 64)).toBe(0);
+  });
+
+  it('lets an emitter skip its dispatch and draw only when nothing is alive or spawning, after its first dispatch', () => {
+    expect(emitterIsIdle(0, true, false, 0)).toBe(true);
+    // The first dispatch always runs: it compiles the update pipeline in the warm-up, not on the first burst.
+    expect(emitterIsIdle(0, false, false, 0)).toBe(false);
+    expect(emitterIsIdle(18, true, false, 0)).toBe(false);
+    expect(emitterIsIdle(0, true, false, 3)).toBe(false);
+    // A wrapping volume (rain) is always full.
+    expect(emitterIsIdle(0, true, true, 0)).toBe(false);
   });
 });

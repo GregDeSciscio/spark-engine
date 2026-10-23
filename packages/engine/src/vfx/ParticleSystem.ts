@@ -58,6 +58,7 @@ import {
   LiveEstimator,
   SpawnAccumulator,
   bakeColorCurve,
+  emitterIsIdle,
   bakeCurve,
   resolveEmitterDescriptor,
   type ParticleEmitterDescriptor,
@@ -148,6 +149,10 @@ interface EmitterRuntime {
   live: LiveEstimator;
   simTime: number;
   pendingDt: number;
+  /** The update pass has run at least once (its pipeline is compiled). */
+  dispatched: boolean;
+  /** The system hid the mesh because nothing was alive; it shows it again on the next spawn. */
+  idleHidden: boolean;
 }
 
 const _quat = new THREE.Quaternion();
@@ -333,6 +338,20 @@ export class ParticleSystem implements System {
       this.syncPose(runtime);
       if (!dispatchNow) continue;
       const { start, count } = runtime.accumulator.flush();
+      if (emitterIsIdle(count, runtime.dispatched, runtime.descriptor.wrap !== null, runtime.live.estimate(runtime.simTime, runtime.descriptor.capacity))) {
+        // Nothing to integrate: drop the time too, so the next burst's first step is one frame long, not the whole idle stretch.
+        runtime.pendingDt = 0;
+        if (runtime.object.visible) {
+          runtime.object.visible = false;
+          runtime.idleHidden = true;
+        }
+        continue;
+      }
+      if (runtime.idleHidden) {
+        runtime.object.visible = true;
+        runtime.idleHidden = false;
+      }
+      runtime.dispatched = true;
       const u = runtime.uniforms;
       u.spawnStart.value = start;
       u.spawnCount.value = count;
@@ -751,6 +770,8 @@ export class ParticleSystem implements System {
       live: new LiveEstimator(),
       simTime: 0,
       pendingDt: 0,
+      dispatched: false,
+      idleHidden: false,
     };
   }
 }

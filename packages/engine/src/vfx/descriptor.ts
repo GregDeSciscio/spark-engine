@@ -445,6 +445,19 @@ export class SpawnAccumulator {
  * remembered with their latest possible death time. Wrap emitters are always
  * full.
  */
+/**
+ * Whether an emitter can skip this frame's compute dispatch and its draw:
+ * nothing alive, nothing to spawn. A game holds dozens of burst emitters
+ * (a muzzle flash per gun, impacts, blood, a demolition rig) that are idle
+ * nearly all the time, and each one dispatched and drew every frame anyway.
+ * Never on the first dispatch (it compiles the update pipeline during the
+ * warm-up rather than on the first burst) and never for a wrapping volume,
+ * which is always full.
+ */
+export function emitterIsIdle(spawnCount: number, dispatchedOnce: boolean, wraps: boolean, liveNow: number): boolean {
+  return dispatchedOnce && !wraps && spawnCount === 0 && liveNow === 0;
+}
+
 export class LiveEstimator {
   private readonly events: { expires: number; count: number }[] = [];
   private total = 0;

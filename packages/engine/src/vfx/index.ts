@@ -17,6 +17,7 @@ export {
   spawnCountForStep,
   SpawnAccumulator,
   LiveEstimator,
+  emitterIsIdle,
   CURVE_SAMPLES,
   MAX_EMITTER_CAPACITY,
   SHAPE_CODE,
