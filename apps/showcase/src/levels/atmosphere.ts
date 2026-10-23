@@ -42,6 +42,8 @@ const RAIN_CAPACITY = 20_000;
 const RAIN_VOLUME: readonly [number, number, number] = [20, 22, 48];
 const RAIN_NEAR_FADE = 7;
 const SPLASH_AREA: readonly [number, number, number] = [16, 0.02, 40];
+/** Highest the splash rings follow the operator: the sidewalk's top. */
+const SPLASH_MAX_Y = 0.15;
 /** Neon cones: how far below the sign the cone starts and how far it reaches. */
 const CONE_RANGE = 9;
 const CONE_ANGLE = 1.0;
@@ -174,7 +176,8 @@ export function createAtmosphere(deps: AtmosphereDeps, level: MissionLevel, moon
       }
       if (splashEid !== null) {
         t.x[splashEid] = focus.x;
-        t.y[splashEid] = focus.y + 0.02;
+        // Up on the fire escape or a crate the rings stay on the street below, not in a sheet of air at the operator's feet.
+        t.y[splashEid] = Math.min(focus.y, SPLASH_MAX_Y) + 0.02;
         t.z[splashEid] = focus.z;
       }
       if (volume && cones > 0) {

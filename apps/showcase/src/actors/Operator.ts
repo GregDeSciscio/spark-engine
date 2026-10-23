@@ -16,15 +16,20 @@ import {
 import { RIFLE_BASELINE, type HitZone } from '../combat/weapons';
 import { RifleProp } from './RifleProp';
 import type { MissionAudio } from '../audio/MissionAudio';
+import { MANTLE, mantlePose, planMantle, type MantlePlan, type MantleWorld, type MantleZone } from './mantle';
 import { AIM_PITCH_RANGE, BONES, LOCOMOTION, UPPER_BODY_MASK, findBone, tintCharacter } from './rig';
 
 /**
  * The player character: a kinematic capsule on the engine's character
- * controller, a skinned visual, three stances, sprint and jump. Movement is
- * camera-relative and the body always faces where the camera looks, the way an
- * over-the-shoulder shooter does. Tuning numbers are Task Unit's
- * (`docs/design/task-unit-reference.md`): 5 u/s, sprint 1.6x, 0.4 by 1.8
- * capsule, gravity -20, jump 8.
+ * controller, a skinned visual, three stances, sprint, jump and mantle.
+ * Movement is camera-relative and the body always faces where the camera
+ * looks, the way an over-the-shoulder shooter does. Tuning numbers are Task
+ * Unit's (`docs/design/task-unit-reference.md`): 5 u/s, sprint 1.6x, 0.4 by
+ * 1.8 capsule, gravity -20, jump 8.
+ *
+ * Jump near and facing a mantle zone's edge (`./mantle.ts`) and the jump
+ * becomes a vault: a scripted half-second move up and over, or onto, the
+ * obstacle, with the controller set aside until it lands.
  *
  * Frame input is read in `update()`; motion is applied in `fixedUpdate()` so
  * the simulation stays deterministic under the fixed step.
@@ -47,6 +52,9 @@ export const OPERATOR = {
 } as const;
 
 const UP = new THREE.Vector3(0, 1, 0);
+const DOWN = new THREE.Vector3(0, -1, 0);
+/** Slowest the operator leaves a vault at, along it, so landing flows into the next step. */
+const MANTLE_EXIT_SPEED = 2.5;
 /** Seconds the upper-body layer takes to fade in or out. */
 const UPPER_FADE_SECONDS = 0.12;
 /** The controller's grounded flag flickers on flat ground while moving; only this long in the air counts. */
@@ -146,6 +154,8 @@ export interface OperatorDeps {
   readonly model: ModelAsset;
   /** The mission's cue set; optional so probes and tests can build a silent operator. */
   readonly sfx?: MissionAudio | undefined;
+  /** The level's vaultable obstacles (`MissionLevel.mantles`). None: jump is only ever a jump. */
+  readonly mantles?: readonly MantleZone[] | undefined;
 }
 
 export const OPERATOR_MAX_HEALTH = 100;
@@ -194,10 +204,30 @@ export class Operator {
   /** Height of the current collider; the entity transform sits at half of it. */
   private bodyHeight: number = OPERATOR.height;
   private readonly feetScratch = new THREE.Vector3();
+  /** The vault in progress, if any, and how far through it is. */
+  private mantle: { readonly plan: MantlePlan; elapsed: number; readonly exitSpeed: number } | null = null;
+  private readonly mantleZones: readonly MantleZone[];
+  private readonly mantleWorld: MantleWorld;
+  private readonly pose = { x: 0, y: 0, z: 0 };
+  private readonly probe = new THREE.Vector3();
+  /** Vaults started since the level loaded, for the probe surface. */
+  mantleCount = 0;
 
   constructor(deps: OperatorDeps, spawn: THREE.Vector3, yaw: number) {
     this.deps = deps;
     const { entities, physics, animation, renderSync, scene, model } = deps;
+    this.mantleZones = deps.mantles ?? [];
+    // What a vault needs to know beyond the zones: the floor past the edge, and
+    // room to stand there. Hostiles count as in the way; landing in one is not a vault.
+    const clearRadius = OPERATOR.radius - 0.04;
+    const clearHeights = [OPERATOR.radius + 0.05, OPERATOR.height / 2, OPERATOR.height - OPERATOR.radius];
+    this.mantleWorld = {
+      groundBelow: (x, z, fromY, depth) => {
+        this.probe.set(x, fromY, z);
+        return physics.raycast(this.probe, DOWN, depth, { layers: 'world' })?.point.y ?? null;
+      },
+      standClear: (x, y, z) => clearHeights.every((h) => physics.sphereOverlap({ x, y: y + h, z }, clearRadius, ['world', 'enemy']).length === 0),
+    };
     const centerY = spawn.y + OPERATOR.height / 2;
     this.facing = yaw + Math.PI;
     this.eid = entities.create([Transform, { x: spawn.x, y: centerY, z: spawn.z, qy: Math.sin(this.facing / 2), qw: Math.cos(this.facing / 2) }], Character);
@@ -259,6 +289,8 @@ export class Operator {
    */
   setStance(next: Stance): boolean {
     if (next === this.stance) return true;
+    // The capsule is on a scripted path mid-vault; resizing it there would put the feet somewhere the path does not know.
+    if (this.mantle) return false;
     const { physics } = this.deps;
     const height = OPERATOR.stanceHeight[next];
     this.feet(this.feetScratch);
@@ -291,6 +323,11 @@ export class Operator {
 
   get grounded(): boolean {
     return this.controller.isGrounded(this.eid);
+  }
+
+  /** In the middle of a vault. */
+  get mantling(): boolean {
+    return this.mantle !== null;
   }
 
   /** Horizontal speed this tick. */
@@ -330,6 +367,8 @@ export class Operator {
     entities.store(Character).vy[this.eid] = 0;
     this.velocity.set(0, 0, 0);
     this.wish.set(0, 0, 0);
+    this.mantle = null;
+    this.jumpQueued = false;
     this.facing = yaw + Math.PI;
     this.health = OPERATOR_MAX_HEALTH;
     this.stance = 'stand';
@@ -352,7 +391,8 @@ export class Operator {
     }
     if (input.wasPressed('KeyC')) this.setStance(this.stance === 'crouch' ? 'stand' : 'crouch');
     if (input.wasPressed('KeyX')) this.setStance(this.stance === 'prone' ? 'stand' : 'prone');
-    if (input.wasPressed('Space') && this.stance === 'stand') this.jumpQueued = true;
+    // Whether this is a jump or a vault is decided on the fixed step, where the position is.
+    if (input.wasPressed('Space') && this.stance === 'stand' && !this.mantle) this.jumpQueued = true;
     const wasAiming = this.aiming;
     this.aiming = input.isButtonDown(2);
     if (this.aiming !== wasAiming) this.deps.sfx?.aim(this.aiming);
@@ -397,13 +437,17 @@ export class Operator {
     this.velocity.z += (targetZ - this.velocity.z) * k;
 
     if (this.jumpQueued) {
-      this.controller.jump(this.eid, OPERATOR.jumpSpeed);
       this.jumpQueued = false;
+      if (!this.startMantle()) this.controller.jump(this.eid, OPERATOR.jumpSpeed);
     }
-    this.step.x = this.velocity.x * dt;
-    this.step.y = 0;
-    this.step.z = this.velocity.z * dt;
-    this.controller.move(this.eid, this.step, dt);
+    if (this.mantle) {
+      this.stepMantle(dt);
+    } else {
+      this.step.x = this.velocity.x * dt;
+      this.step.y = 0;
+      this.step.z = this.velocity.z * dt;
+      this.controller.move(this.eid, this.step, dt);
+    }
 
     const t = entities.store(Transform);
     t.qx[this.eid] = 0;
@@ -411,7 +455,8 @@ export class Operator {
     t.qy[this.eid] = Math.sin(this.facing / 2);
     t.qw[this.eid] = Math.cos(this.facing / 2);
 
-    const airborne = this.controller.airborneSeconds(this.eid) > AIRBORNE_SECONDS;
+    // A vault plays the jump state and lands like one.
+    const airborne = this.mantle !== null || this.controller.airborneSeconds(this.eid) > AIRBORNE_SECONDS;
     if (this.wasAirborne && !airborne && this.grounded) this.deps.sfx?.footstep(this.eid, 'land');
     this.wasAirborne = airborne;
     animation.setParam(this.eid, 'speed', this.speed);
@@ -420,6 +465,48 @@ export class Operator {
     animation.setParam(this.eid, 'aim', this.aiming ? 1 : 0);
     animation.setParam(this.eid, 'reload', this.reloading ? 1 : 0);
     animation.setParam(this.eid, 'pitch', THREE.MathUtils.radToDeg(this.pitch));
+  }
+
+  /**
+   * Turn a queued jump into a vault if the operator is on the ground, near and
+   * facing a mantle edge, with somewhere to land. Called on the fixed step, so
+   * the choice is a function of the simulated position, not of the frame.
+   */
+  private startMantle(): boolean {
+    if (this.mantleZones.length === 0 || this.stance !== 'stand') return false;
+    // The grounded flag flickers while running; the airborne timer does not.
+    if (this.controller.airborneSeconds(this.eid) > AIRBORNE_SECONDS) return false;
+    const feet = this.feet(this.feetScratch);
+    const plan = planMantle(this.mantleZones, feet, Math.sin(this.facing), Math.cos(this.facing), OPERATOR.radius, this.mantleWorld);
+    if (!plan) return false;
+    // Leave it at least as fast as a brisk step, more if the operator came in running.
+    const along = this.velocity.x * plan.nx + this.velocity.z * plan.nz;
+    this.mantle = { plan, elapsed: 0, exitSpeed: Math.max(MANTLE_EXIT_SPEED, along) };
+    this.mantleCount += 1;
+    this.deps.sfx?.gear(this.eid);
+    return true;
+  }
+
+  /**
+   * One fixed step of the vault: put the feet where the path says. The body is
+   * kinematic, so writing the transform moves it (the physics step carries it
+   * through the obstacle without a contact); the controller takes over again
+   * from the landing.
+   */
+  private stepMantle(dt: number): void {
+    const m = this.mantle;
+    if (!m) return;
+    m.elapsed += dt;
+    const u = Math.min(1, m.elapsed / MANTLE.seconds);
+    mantlePose(m.plan, u, this.pose);
+    const t = this.deps.entities.store(Transform);
+    t.x[this.eid] = this.pose.x;
+    t.y[this.eid] = this.pose.y + this.bodyHeight / 2;
+    t.z[this.eid] = this.pose.z;
+    if (u < 1) return;
+    this.mantle = null;
+    this.deps.entities.store(Character).vy[this.eid] = 0;
+    this.velocity.set(m.plan.nx * m.exitSpeed, 0, m.plan.nz * m.exitSpeed);
   }
 
   dispose(): void {

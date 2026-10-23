@@ -4,7 +4,7 @@ Each recipe is something the showcase already does. The steps are short because 
 
 ## Load a level authored in Blender
 
-1. Author in Blender with the engine's conventions: `spark.type` extras on nodes (spawn points, patrols, objectives, vfx spots, lights), `COL_` meshes for collision, material names from the surface library. `tools/level-authoring/street.py` builds the showcase's street procedurally in Blender and is the reference for every convention.
+1. Author in Blender with the engine's conventions: `spark.type` extras on nodes (spawn points, patrols, objectives, vfx spots, lights, mantle zones), `COL_` meshes for collision (a tilted box is a walkable ramp), material names from the surface library. `tools/level-authoring/street.py` builds the showcase's street procedurally in Blender and is the reference for every convention.
 2. `pnpm level:street` exports, runs the asset pipeline (which bakes the navmesh) and lands the GLB in the app's `public/levels/`.
 3. In the scene, `loadStreetLevel` in `apps/showcase/src/levels/MissionLevel.ts` shows the loader call, the surface swap and how spawn points, patrols and objectives come out of the extras.
 

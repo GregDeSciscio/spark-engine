@@ -55,6 +55,8 @@ const BLAST_HEARD = 80;
 const DANGER_SECONDS = 6;
 /** Seconds after the blast in which a hostile going alert is the explosion's doing, not a sighting. */
 const SPOTTED_AFTER_BLAST = 5;
+/** How far toward the moon the visibility meter looks for a roof; the tallest building is 24 m. */
+const MOON_SHADOW_REACH = 60;
 
 /**
  * Milestone 10, the Task Unit sequel's vertical slice (ADR-005,
@@ -151,7 +153,7 @@ export const missionScene: SceneDefinition = {
     const demolition = new Demolition({ ...effects, physics, worldMeshes: level.meshes, sfx, ...(plantSite ? { site: plantSite } : {}) });
     bag.add(demolition);
     bag.add(entities.addSystem(ragdolls.system()));
-    const operator = new Operator({ entities, physics, animation, renderSync, scene, model, sfx }, level.spawn, level.spawnYaw);
+    const operator = new Operator({ entities, physics, animation, renderSync, scene, model, sfx, mantles: level.mantles }, level.spawn, level.spawnYaw);
     bag.add(operator);
     const dummies = level.targetSpots.map((spot, i) => {
       const dummy = new TargetDummy({ entities, physics, animation, renderSync, scene, model, labels: ui.labels }, `Target ${i + 1}`, spot.position, spot.yaw);
@@ -248,10 +250,14 @@ export const missionScene: SceneDefinition = {
       const d = lightDir.length();
       return physics.raycast(from, lightDir, d, { layers: 'world' }) !== null;
     };
+    // The moon keeps one direction however its shadow box follows the operator, so one ray toward it says whether he stands in its shadow.
+    const toMoon = sky.moon.position.clone().sub(sky.moon.target.position).normalize();
     const sampleLit = (): void => {
       operator.feet(chest);
       chest.y += 1.2;
-      const e = ctx.lighting.illuminanceAt(chest, { ambient: AWARENESS.nightAmbient, occluder: lightOccluder, maxOccluded: 3 });
+      const moonlit = physics.raycast(chest, toMoon, MOON_SHADOW_REACH, { layers: 'world' }) === null;
+      const ambient = AWARENESS.nightAmbient * (moonlit ? 1 : 1 - AWARENESS.moonShare);
+      const e = ctx.lighting.illuminanceAt(chest, { ambient, occluder: lightOccluder, maxOccluded: 3 });
       operator.lit = litness(e, AWARENESS.litReference);
     };
     const enemyFeet = new THREE.Vector3();
@@ -525,12 +531,30 @@ export const missionScene: SceneDefinition = {
       /**
        * Put the operator somewhere at once, keeping health and stance: a probe
        * about a charge being pulled needs the operator out of sight of it
-       * without a minute's walk.
+       * without a minute's walk. `y` (feet) defaults to the street.
        */
-      teleport: (x: number, z: number) => {
+      teleport: (x: number, z: number, y = 0) => {
         const health = operator.health;
-        operator.respawn(new THREE.Vector3(x, 0, z), camera.getYaw());
+        operator.respawn(new THREE.Vector3(x, y, z), camera.getYaw());
         operator.health = health;
+      },
+      /** The level's mantle zones, so a probe can find a crate to vault without hard-coding where the seed put it. */
+      mantleZones: () => level.mantles,
+      /**
+       * Whether the navmesh joins two points, which is whether a hostile can
+       * follow from one to the other, and how far the way round is.
+       */
+      navPath: (from: [number, number, number], to: [number, number, number]) => {
+        const corners: { x: number; y: number; z: number }[] = [];
+        const start = { x: from[0], y: from[1], z: from[2] };
+        const complete = navigation.findPath(start, { x: to[0], y: to[1], z: to[2] }, corners);
+        let length = 0;
+        let prev = start;
+        for (const c of corners) {
+          length += Math.hypot(c.x - prev.x, c.y - prev.y, c.z - prev.z);
+          prev = c;
+        }
+        return { complete, corners: corners.length, length, end: corners.length > 0 ? [prev.x, prev.y, prev.z] : null };
       },
       /** The debrief once the run has ended at extraction, else null. */
       debrief: () => debrief,
@@ -609,11 +633,16 @@ export const missionScene: SceneDefinition = {
         stance: operator.stance,
         colliderHeight: operator.colliderHeight,
         feet: operator.feet(new THREE.Vector3()).toArray(),
+        grounded: operator.grounded,
+        mantling: operator.mantling,
+        mantles: operator.mantleCount,
         targets: dummies.map((d) => ({ name: d.name, health: d.health, dead: d.dead, feet: d.feet(new THREE.Vector3()).toArray() })),
         enemies: enemies
           .filter((e) => !e.dormant)
           .map((e) => ({
             name: e.name,
+            // The body a `ray` reports hitting, so a probe can tell "the line reaches him" from "something is in the way".
+            eid: e.eid,
             state: e.state,
             posture: e.posture,
             awareness: e.awareness,

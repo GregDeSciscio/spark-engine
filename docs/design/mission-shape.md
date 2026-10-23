@@ -60,6 +60,8 @@ Out of scope for v1 as a feature, in scope as a design constraint: the enemy AI 
 - Two or three approaches per objective, the way Task Unit's maps have lanes. Verticality through mantle zones and ladders is kept.
 - Objectives and enemy placements are level data in the glTF extras path (ADR-008): objective volumes, interact points, patrol routes, alert reinforcement spawns, cover points.
 
+Built 2026-10-23 on the street (`docs/design/milestone-10-gaps.md`, gap 10): the road, a service alley behind the west row (three passages in, one knee wall to vault, its own watcher, dark on the visibility meter), and a fire escape to a catwalk over the square and the broker. Mantle zones are level data (`spark.type=mantle`) and the operator vaults them. Ladders are not built; the fire escape is a stair, which the navmesh covers and the hostiles can follow up.
+
 ## What the milestones now demonstrate
 
 - **Milestone 5 (gameplay slice):** player operator, one enemy with the full awareness model, one Reach and one Plant objective, checkpoint reload, a level round-tripped from Blender with the objective data.

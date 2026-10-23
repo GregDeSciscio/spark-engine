@@ -60,14 +60,17 @@ class Probe {
    * Walk to (x, z) the way a player would: face it, hold forward, re-aim every
    * poll. If the operator stops making ground for a second (a prop, a car), a
    * sidestep gets them round it. Fails the probe if they never arrive.
+   * `onPoll`, if given, runs once per poll, for a probe that cares about the
+   * way there as well as the arrival.
    */
-  async walkTo(message, x, z, seconds, within = 1.5, target = null) {
+  async walkTo(message, x, z, seconds, within = 1.5, target = null, onPoll = null) {
     const budget = Math.round((seconds * FIXED_HZ) / POLL_FRAMES);
     let last = Infinity;
     let stuck = 0;
     for (let i = 0; i <= budget; i++) {
       const where = target ? await target() : [x, z];
       if (where === null) break;
+      if (onPoll) await onPoll();
       const d = await this.distanceTo(where[0], where[1]);
       if (d <= within) {
         await this.call('move', 0, 0);
@@ -344,6 +347,168 @@ const PROBES = [
         Math.abs(now.checkpoint[2] - startCheckpoint[2]) > 1,
         `the checkpoint moved to the completed objective (z ${startCheckpoint[2].toFixed(1)} -> ${now.checkpoint[2].toFixed(1)})`,
       );
+    },
+  },
+  {
+    name: 'the-alley-is-a-way-through',
+    describe: 'the service alley behind the west row takes the operator from the square to the depot, out of the street and in the dark',
+    async run(p) {
+      // Rounds pass through: the claim is that the lane is walkable end to end.
+      // The alley's watcher is there to make the walk dangerous, and he will
+      // shoot; a probe about the route should not fail on a firefight. It
+      // starts at the square by teleport, because the walk up from the insert
+      // is start-to-extraction's business.
+      await p.call('invulnerable', true);
+      await p.call('teleport', 0, -8);
+      await p.run(0.5);
+      const streetLit = (await p.stats()).lit;
+      const toAlley = await p.call('navPath', [0, 0, -8], [-21.8, 0, -40]);
+      const toDepot = await p.call('navPath', [-21.8, 0, -40], [0, 0, -67.6]);
+      p.expect(toAlley.complete && toDepot.complete, `the navmesh joins the square to the alley and the alley to the depot, so hostiles can follow (${toAlley.length.toFixed(0)} m, ${toDepot.length.toFixed(0)} m)`);
+      // Into the square's passage, down the lane round its dumpsters and knee
+      // walls, out through the depot's passage to the charge.
+      const route = [
+        [-10.5, -16.4, 'into the square passage'],
+        [-22.0, -17.6, 'into the alley'],
+        [-22.0, -25.4, 'past the dumpster'],
+        [-20.8, -27.4, 'round the first knee wall'],
+        [-21.8, -39.0, 'past the broker passage'],
+        [-21.8, -46.0, 'down the lane'],
+        [-22.8, -48.6, 'round the second knee wall'],
+        [-21.9, -51.0, 'on down the lane'],
+        [-22.0, -54.8, 'past the last dumpster'],
+        [-20.6, -57.6, 'to the depot passage'],
+        [-10.5, -57.6, 'out of the depot passage'],
+      ];
+      let polls = 0;
+      let outside = 0;
+      const alleyLit = [];
+      const sample = async () => {
+        const s = await p.stats();
+        polls += 1;
+        // The west facades stand at |x| 11.5 to 13; past that the operator is in a passage or the alley.
+        if (Math.abs(s.feet[0]) > 11.5) outside += 1;
+        if (s.feet[0] < -19.5) alleyLit.push(s.lit);
+      };
+      for (const [x, z, label] of route) {
+        if (!(await p.walkTo(`the operator goes ${label}`, x, z, 15, 0.8, null, sample))) return;
+      }
+      await p.shot('alley-depot-passage');
+      await p.walkTo('the operator arrives at the depot wall by the alley', 0, -67.6, 20, 1.5, null, sample);
+      const share = outside / Math.max(1, polls);
+      p.expect(share > 0.5, `most of the walk is off the street, beyond the facade line (${(share * 100).toFixed(0)}% of ${polls} polls)`);
+      // The square is open road under the moon with no lamp near: the street's floor on the meter.
+      const meanAlley = alleyLit.reduce((a, b) => a + b, 0) / Math.max(1, alleyLit.length);
+      p.expect(alleyLit.length > 0 && meanAlley < streetLit, `the alley reads darker on the visibility meter than the open road at the square (alley ${meanAlley.toFixed(2)} mean, square ${streetLit.toFixed(2)})`);
+    },
+  },
+  {
+    name: 'the-overwatch-sees-the-broker',
+    describe: 'the fire escape climbs to a catwalk with a clear line down onto the broker, and hostiles can follow up it',
+    async run(p) {
+      // Rounds pass through for the whole probe: it is about the climb and the
+      // sightline, not about the riflemen who see a man on a fire escape and
+      // shoot him.
+      await p.call('invulnerable', true);
+      // The sightline first, while the broker still walks his beat across the
+      // street: straight onto the catwalk's far end by teleport. A climb in full
+      // view puts the street on alert and him off his beat (the first version of
+      // this probe watched him walk over and stand under the catwalk), so the
+      // climb is proven separately, below.
+      await p.call('teleport', 11.65, -36, 4.5);
+      await p.run(0.3);
+      // Eye to chest. The ray reports the first body it meets; the line is clear
+      // if that is the broker himself (or nothing short of his chest).
+      const line = async () => {
+        const s = await p.stats();
+        const broker = s.enemies.find((e) => e.name === 'Broker' && !e.dead);
+        if (!broker) return { broker: null };
+        const eye = [s.feet[0], s.feet[1] + 1.6, s.feet[2]];
+        const chest = [broker.feet[0], broker.feet[1] + 1.3, broker.feet[2]];
+        const hit = await p.call('ray', eye, chest);
+        return { broker, hit, clear: hit.eid === null || hit.eid === broker.eid, eye, chest, state: broker.state };
+      };
+      const seen = await p.until("a clear line from the operator's eye down to the broker's chest", 10, line, (r) => r.broker !== null && r.clear);
+      if (seen !== null) {
+        const r = await line();
+        if (r.broker) {
+          const drop = r.eye[1] - r.chest[1];
+          const range = Math.hypot(r.eye[0] - r.chest[0], r.eye[2] - r.chest[2]);
+          p.expect(drop > 3 && range > 12, `it is a long line from above, across the street onto his beat (${drop.toFixed(1)} m down over ${range.toFixed(0)} m, broker ${r.state})`);
+          await p.call('lookAt', r.chest[0], r.chest[1], r.chest[2]);
+          await p.call('aim', true);
+          await p.run(0.3);
+          await p.shot('overwatch-on-the-broker');
+          await p.call('aim', false);
+        }
+      }
+      // The climb, walked: from the foot of the stair, up, and along to the far end.
+      await p.call('teleport', 11.95, -2.5);
+      await p.walkTo('the operator climbs the stair', 11.9, -14.6, 12, 1.0);
+      const top = await p.stats();
+      p.expect(top.feet[1] > 4.2, `the stair takes the operator up to the catwalk (feet y ${top.feet[1].toFixed(2)})`);
+      await p.walkTo('the operator walks the catwalk to its far end, over the broker', 11.65, -36, 15, 1.0);
+      const vantage = await p.stats();
+      p.expect(vantage.feet[1] > 4.2, `still up there at the far end (feet y ${vantage.feet[1].toFixed(2)})`);
+      const follow = await p.call('navPath', [5, 0, -3], [vantage.feet[0], vantage.feet[1], vantage.feet[2]]);
+      p.expect(follow.complete, `the navmesh climbs the stair, so a hostile can follow up (${follow.length.toFixed(0)} m)`);
+    },
+  },
+  {
+    name: 'mantle-vaults-a-crate',
+    describe: 'jump facing a waist-high crate and the operator vaults it; jump in the open and it is still a jump',
+    async run(p) {
+      // Teleported next to it and immune to rounds: this probe is about the
+      // vault, and the crate it picks stands where riflemen can see it.
+      await p.call('invulnerable', true);
+      const zones = await p.call('mantleZones');
+      const crates = zones
+        .filter((z) => Math.abs(z.top - 1) < 0.05 && z.maxX - z.minX < 1.1 && z.maxZ - z.minZ < 1.1 && Math.abs((z.minX + z.maxX) / 2) < 8)
+        .sort((a, b) => Math.hypot((a.minX + a.maxX) / 2 - 1, (a.minZ + a.maxZ) / 2) - Math.hypot((b.minX + b.maxX) / 2 - 1, (b.minZ + b.maxZ) / 2));
+      p.expect(zones.length >= 20, `the street marks its low cover as mantle zones (${zones.length})`);
+      const crate = crates[0];
+      if (!p.expect(Boolean(crate), 'a single crate in the road to vault')) return;
+      const cx = (crate.minX + crate.maxX) / 2;
+      // Standing still 0.9 m in front of its north face, looking across it: a jump
+      // in place cannot carry the operator over, so getting past it is the vault.
+      await p.call('teleport', cx, crate.maxZ + 0.9);
+      await p.call('lookAt', cx, 0.6, crate.minZ - 4);
+      await p.run(0.3);
+      // Watched every other frame for a second: the vault is half of that.
+      const trace = async (from) => {
+        let highest = from.feet[1];
+        let vaulted = false;
+        for (let i = 0; i < 30; i++) {
+          await p.step(2);
+          const s = await p.stats();
+          highest = Math.max(highest, s.feet[1]);
+          vaulted ||= s.mantles > from.mantles;
+        }
+        return { highest, vaulted };
+      };
+      const before = await p.stats();
+      await p.key('Space');
+      const { highest, vaulted } = await trace(before);
+      p.expect(vaulted, 'the jump becomes a vault');
+      await p.run(0.5);
+      const after = await p.stats();
+      const beyond = after.feet[2] < crate.minZ;
+      const onTop = after.feet[1] > crate.top - 0.1;
+      p.expect(beyond || onTop, `the feet end beyond the crate or on it (feet z ${after.feet[2].toFixed(2)}, y ${after.feet[1].toFixed(2)}; crate z ${crate.minZ.toFixed(2)}..${crate.maxZ.toFixed(2)}, top ${crate.top.toFixed(2)})`);
+      p.expect(highest > crate.top, `the feet went over the top, not through it (highest ${highest.toFixed(2)})`);
+      p.expect(!after.mantling && after.grounded, 'the vault is over and the operator is standing');
+      // Open road, nothing to vault: Space is a jump that comes back down where it left.
+      await p.call('teleport', 0, 18);
+      await p.call('lookAt', 0, 1, 8);
+      await p.run(0.4);
+      const open = await p.stats();
+      await p.key('Space');
+      const jump = await trace(open);
+      await p.run(0.6);
+      const landed = await p.stats();
+      p.expect(jump.highest > open.feet[1] + 0.8, `an ordinary jump still leaves the ground (peak ${(jump.highest - open.feet[1]).toFixed(2)} m)`);
+      p.expect(!jump.vaulted && landed.mantles === open.mantles, 'and it is not a vault');
+      p.expect(Math.hypot(landed.feet[0] - open.feet[0], landed.feet[2] - open.feet[2]) < 0.3 && Math.abs(landed.feet[1] - open.feet[1]) < 0.05, 'and it lands where it took off');
     },
   },
   {

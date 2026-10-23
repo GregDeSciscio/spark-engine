@@ -32,6 +32,9 @@ Every probe also fails on engine log records at warn or above and on browser con
 | `the-insert-has-a-window` | Nobody is shooting at the spawn inside the first five seconds — the player gets a beat to move before the street notices |
 | `stance-is-cover` | Going prone builds a watcher's awareness slower than standing does |
 | `objectives-advance` | Walking into the first objective advances the mission by exactly one, moves the checkpoint, and puts the broker up next |
+| `the-alley-is-a-way-through` | The service alley joins the square to the depot: the navmesh reaches it, the operator walks square passage, lane and depot passage to the charge with most of the walk beyond the facade line, and the lane reads darker on the visibility meter than open road |
+| `the-overwatch-sees-the-broker` | From the catwalk's far end there is a clear line from the operator's eye down onto the broker's chest while he walks his beat; the stair is walked up, and the navmesh climbs it too, so hostiles can follow |
+| `mantle-vaults-a-crate` | Space facing a waist-high crate from a standstill vaults it (feet over the top, landing beyond it), and Space in the open is still an ordinary jump that comes down where it left |
 | `charge-is-defended` | Arming the charge trips the alarm (sector alerted), sends two hostiles to pull it, and a charge nobody defends is pulled and the mission is back on setting it |
 | `start-to-extraction` | The whole mission walked and shot through: the square, the broker killed by gunfire, the charge set and held until it blows, the walk home, the debrief, and Enter playing it again from a clean street. Its `--shots` frames are the slice's captures |
 
@@ -44,6 +47,10 @@ Two probes need the game to stop being a game for a moment, and both earn it.
 `objectives-advance` needs to cross a street held by eight riflemen. They will kill an operator who walks up the middle, and they should — that is the mission working. So the probe sets `game.invulnerable(true)` for the walk and clears it afterwards, and what it asserts is what it came for: the volume fires once, the next objective is the right one, the checkpoint moved.
 
 `charge-is-defended` and `start-to-extraction` lean on two more. `game.teleport(x, z)` moves the operator without touching health or stance, so the defuse probe can leave the charge unwatched without a minute's walk; `game.interact(on)` holds F. `start-to-extraction` walks every metre and kills the broker with the rifle, because that probe's whole claim is that the mission can be played through; only the incoming rounds are switched off.
+
+The lane probes lean on `invulnerable` and `teleport` too, all with rounds passing through. `the-alley-is-a-way-through` starts at the square by teleport and walks everything after; `the-overwatch-sees-the-broker` teleports onto the catwalk to check the sightline before anyone has seen a man on a fire escape (a climb in full view sends the broker off his beat, which the first version of the probe found), then walks the climb from the foot of the stair (`teleport(x, z, y)` takes an optional feet height for the catwalk); `mantle-vaults-a-crate` teleports to a crate it finds through `game.mantleZones()` rather than coordinates the seed chose. `game.navPath(from, to)` says whether the navmesh joins two points, which is the question "can a hostile follow me there".
+
+`walkTo` aims through `lookAt`, which aims from the shoulder pivot, not the feet. Within half a metre of the target the two disagree enough that the operator circles it, so ask for arrival within 0.8 m or more and put the next waypoint further on.
 
 The rule: when a probe would fail for a reason it is not about, give it a seam rather than a longer timeout. Both seams live on the probe surface, and `Operator.invulnerable` is never set by the game itself.
 

@@ -30,8 +30,14 @@ export const AWARENESS = {
   warnRadius: 30,
   /** Sight gain multiplier for a target in full darkness (1 = light does not matter). */
   darkGain: 0.25,
-  /** Illuminance from sky and moon everywhere, in the engine's light units. */
+  /** Illuminance from sky and moon in the open, in the engine's light units. */
   nightAmbient: 0.35,
+  /**
+   * The moon's part of that: what a wall between the moon and the operator
+   * takes away. Without it a moon shadow (the alley, the lee of the west row)
+   * read exactly as lit as open road, and the dark lane was dark only to the eye.
+   */
+  moonShare: 0.65,
   /** Illuminance that reads as 63 percent lit on the visibility meter. */
   litReference: 2.0,
 } as const;

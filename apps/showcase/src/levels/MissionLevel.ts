@@ -16,6 +16,7 @@ import {
   type QualitySettings,
   type RenderSync,
 } from '@spark/engine';
+import type { MantleZone } from '../actors/mantle';
 import type { ObjectiveDef, ObjectiveKind } from '../mission/Objectives';
 import type { ReinforcementPoint, ReinforcementWave } from '../mission/Alert';
 
@@ -47,6 +48,8 @@ export interface MissionLevel {
   readonly navigation: Navigation;
   /** Authored particle sources: steam vents and the like (`spark.type=vfx`). */
   readonly vfx: readonly VfxSpot[];
+  /** Low obstacles the operator vaults (`spark.type=mantle`). Hostiles walk round them. */
+  readonly mantles: readonly MantleZone[];
   /** The level's local lights (neon), for volumetric cones and light meters. */
   readonly lights: readonly THREE.PointLight[];
   /** The playable extents, for fog volumes and rain. */
@@ -54,8 +57,12 @@ export interface MissionLevel {
   dispose(): void;
 }
 
-/** The street's playable box; both levels are built to it. */
-export const STREET_BOUNDS = { min: new THREE.Vector3(-14, 0, -76), max: new THREE.Vector3(14, 12, 46) };
+/**
+ * The street's playable box; both levels are built to it. It reaches past the
+ * west row to take in the alley behind it (`tools/level-authoring/street.py`),
+ * so the fog volume fills the lane as well as the road.
+ */
+export const STREET_BOUNDS = { min: new THREE.Vector3(-24.5, 0, -76), max: new THREE.Vector3(14, 12, 46) };
 
 export interface VfxSpot {
   readonly preset: 'steam' | 'smoke' | 'embers';
@@ -221,6 +228,7 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
   const reinforcements: (ReinforcementPoint & { order: number })[] = [];
   const targets: { index: number; position: THREE.Vector3 }[] = [];
   const vfx: VfxSpot[] = [];
+  const mantles: MantleZone[] = [];
   let spawnYaw = 0;
   const positionOf = (d: LevelEntityDescriptor): THREE.Vector3 => new THREE.Vector3(d.node.position[0], d.node.position[1], d.node.position[2]);
 
@@ -290,6 +298,14 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
         }
         break;
       }
+      case 'mantle': {
+        // The empty stands at the obstacle's base; `hx`/`hz` are its footprint, `top` its height in world y.
+        const at = positionOf(d);
+        const hx = num(s.hx, 0.5);
+        const hz = num(s.hz, 0.5);
+        mantles.push({ minX: at.x - hx, maxX: at.x + hx, minZ: at.z - hz, maxZ: at.z + hz, bottom: at.y, top: num(s.top, at.y + 1) });
+        break;
+      }
       default:
         logger.warn(`street: unknown spark.type "${d.type}" on ${d.node.path}`);
     }
@@ -318,7 +334,7 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
 
   const stats = navigation.stats();
   logger.info(
-    `street: ${level.entities.length} entities, ${level.colliders.length} colliders (${meshes.size} with render twins), ${level.lights.length} lights, ${level.props.length} props, ${surfaced} surfaced meshes, ${vfx.length} vfx spots, ${objectives.length} objectives, ${patrols.length} patrols, ${reinforcements.length} ingress points, navmesh ${stats.polys} polys`,
+    `street: ${level.entities.length} entities, ${level.colliders.length} colliders (${meshes.size} with render twins), ${level.lights.length} lights, ${level.props.length} props, ${surfaced} surfaced meshes, ${vfx.length} vfx spots, ${objectives.length} objectives, ${patrols.length} patrols, ${reinforcements.length} ingress points, ${mantles.length} mantle zones, navmesh ${stats.polys} polys`,
   );
 
   return {
@@ -331,6 +347,7 @@ export async function loadStreetLevel(deps: StreetLevelDeps, url = '/levels/stre
     objectives: objectives.map(({ order: _order, ...o }) => o),
     navigation,
     vfx,
+    mantles,
     lights,
     bounds: STREET_BOUNDS,
     dispose: () => bag.dispose(),

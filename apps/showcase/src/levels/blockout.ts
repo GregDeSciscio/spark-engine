@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { DisposeBag, Navigation, SurfaceLibrary, Transform, TriangleSoup, type Entity, type EntityWorld, type PhysicsWorld, type Random } from '@spark/engine';
+import type { MantleZone } from '../actors/mantle';
 import type { ObjectiveDef } from '../mission/Objectives';
 import type { ReinforcementPoint } from '../mission/Alert';
 import { STREET_BOUNDS, type MissionLevel } from './MissionLevel';
@@ -8,8 +9,11 @@ import { STREET_BOUNDS, type MissionLevel } from './MissionLevel';
  * A grey-box night street built in code: the fallback level (`?level=blockout`)
  * and the reference the Blender-authored street (tools/level-authoring/street.py)
  * was drawn from. Two rows of building slabs, crates and low walls for cover,
- * neon on the facades. Everything is seeded so the same seed gives the same
- * street. Bakes its own navmesh at load; call `initNavigation()` first.
+ * neon on the facades, and the street's three lanes in grey: the alley behind
+ * the west row with its passages, and the fire escape up to the catwalk (a
+ * stair of blocks here; the street's is a ramp). Everything is seeded so the
+ * same seed gives the same street. Bakes its own navmesh at load; call
+ * `initNavigation()` first.
  */
 
 const STREET_HALF_WIDTH = 9;
@@ -17,6 +21,34 @@ const STREET_Z_MIN = -70;
 const STREET_Z_MAX = 40;
 const SIDEWALK = 2.5;
 const NEON_COLORS = [0xff2bd6, 0x22e8ff, 0xff7a1a, 0x4dff6a, 0xff3d5a, 0x3d7bff, 0xffd23d, 0xb14dff] as const;
+// The lanes, mirrored from what street.py builds for its seed, so the garrison's routes hold in both levels.
+const ALLEY_IN = 20;
+const ALLEY_OUT = 23.6;
+const ALLEY_X = -21.8;
+const ALLEY_Z_MAX = 2;
+/** The street's passages into the alley, as built: [z0, z1]. */
+const PASSAGES: readonly (readonly [number, number])[] = [
+  [-19.15, -15.16],
+  [-32.94, -30.54],
+  [-59.41, -56.45],
+];
+const BROKER_PASSAGE_Z = (-32.94 + -30.54) / 2;
+const OVERWATCH = { x0: 10.7, x1: 12.6, y: 4.5, z0: -40.5, z1: -13.5, stairX0: 10.8, stairX1: 12.4, stairFoot: -5, steps: 18 } as const;
+
+/** [z0, z1] minus every passage: the pieces of a west building that stand. */
+function cutPassages(z0: number, z1: number): [number, number][] {
+  let pieces: [number, number][] = [[z0, z1]];
+  for (const [p0, p1] of PASSAGES) {
+    pieces = pieces.flatMap(([a, b]): [number, number][] => {
+      if (b <= p0 || a >= p1) return [[a, b]];
+      const out: [number, number][] = [];
+      if (p0 - a > 1) out.push([a, p0]);
+      if (b - p1 > 1) out.push([p1, b]);
+      return out;
+    });
+  }
+  return pieces;
+}
 
 interface Box {
   x: number;
@@ -76,7 +108,12 @@ export function buildBlockout(scene: THREE.Scene, entities: EntityWorld, physics
   }
 
   // ---- buildings: slabs along both sides, gaps for alleys ------------------------
+  // The west row stops at the alley and is cut where the street has its passages.
   const neonLights: THREE.PointLight[] = [];
+  const mantles: MantleZone[] = [];
+  const mantleOn = (box: Box): void => {
+    mantles.push({ minX: box.x - box.hx, maxX: box.x + box.hx, minZ: box.z - box.hz, maxZ: box.z + box.hz, bottom: box.y - box.hy, top: box.y + box.hy });
+  };
   let neonIndex = 0;
   for (const side of [-1, 1] as const) {
     let z = STREET_Z_MIN;
@@ -84,20 +121,25 @@ export function buildBlockout(scene: THREE.Scene, entities: EntityWorld, physics
       const depth = random.range(8, 16);
       const height = random.range(9, 24);
       const setback = random.range(0, 1.5);
-      const x = side * (STREET_HALF_WIDTH + SIDEWALK + depth / 2 + setback);
-      addBox({ x, y: height / 2, z: z + depth / 2, hx: depth / 2, hy: height / 2, hz: depth / 2 }, facade);
-      // A neon sign on the street face of most buildings.
+      const front = STREET_HALF_WIDTH + SIDEWALK + setback;
+      const back = side < 0 ? Math.min(front + depth, ALLEY_IN) : front + depth;
+      const x = side * (front + back) / 2;
+      const pieces = side < 0 ? cutPassages(z, z + depth) : [[z, z + depth] as [number, number]];
+      for (const [z0, z1] of pieces) addBox({ x, y: height / 2, z: (z0 + z1) / 2, hx: (back - front) / 2, hy: height / 2, hz: (z1 - z0) / 2 }, facade);
+      // A neon sign on the street face of most buildings, on its widest piece.
       if (random.next() < 0.55) {
         const color = NEON_COLORS[neonIndex++ % NEON_COLORS.length] as number;
         const signY = random.range(3, Math.min(height - 1, 9));
         const sign = new THREE.Mesh(unitBox, new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 2.5, roughness: 0.4 }));
-        const faceX = side * (STREET_HALF_WIDTH + SIDEWALK + setback);
-        sign.position.set(faceX - side * 0.12, signY, z + depth / 2);
+        const faceX = side * front;
+        const widest = pieces.reduce((a, b) => (b[1] - b[0] > a[1] - a[0] ? b : a), pieces[0] ?? [z, z + depth]);
+        const signZ = (widest[0] + widest[1]) / 2;
+        sign.position.set(faceX - side * 0.12, signY, signZ);
         sign.scale.set(0.2, random.range(0.6, 1.4), random.range(1.6, 3.2));
         scene.add(sign);
         bag.add(() => (sign.material as THREE.Material).dispose());
         const light = new THREE.PointLight(color, 22, 8, 2);
-        light.position.set(faceX - side * 0.6, signY, z + depth / 2);
+        light.position.set(faceX - side * 0.6, signY, signZ);
         scene.add(light);
         neonLights.push(light);
       }
@@ -113,14 +155,40 @@ export function buildBlockout(scene: THREE.Scene, entities: EntityWorld, physics
     const hz = big ? 0.5 : 0.5;
     const x = random.range(-STREET_HALF_WIDTH + 1.5, STREET_HALF_WIDTH - 1.5);
     const z = random.range(STREET_Z_MIN + 6, STREET_Z_MAX - 12);
-    addBox({ x, y: hy, z, hx, hy, hz }, crate);
+    const box = { x, y: hy, z, hx, hy, hz };
+    addBox(box, crate);
     if (big && random.next() < 0.5) addBox({ x, y: 2 * hy + hy, z, hx: 0.5, hy, hz: 0.5 }, crate);
+    else mantleOn(box);
   }
   for (let i = 0; i < 6; i++) {
     const x = random.range(-STREET_HALF_WIDTH + 2, STREET_HALF_WIDTH - 2);
     const z = random.range(STREET_Z_MIN + 10, STREET_Z_MAX - 16);
-    addBox({ x, y: 0.4, z, hx: 1.6, hy: 0.4, hz: 0.18 }, barrier);
+    const box = { x, y: 0.4, z, hx: 1.6, hy: 0.4, hz: 0.18 };
+    addBox(box, barrier);
+    mantleOn(box);
   }
+
+  // ---- the alley: a far wall, its two ends, the knee walls the operator vaults ----
+  addBox({ x: -(ALLEY_OUT + 2), y: 5, z: (STREET_Z_MIN - 2 + ALLEY_Z_MAX + 2) / 2, hx: 2, hy: 5, hz: (ALLEY_Z_MAX - STREET_Z_MIN + 4) / 2 }, facade);
+  for (const z of [ALLEY_Z_MAX + 0.5, STREET_Z_MIN - 0.5]) addBox({ x: ALLEY_X, y: 4.5, z, hx: 2.1, hy: 4.5, hz: 0.5 }, facade);
+  for (const box of [
+    { x: -22.6, y: 0.55, z: -27, hx: 1, hy: 0.55, hz: 0.15 },
+    { x: -20.95, y: 0.55, z: -48.5, hx: 0.95, hy: 0.55, hz: 0.15 },
+  ]) {
+    addBox(box, barrier);
+    mantleOn(box);
+  }
+
+  // ---- the overwatch: a stair of blocks up to the catwalk ------------------------
+  const o = OVERWATCH;
+  const run = (o.stairFoot - o.z1) / o.steps;
+  for (let k = 1; k <= o.steps; k++) {
+    const top = (k * o.y) / o.steps;
+    addBox({ x: (o.stairX0 + o.stairX1) / 2, y: top / 2, z: o.stairFoot - (k - 0.5) * run, hx: (o.stairX1 - o.stairX0) / 2, hy: top / 2, hz: run / 2 }, barrier);
+  }
+  addBox({ x: (o.x0 + o.x1) / 2, y: o.y - 0.05, z: (o.z0 + o.z1) / 2, hx: (o.x1 - o.x0) / 2, hy: 0.05, hz: (o.z1 - o.z0) / 2 }, barrier);
+  addBox({ x: o.x0 + 0.03, y: o.y + 0.3, z: (o.z0 + o.z1) / 2, hx: 0.03, hy: 0.3, hz: (o.z1 - o.z0) / 2 }, barrier);
+  addBox({ x: (o.x0 + o.x1) / 2, y: o.y + 0.3, z: o.z0 + 0.03, hx: (o.x1 - o.x0) / 2, hy: 0.3, hz: 0.03 }, barrier);
 
   // ---- far end: a wall so the street reads as enclosed ------------------------
   addBox({ x: 0, y: 6, z: STREET_Z_MIN - 1, hx: STREET_HALF_WIDTH + SIDEWALK + 2, hy: 6, hz: 1 }, facade);
@@ -148,7 +216,8 @@ export function buildBlockout(scene: THREE.Scene, entities: EntityWorld, physics
     { name: 'Rifleman 3', route: [new THREE.Vector3(0, 0, -52), new THREE.Vector3(6, 0, -42), new THREE.Vector3(-6, 0, -44)] },
     // Kept off the insert: closer than this and the operator is seen before they move.
     { name: 'Rifleman 4', route: [new THREE.Vector3(7, 0, 12), new THREE.Vector3(-4, 0, 6), new THREE.Vector3(6, 0, 2)] },
-    { name: 'Rifleman 5', route: [new THREE.Vector3(-6, 0, -18), new THREE.Vector3(6, 0, -14), new THREE.Vector3(-2, 0, -6)] },
+    // The alley's watcher.
+    { name: 'Rifleman 5', route: [new THREE.Vector3(ALLEY_X, 0, -10), new THREE.Vector3(ALLEY_X, 0, -44), new THREE.Vector3(-15.5, 0, BROKER_PASSAGE_Z)] },
     { name: 'Rifleman 6', route: [new THREE.Vector3(-5, 0, -62), new THREE.Vector3(5, 0, -64), new THREE.Vector3(2, 0, -56)] },
     { name: 'Rifleman 7', route: [new THREE.Vector3(-6, 0, -28), new THREE.Vector3(6, 0, -36), new THREE.Vector3(-4, 0, -40)] },
     { name: 'Rifleman 8', route: [new THREE.Vector3(7, 0, -2), new THREE.Vector3(7, 0, -20), new THREE.Vector3(2, 0, -30)] },
@@ -158,7 +227,7 @@ export function buildBlockout(scene: THREE.Scene, entities: EntityWorld, physics
   // `spark.type=reinforce` empties (see `tools/level-authoring/street.py`).
   const reinforcements: ReinforcementPoint[] = [
     { id: 'depot_north', wave: 'alerted', position: new THREE.Vector3(-6.5, 0, -66), route: 'Rifleman 3' },
-    { id: 'side_west', wave: 'alerted', position: new THREE.Vector3(-7.5, 0, -30), route: 'Rifleman 2' },
+    { id: 'side_west', wave: 'alerted', position: new THREE.Vector3(ALLEY_X, 0, BROKER_PASSAGE_Z - 1.5), route: 'Rifleman 2' },
     { id: 'depot_east', wave: 'lockdown', position: new THREE.Vector3(7.5, 0, -60), route: 'Rifleman 3' },
     { id: 'square_east', wave: 'lockdown', position: new THREE.Vector3(7.5, 0, -14), route: 'Rifleman 1' },
     { id: 'extract_south', wave: 'lockdown', position: new THREE.Vector3(-6, 0, 22), route: null },
@@ -182,6 +251,7 @@ export function buildBlockout(scene: THREE.Scene, entities: EntityWorld, physics
     objectives,
     navigation,
     vfx: [],
+    mantles,
     lights: neonLights,
     bounds: STREET_BOUNDS,
     dispose: () => bag.dispose(),
