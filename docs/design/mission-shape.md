@@ -48,6 +48,8 @@ Built 2026-09-07: the per-enemy ladder is `apps/showcase/src/ai/Awareness.ts` wi
 - Suppressed weapons and the dark aesthetic are not just flavour: lighting is a gameplay input, so the clustered lighting system needs a cheap "how lit is this point" query.
 - Level alert states change patrol routes and spawn reinforcements from authored points, which is how the same level supports both a stealth run and a loud run.
 
+Built 2026-10-23 for Milestone 10 (`docs/design/milestone-10-gaps.md`): the street's mission is Insert → reach the square → eliminate the broker (a tagged hostile, `target` on the objective) → set the charge on the depot wall and hold it for a 20 s fuse → extract at the insert, with a debrief and a replay. Plant's defend half is real: arming trips the depot alarm (`AlertDirector.raise`), the sector sends two hostiles to kneel at the charge (`Enemy.assignWork`), and one who works at it for four seconds pulls it. The detonation damages by distance and line of sight (`combat/demolition.ts`).
+
 ## Squadmates
 
 Out of scope for v1 as a feature, in scope as a design constraint: the enemy AI (perception, nav, cover, weapon-role behaviour) is written faction-agnostic so that a friendly squad with simple commands (follow, hold, fire at will, breach) can be added after the vertical slice without a second AI system.
