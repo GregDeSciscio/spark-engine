@@ -182,6 +182,25 @@ export class AlertDirector {
     this.deps.onTier(tier, previous);
   }
 
+  /**
+   * Something other than a sighting tells the sector: the depot alarm, a
+   * charge going off. Takes the tier to at least `tier` (never down), calls in
+   * every wave it skipped, and sends the hunt to `at`. The settle clock starts
+   * now, as it would on contact, or a quiet street would calm straight back
+   * down on the next step.
+   */
+  raise(tier: LevelAlert, now: number, sample: AlertSample, at: Vec3Like): void {
+    this.lastContactAt = now;
+    const told = { ...sample, lastKnown: at };
+    if (RANK[tier] <= RANK[this.tier]) {
+      this.nextHuntAt = now + ALERT.huntEvery;
+      this.deps.hunt(at);
+      return;
+    }
+    if (tier === 'lockdown' && this.tier === 'quiet') this.enter('alerted', now, told);
+    this.enter(tier, now, told);
+  }
+
   /** Checkpoint reload: the sector forgets, and every ingress point is available again. */
   reset(now = 0): void {
     const previous = this.tier;

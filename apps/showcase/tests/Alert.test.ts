@@ -191,6 +191,43 @@ describe('AlertDirector', () => {
     expect(h.director.status().pending).toBe(0);
   });
 
+  it('raises the tier on an alarm without contact, hunts the alarm, and does not calm on the next step', () => {
+    const h = harness();
+    const ALARM = { x: 0, y: 0, z: -66 };
+    const quiet: AlertSample = { contacts: 0, searching: 0, casualties: 0, live: 3, lastKnown: null };
+    h.director.raise('alerted', h.now(), quiet, ALARM);
+    expect(h.director.tier).toBe('alerted');
+    expect(h.hunts.at(-1)).toEqual(ALARM);
+    expect(h.director.status().pending).toBe(2);
+    h.run(1, { lastKnown: null });
+    expect(h.director.tier).toBe('alerted');
+    expect(h.deployed).toEqual([]); // the first arrival waits a spacing
+    h.run(ALERT.spawnSpacing, { lastKnown: null });
+    expect(h.deployed).toEqual(['a1']);
+    // Nobody ever saw anything: the sector still settles, a full window after the alarm.
+    h.run(ALERT.settleAfter, { lastKnown: null });
+    expect(h.director.tier).toBe('quiet');
+  });
+
+  it('never lowers the tier on a raise, but re-points the hunt', () => {
+    const h = harness();
+    h.run(0.5, { contacts: 2 });
+    expect(h.director.tier).toBe('lockdown');
+    const tiers = h.tiers.length;
+    h.director.raise('alerted', h.now(), { contacts: 0, searching: 0, casualties: 0, live: 3, lastKnown: HERE }, { x: 5, y: 0, z: 5 });
+    expect(h.director.tier).toBe('lockdown');
+    expect(h.tiers.length).toBe(tiers);
+    expect(h.hunts.at(-1)).toEqual({ x: 5, y: 0, z: 5 });
+  });
+
+  it('calls in both waves when an explosion takes a quiet sector straight to lockdown', () => {
+    const h = harness();
+    h.director.raise('lockdown', h.now(), { contacts: 0, searching: 0, casualties: 0, live: 3, lastKnown: null }, HERE);
+    expect(h.director.tier).toBe('lockdown');
+    expect(h.tiers).toEqual(['alerted', 'lockdown']);
+    expect(h.director.status().pending).toBe(POINTS.length);
+  });
+
   it('reports what it has left to send', () => {
     const h = harness();
     h.run(0.1, { contacts: 1 });
