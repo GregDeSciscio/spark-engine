@@ -15,6 +15,9 @@ import {
   spawnCountForStep,
 } from '../src/vfx/descriptor';
 import { PARTICLE_PRESETS, PARTICLE_PRESET_NAMES, isParticlePresetName } from '../src/vfx/presets';
+import { ParticleSystem } from '../src/vfx/ParticleSystem';
+import { EntityWorld } from '../src/ecs/EntityWorld';
+import type { SparkRenderer } from '../src/rendering/Renderer';
 
 describe('resolveEmitterDescriptor', () => {
   it('fills defaults and returns a fully specified sprite descriptor', () => {
@@ -274,5 +277,46 @@ describe('spawn rate accounting', () => {
     expect(emitterIsIdle(0, true, false, 3)).toBe(false);
     // A wrapping volume (rain) is always full.
     expect(emitterIsIdle(0, true, true, 0)).toBe(false);
+  });
+});
+
+describe('compute warm-up', () => {
+  /** Enough of a renderer for the system to build emitters and dispatch; nothing reaches a GPU. */
+  const stubRenderer = (backend: 'webgpu' | 'webgl'): { renderer: SparkRenderer; info: { frame: number }; dispatches: unknown[] } => {
+    const dispatches: unknown[] = [];
+    const info = { frame: 0 };
+    const renderer = {
+      capabilities: { backend, timestampQuery: false },
+      three: { compute: (nodes: unknown) => dispatches.push(nodes), info },
+    } as unknown as SparkRenderer;
+    return { renderer, info, dispatches };
+  };
+
+  it('hands the warm-up each update kernel that has never run, once, so the first frames compile nothing', () => {
+    const world = new EntityWorld({ capacity: 16 });
+    const { renderer, info, dispatches } = stubRenderer('webgpu');
+    const vfx = new ParticleSystem(world, renderer);
+    const sparks = vfx.spawnEmitter(world.create(), 'sparks');
+    vfx.spawnEmitter(world.create(), 'muzzleFlash');
+    // Spawning dispatches each emitter's init kernel and nothing else.
+    expect(dispatches).toHaveLength(2);
+    expect(vfx.warmUpKernels()).toHaveLength(2);
+    expect(vfx.warmUpKernels()).toHaveLength(0);
+    // The warm-up dispatch counts as the first, so idle emitters skip from the first real frame on.
+    vfx.run(world, 1 / 60);
+    expect(vfx.stats().dispatches).toBe(0);
+    // A burst wakes only the emitter it is for.
+    vfx.burst(sparks?.eid ?? -1, 4);
+    info.frame++;
+    vfx.run(world, 1 / 60);
+    expect(vfx.stats().dispatches).toBe(1);
+    expect(dispatches.at(-1)).toHaveLength(1);
+  });
+
+  it('has nothing to warm on WebGL2, where there are no GPU particles', () => {
+    const world = new EntityWorld({ capacity: 16 });
+    const vfx = new ParticleSystem(world, stubRenderer('webgl').renderer);
+    expect(vfx.spawnEmitter(world.create(), 'sparks')).toBeNull();
+    expect(vfx.warmUpKernels()).toEqual([]);
   });
 });

@@ -23,6 +23,8 @@ export interface WarmUpResult {
   /** Render pipelines the warm-up created. */
   readonly pipelines: number;
   readonly byPass: WarmUpCounts;
+  /** Compute kernels dispatched once inside the warm-up so their pipelines compile there. */
+  readonly kernels?: number;
   /** Wall time from the first graph pass to every pipeline being ready and the GPU queue idle. */
   readonly ms: number;
 }
@@ -75,5 +77,6 @@ export async function trackCompilation(promises: readonly Promise<unknown>[], on
 
 export function formatWarmUp(result: WarmUpResult): string {
   const parts = WARM_UP_PASSES.filter((pass) => result.byPass[pass] > 0).map((pass) => `${pass} ${result.byPass[pass]}`);
-  return `warm-up: ${result.pipelines} pipelines (${parts.join(', ') || 'none'}) in ${(result.ms / 1000).toFixed(2)} s`;
+  const kernels = result.kernels ? `, ${result.kernels} compute kernel${result.kernels === 1 ? '' : 's'}` : '';
+  return `warm-up: ${result.pipelines} pipelines (${parts.join(', ') || 'none'})${kernels} in ${(result.ms / 1000).toFixed(2)} s`;
 }

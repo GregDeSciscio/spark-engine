@@ -26,6 +26,10 @@ describe('classifyRenderObject', () => {
     expect(totalWarmUpCount(counts)).toBe(40);
     expect(formatWarmUp({ pipelines: 40, byPass: counts, ms: 1834 })).toBe('warm-up: 40 pipelines (shadow 12, prepass 9, scene 19) in 1.83 s');
     expect(formatWarmUp({ pipelines: 0, byPass: createWarmUpCounts(), ms: 5 })).toBe('warm-up: 0 pipelines (none) in 0.01 s');
+    expect(formatWarmUp({ pipelines: 40, byPass: counts, kernels: 31, ms: 1834 })).toBe(
+      'warm-up: 40 pipelines (shadow 12, prepass 9, scene 19), 31 compute kernels in 1.83 s',
+    );
+    expect(formatWarmUp({ pipelines: 0, byPass: createWarmUpCounts(), kernels: 1, ms: 5 })).toBe('warm-up: 0 pipelines (none), 1 compute kernel in 0.01 s');
   });
 });
 

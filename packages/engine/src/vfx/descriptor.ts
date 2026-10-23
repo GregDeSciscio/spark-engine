@@ -450,9 +450,10 @@ export class SpawnAccumulator {
  * nothing alive, nothing to spawn. A game holds dozens of burst emitters
  * (a muzzle flash per gun, impacts, blood, a demolition rig) that are idle
  * nearly all the time, and each one dispatched and drew every frame anyway.
- * Never on the first dispatch (it compiles the update pipeline during the
- * warm-up rather than on the first burst) and never for a wrapping volume,
- * which is always full.
+ * Never before the first dispatch (that compiles the update pipeline: in the
+ * warm-up for emitters that exist then, see `ParticleSystem.warmUpKernels`,
+ * rather than on the first burst) and never for a wrapping volume, which is
+ * always full.
  */
 export function emitterIsIdle(spawnCount: number, dispatchedOnce: boolean, wraps: boolean, liveNow: number): boolean {
   return dispatchedOnce && !wraps && spawnCount === 0 && liveNow === 0;

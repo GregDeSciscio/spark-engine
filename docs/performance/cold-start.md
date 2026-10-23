@@ -47,7 +47,7 @@ What the warm-up compiled, from its info log (pipelines created by the two graph
 | vfx / high | 34 pipelines (shadow 2, prepass 2, scene 17, post 13) in 0.40 s |
 | streaming / high | 29 pipelines (shadow 3, prepass 5, scene 8, post 13) in 0.50 s |
 
-The rest of the cache (PMREM, particle compute, and a few pipelines that only appear once the scene animates) is created outside the warm-up.
+The rest of the cache (PMREM, the particle init kernels dispatched at spawn, and a few pipelines that only appear once the scene animates) is created outside the warm-up. The particle update kernels go through it (`warmUp`'s `compute` list, from `ParticleSystem.warmUpKernels`); see "Compute kernels" under the known gaps.
 
 Captures (`pnpm capture`, `--backend=both` for the alley) are clean on every scene. Against the goldens with the visual suite's pixelmatch settings: alley-webgpu-high 55 of 921 600 pixels (0.006 %; the unmodified code captures at 51, the drift is TSL `time` in the puddle ripples and splash rings), alley-webgl-low 0, bootstrap 0, vfx 0, streaming (240 frames) 0.
 
@@ -59,10 +59,11 @@ Captures (`pnpm capture`, `--backend=both` for the alley) are clean on every sce
 - `MeshStandardMaterial` (non-node) instances already share programs by property presence, not value; only per-instance *node graphs* fragment the cache.
 - Light count is shader size: each light is unrolled into every lit material's fragment shader (~4 KB per light per material here). Prefer fewer, stronger lights, or wait for clustered lighting (`ClusteredLightsNode`, see below).
 - Anything that composes lazily (a stage that needs a shadow map, a texture that arrives later) compiles on the frame it first appears. Register it before `loadScene` resolves so the warm-up sees it.
+- **Name the nodes of a kernel built per instance.** Unnamed, three names a storage buffer `NodeBuffer_<node id>` and a uniform `nodeUniform<index>`, so two emitters of the same kind produce different WGSL and each compiles from scratch. `setName` on every storage buffer and uniform the kernel reads makes them one program. The particle system's 62 kernels were 62 shaders; named, they are 10.
 
 ## Known gaps
 
-- Compute pipelines (particle init / update, 8 in the alley) are still created synchronously; three has no async path for `createComputePipeline`. They compile during `create()` and the first fixed step, off the render path, and did not register in the stall probe after the change.
+- **Compute kernels** are still created synchronously; three has no async path for `createComputePipeline`. This entry used to say they compiled "off the render path" during `create()` and the first fixed step. They do not. A WebGPU call only queues a command, so script never blocks, but the GPU process compiles the pipeline (DXC on D3D12, about 100–200 ms per shader) on the thread that presents frames. On the showcase mission, the 31 particle update kernels, first dispatched in the step after the warm-up, froze the page for 2.3 s just after it reported ready. That shows as one long animation frame with no long task (Milestone 10 gap 17). Now the update kernels are dispatched inside the warm-up as no-ops, after the graph passes, and the warm-up's GPU wait covers their compile. Init kernels still compile at spawn, during `create()`, which the loading screen covers. An emitter spawned mid-game still compiles on its first dispatch, cheaply if a same-kind emitter already compiled its shader.
 - PMREM (`applySceneEnvironment`) compiles its GGX / blur pipelines synchronously during `create()` (~0.3 s). Small, and it overlaps the mannequin load.
 - ~~Scene-pass shaders are still 70–88 KB because of 13 unrolled lights~~ Done, see "Clustered lighting" below: 35–50 KB with the local lights on the clustered path; what is left is the three pinned lights (two of them shadowed) and the material graphs themselves.
 - `loadScene` on a *running* engine (scene swap mid-game) does not warm up; the new scene compiles synchronously on its first frame as before.

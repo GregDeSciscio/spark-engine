@@ -188,6 +188,31 @@ const PROBES = [
     },
   },
   {
+    name: 'the-opening-frames-compile-nothing',
+    describe: 'every pipeline the street starts with, compute kernels included, compiles behind the loading screen',
+    async run(p) {
+      // A compute pipeline is compiled on its kernel's first dispatch, in the GPU
+      // process, while the frame waits to present. Left to the first frames,
+      // the particle emitters' update kernels froze the mission for 2.3 s just
+      // after it was ready; the warm-up dispatches them instead.
+      const { backend, emitters, warm } = await p.page.evaluate(() => ({
+        backend: window.__spark.backend,
+        emitters: window.__spark.engine.vfx.stats().emitters,
+        warm: window.__spark.engine.renderer.lastWarmUp,
+      }));
+      p.expect(warm !== null, 'the scene went through the shader warm-up');
+      if (backend === 'webgpu') {
+        const kernels = warm?.kernels ?? 0;
+        p.expect(emitters > 0 && kernels === emitters, `the warm-up ran every particle emitter's update kernel (${kernels} of ${emitters})`);
+      }
+      const pipelines = () => p.page.evaluate(() => window.__spark.snapshot()?.pipelines ?? null);
+      const before = await pipelines();
+      await p.run(3);
+      const after = await pipelines();
+      p.expect(before !== null && after === before, `nothing compiles in the first three seconds of play (${before} → ${after} pipelines)`);
+    },
+  },
+  {
     name: 'alert-ladder',
     describe: 'a shot escalates the sector and calls hostiles in',
     async run(p) {

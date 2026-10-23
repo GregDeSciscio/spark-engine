@@ -117,6 +117,8 @@ export class SparkRenderer implements Disposable {
    * times are meaningless for pacing).
    */
   readonly dynamicResolution: DynamicResolutionController;
+  /** What the most recent `warmUp` compiled and how long it took; null before the first. */
+  lastWarmUp: WarmUpResult | null = null;
 
   private readonly log = new Logger('renderer');
   private readonly container: HTMLElement;
@@ -399,9 +401,22 @@ export class SparkRenderer implements Disposable {
    * rotation) are unchanged. `prepareFirstFrame` then resets the temporal
    * stages, so the first real frame is pixel-identical to a cold first frame.
    *
+   * `compute` are kernels to dispatch once here. A compute pipeline is
+   * created on its kernel's first dispatch, synchronously in the GPU
+   * process, and left to the first real frames that stall presentation while
+   * the driver compiles it (2.3 s on the showcase mission, every particle
+   * emitter's update kernel). Dispatched after the graph passes, their
+   * compiles overlap the render pipelines' on the driver's worker threads,
+   * and the GPU wait below covers them. The caller makes them harmless to run.
+   *
    * `onProgress(done, total)` fires once at `0 / total` and once per compile.
    */
-  async warmUp(scene: THREE.Scene, camera: THREE.Camera, onProgress?: (done: number, total: number) => void): Promise<WarmUpResult> {
+  async warmUp(
+    scene: THREE.Scene,
+    camera: THREE.Camera,
+    onProgress?: (done: number, total: number) => void,
+    compute: readonly THREE.ComputeNode[] = [],
+  ): Promise<WarmUpResult> {
     const start = performance.now();
     const three = this.three as unknown as ThreeInternals;
     const backend = three.backend;
@@ -420,12 +435,14 @@ export class SparkRenderer implements Disposable {
       delete (backend as Partial<WarmUpBackend>).createRenderPipeline;
       delete (backend as Partial<WarmUpBackend>).draw;
     }
+    if (compute.length > 0) this.three.compute([...compute]);
     await trackCompilation(promises, onProgress);
     await this.waitForGpu();
     this.pipeline.prepareFirstFrame();
     // TSL `time` accumulates wall-clock deltas between frames; the wait is not frame time.
     three._nodes.nodeFrame.lastTime = performance.now();
-    const result: WarmUpResult = { pipelines: totalWarmUpCount(byPass), byPass, ms: performance.now() - start };
+    const result: WarmUpResult = { pipelines: totalWarmUpCount(byPass), byPass, kernels: compute.length, ms: performance.now() - start };
+    this.lastWarmUp = result;
     this.log.info(formatWarmUp(result));
     return result;
   }

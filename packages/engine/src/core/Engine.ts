@@ -316,13 +316,20 @@ export class Engine implements Disposable {
     // creates them asynchronously and in parallel, without drawing, and waits;
     // the frame that follows then renders in one go, before the caller starts
     // the loop, so neither frame pacing nor the dynamic-resolution controller
-    // ever sees a compile (docs/performance/cold-start.md).
+    // ever sees a compile (docs/performance/cold-start.md). The particle
+    // emitters' update kernels go through it too: a compute pipeline is
+    // otherwise compiled on its first dispatch, in the opening frames.
     // A warm-up failure is a scene failure: it is the scene's first render, and a
     // throw mid-render leaves three's render state unusable, so there is no
     // synchronous fallback to fall back to.
     if (this.stateValue === 'ready') {
       if (this.config.shaderWarmUp) {
-        await renderer.warmUp(instance.scene, instance.camera, (done, total) => this.events.emit('loading', { phase: 'compile', done, total }));
+        await renderer.warmUp(
+          instance.scene,
+          instance.camera,
+          (done, total) => this.events.emit('loading', { phase: 'compile', done, total }),
+          this.vfxInstance?.warmUpKernels() ?? [],
+        );
       }
       if (this.stateValue === 'ready') this.step();
     }

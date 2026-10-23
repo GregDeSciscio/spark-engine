@@ -26,6 +26,7 @@ Every probe also fails on engine log records at warn or above and on browser con
 | Probe | What it holds down |
 | --- | --- |
 | `mission-boots` | The street loads its garrison of eight riflemen and the broker, three objectives and extraction, a quiet sector, and nobody wakes up on their own |
+| `the-opening-frames-compile-nothing` | The shader warm-up ran every particle emitter's update kernel (`renderer.lastWarmUp.kernels` equals the emitter count on WebGPU), and the pipeline cache does not grow in the first three seconds of play. Left to their first dispatch, those kernels froze the mission for 2.3 s just after it was ready |
 | `alert-ladder` | A shot is heard, someone investigates, the sector goes Alerted, the level-wide hunt turns on, a reinforcement arrives |
 | `lockdown-on-casualties` | Two hostiles down while Alerted takes the sector to Lockdown and queues the second wave |
 | `checkpoint-reload` | Dying and pressing Enter undoes the alert, retires the reinforcements, and puts the survivors back on patrol |

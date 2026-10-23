@@ -321,6 +321,28 @@ export class ParticleSystem implements System {
     };
   }
 
+  /**
+   * The update kernel of every emitter that has never run, primed to do
+   * nothing (no spawns, a zero time step) and marked as run, for the engine to
+   * dispatch inside the renderer's warm-up (`SparkRenderer.warmUp`). Its first
+   * dispatch is what compiles its pipeline; left to the first frame, that
+   * compile froze the showcase mission for 2.3 s just after it was ready.
+   * Emitters spawned later still compile on their first dispatch. Empty on
+   * WebGL2.
+   */
+  warmUpKernels(): THREE.ComputeNode[] {
+    if (!this.available || this.disposed) return [];
+    const kernels: THREE.ComputeNode[] = [];
+    this.emitters.forEach((runtime) => {
+      if (runtime.dispatched) return;
+      runtime.uniforms.spawnCount.value = 0;
+      runtime.uniforms.dt.value = 0;
+      runtime.dispatched = true;
+      kernels.push(runtime.computeUpdate);
+    });
+    return kernels;
+  }
+
   // ---- system ------------------------------------------------------------------
 
   run(world: EntityWorld, dt: number): void {
@@ -478,17 +500,24 @@ export class ParticleSystem implements System {
       shape: uniform(shapeParams),
       wrapSize: uniform(desc.wrap ? new THREE.Vector3(desc.wrap.size[0], desc.wrap.size[1], desc.wrap.size[2]) : new THREE.Vector3(1, 1, 1)),
     };
+    // Every node a kernel reads is named. Unnamed, three names them after node
+    // ids (`NodeBuffer_7126`, `nodeUniform3`), so two emitters with the same
+    // shape compile to different WGSL and the GPU process compiles each one
+    // from scratch (~100-200 ms of DXC apiece on D3D12). Named, emitters of the
+    // same kind share one program and one compiled pipeline.
+    for (const [key, node] of Object.entries(u)) node.setName(`particle_${key}`);
 
     // ---- storage --------------------------------------------------------------
-    const positionBuffer = instancedArray(capacity, 'vec3');
-    const velocityBuffer = instancedArray(capacity, 'vec3');
+    const positionBuffer = instancedArray(capacity, 'vec3').setName('particle_position');
+    const velocityBuffer = instancedArray(capacity, 'vec3').setName('particle_velocity');
     /** (age, lifetime) */
-    const lifeBuffer = instancedArray(capacity, 'vec2');
+    const lifeBuffer = instancedArray(capacity, 'vec2').setName('particle_life');
     /** (size, spin, generation, initial roll) */
-    const attrBuffer = instancedArray(capacity, 'vec4');
+    const attrBuffer = instancedArray(capacity, 'vec4').setName('particle_attr');
     const buffers = [positionBuffer.value, velocityBuffer.value, lifeBuffer.value, attrBuffer.value] as THREE.BufferAttribute[];
 
-    const capacityU = uint(capacity);
+    /** A uniform, not a constant, so capacity is not part of the shader source either. */
+    const capacityU = uniform(capacity, 'uint').setName('particle_capacity');
     const useNoise = desc.noise.strength !== 0;
     const useDrag = desc.drag > 0;
     const worldSpace = desc.space === 'world';
