@@ -132,6 +132,8 @@ const COVER_ARRIVE = 0.6;
 const PEEK_OFFSET = 1.1;
 const PEEK_WAIT: readonly [number, number] = [0.8, 1.8];
 const PEEK_SECONDS: readonly [number, number] = [1.0, 1.8];
+/** Awareness a hostile keeps when he loses contact: suspicious enough to search hard, short of alert. */
+const LOST_CONTACT_AWARENESS = 0.85;
 
 /** Impulse (kg·m/s) a killing round puts into the nearest ragdoll part: a real shove on a 20 kg chest, capped by the engine on light limbs. */
 const KILL_IMPULSE = 90;
@@ -629,7 +631,10 @@ export class Enemy implements Damageable {
       this.awareness = Math.max(0, this.awareness - decay * dt);
     }
 
-    if (this.awareness >= 1 && !player.dead) this.becomeAlert(now);
+    // The transition only. Calling this every tick while alert refreshed the
+    // contact clock forever (awareness never drains while alert), so nobody
+    // who had seen the operator could ever lose them.
+    if (this.awareness >= 1 && !player.dead && this.state !== 'alert') this.becomeAlert(now);
     else if (this.state === 'unaware' && this.awareness >= AWARENESS.suspiciousAt) this.investigate(this.lastKnown, now);
     if (this.state === 'alert' && !wasAlert) onAlert(this);
 
@@ -659,6 +664,9 @@ export class Enemy implements Damageable {
         }
         if (now - this.lastSeenAt > AWARENESS.loseAfter) {
           this.state = 'searching';
+          // Contact is gone and so is certainty: below the alert line, or the
+          // next tick re-alerts on a sighting that is seconds old.
+          this.awareness = Math.min(this.awareness, LOST_CONTACT_AWARENESS);
           this.lookUntil = -1;
           this.nav.clear();
           this.deps.sfx.bark(this.eid, 'search');
