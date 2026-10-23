@@ -31,7 +31,7 @@ export interface MissionAudioDeps {
 }
 
 export type ImpactSurface = 'concrete' | 'metal' | 'glass' | 'water';
-export type BarkKind = 'suspicious' | 'alert' | 'search' | 'reload' | 'hit' | 'death';
+export type BarkKind = 'suspicious' | 'alert' | 'search' | 'reload' | 'hit' | 'death' | 'defuse';
 export type FootstepKind = 'walk' | 'run' | 'sprint' | 'crouch' | 'land';
 
 /** Spatial presets by role. */
@@ -53,6 +53,7 @@ const BARKS: Record<BarkKind, readonly string[]> = {
   reload: ['bark-reload'],
   hit: ['bark-hit'],
   death: ['bark-death'],
+  defuse: ['bark-defuse', 'bark-defuse-2'],
 };
 
 /** The enemy rifle: near and far layers crossfade over this distance band (metres). */
@@ -83,6 +84,7 @@ export class MissionAudio {
   private heartbeat: Voice | null = null;
   private heartbeatLevel = 0;
   private plantLoop: Voice | null = null;
+  private alarmLoop: Voice | null = null;
   /** Light emitters are read on the second frame: entity-driven lights only get their Object3D position from the render sync. */
   private pendingLights: (() => LightEmitters) | null = null;
   private framesSeen = 0;
@@ -270,7 +272,7 @@ export class MissionAudio {
     this.play(head ? 'ui-headshot' : 'ui-hitmarker');
   }
 
-  objectiveComplete(kind: 'reach' | 'plant' | 'eliminate', missionComplete: boolean): void {
+  objectiveComplete(kind: 'reach' | 'plant' | 'eliminate' | 'extract', missionComplete: boolean): void {
     if (kind === 'plant') this.play('ui-plant-done');
     this.play('ui-objective', { delay: kind === 'plant' ? 0.6 : 0 });
     this.play('ui-checkpoint', { delay: 1.1 });
@@ -292,7 +294,31 @@ export class MissionAudio {
     }
   }
 
-  /** The first hostile going alert. */
+  // ---- demolition -------------------------------------------------------------------------
+
+  /** One fuse blink. `urgency` 0..1 is how far the fuse has burned; the beep climbs with it. */
+  chargeBeep(at: Vec3, urgency: number): void {
+    this.playAt('charge-beep', at, { spatial: SPATIAL.gun, pitch: 1 + urgency * 0.5 });
+  }
+
+  /** The charge goes off: the blast, then what it threw coming back down. Heard down the whole street. */
+  explosion(at: Vec3): void {
+    this.playAt('explosion', at, { spatial: SPATIAL.gunFar });
+    this.playAt('debris-fall', at, { spatial: SPATIAL.gun, delay: 0.35 });
+    this.stopAlarm();
+  }
+
+  /** The depot alarm, from the speaker over the plant site, until it blows or is pulled. */
+  startAlarm(at: Vec3): void {
+    if (this.alarmLoop || !this.has('alarm')) return;
+    this.alarmLoop = this.bank.playAt('alarm', at, { loop: true, fadeIn: 0.2, spatial: SPATIAL.gunFar });
+  }
+
+  stopAlarm(): void {
+    this.alarmLoop?.stop(0.6);
+    this.alarmLoop = null;
+  }
+
   /** The sector locked down: its own cue when the set has one, the alert sting when it does not. */
   lockdownStinger(): void {
     this.play(this.has('ui-lockdown') ? 'ui-lockdown' : 'ui-alert');

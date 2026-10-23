@@ -2,7 +2,11 @@
   "note": "ElevenLabs Creative flow holding the showcase's generations (run through the ElevenLabs connector on 2026-09-05). Node ids map canvas nodes to manifest cue names; the takes were downloaded into assets/source/audio/raw. Kept so takes can be re-picked or re-run on the canvas.",
   "flow_id": "T42TCMvCWiluKgd11YJc",
   "url": "https://elevenlabs.io/app/flows/T42TCMvCWiluKgd11YJc",
-  "voice": { "name": "Libra - Deep, intense, masculine, bold", "voice_id": "J5naoTdVne3DTIdEVUyF", "model": "eleven_v3" },
+  "voice": {
+    "name": "Libra - Deep, intense, masculine, bold",
+    "voice_id": "J5naoTdVne3DTIdEVUyF",
+    "model": "eleven_v3"
+  },
   "sfx_model": "eleven_text_to_sound_v2",
   "nodes": {
     "rifle-shot": "iA2bP0h5T1BG4nmdOuq6",
@@ -53,5 +57,21 @@
     "bark-reload": "8Fb9RJjFyJhnxQDgYydW",
     "bark-hit": "5mZf3fmS4yY8lpcEgMvn",
     "bark-death": "GoMf1KCvDzGNdar4HKmA"
-  }
+  },
+  "later": [
+    {
+      "note": "Milestone 10 additions (2026-10-23): the demolition cues and the lockdown stinger. Run through the ElevenLabs connector after the API key in .env stopped working; same models and voice as the first set.",
+      "flow_id": "Zuy6c1iS6h93YTFpdK1t",
+      "url": "https://elevenlabs.io/app/flows/Zuy6c1iS6h93YTFpdK1t",
+      "nodes": {
+        "explosion": "Pba6nTAJYJIias0D5eGO",
+        "debris-fall": "hqeBrhTxGaKXTsOalMMS",
+        "alarm": "yRPCqm17cHR245ZxZuCW",
+        "charge-beep": "6XRjkoP3YXzTOjDfEUll",
+        "bark-defuse": "Hp7UIzrMnBqxOA218fNb",
+        "bark-defuse-2": "YimbI5ktOjUpXRAPclQn",
+        "ui-lockdown": "Z1zEpgxadUg3tuhumkhI"
+      }
+    }
+  ]
 }

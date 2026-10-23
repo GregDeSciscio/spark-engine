@@ -1,5 +1,5 @@
 {
-  "generated": "2026-09-05T19:54:29.833Z",
+  "generated": "2026-10-23T04:34:32.383Z",
   "sampleRate": 48000,
   "cues": [
     {
@@ -1041,6 +1041,112 @@
       ]
     },
     {
+      "name": "charge-beep",
+      "kind": "sfx",
+      "bus": "sfx",
+      "loop": false,
+      "volume": 0.55,
+      "volumeVariance": 0,
+      "pitchVariance": 0,
+      "cooldownMs": 0,
+      "maxInstances": 2,
+      "files": [
+        {
+          "url": "/audio/charge-beep-01.ogg",
+          "duration": 0.901
+        }
+      ]
+    },
+    {
+      "name": "explosion",
+      "kind": "sfx",
+      "bus": "sfx",
+      "loop": false,
+      "volume": 1,
+      "volumeVariance": 0,
+      "pitchVariance": 0,
+      "cooldownMs": 0,
+      "maxInstances": 1,
+      "files": [
+        {
+          "url": "/audio/explosion-01.ogg",
+          "duration": 5
+        },
+        {
+          "url": "/audio/explosion-02.ogg",
+          "duration": 5
+        }
+      ]
+    },
+    {
+      "name": "debris-fall",
+      "kind": "sfx",
+      "bus": "sfx",
+      "loop": false,
+      "volume": 0.7,
+      "volumeVariance": 0,
+      "pitchVariance": 0,
+      "cooldownMs": 0,
+      "maxInstances": 1,
+      "files": [
+        {
+          "url": "/audio/debris-fall-01.ogg",
+          "duration": 1.534
+        }
+      ]
+    },
+    {
+      "name": "alarm",
+      "kind": "sfx",
+      "bus": "sfx",
+      "loop": true,
+      "volume": 0.75,
+      "volumeVariance": 0,
+      "pitchVariance": 0,
+      "cooldownMs": 0,
+      "maxInstances": 1,
+      "files": [
+        {
+          "url": "/audio/alarm-01.ogg",
+          "duration": 3.65
+        }
+      ]
+    },
+    {
+      "name": "bark-defuse",
+      "kind": "voice",
+      "bus": "sfx",
+      "loop": false,
+      "volume": 0.95,
+      "volumeVariance": 0,
+      "pitchVariance": 0,
+      "cooldownMs": 2500,
+      "maxInstances": 1,
+      "files": [
+        {
+          "url": "/audio/bark-defuse-01.ogg",
+          "duration": 2.93
+        }
+      ]
+    },
+    {
+      "name": "bark-defuse-2",
+      "kind": "voice",
+      "bus": "sfx",
+      "loop": false,
+      "volume": 0.95,
+      "volumeVariance": 0,
+      "pitchVariance": 0,
+      "cooldownMs": 2500,
+      "maxInstances": 1,
+      "files": [
+        {
+          "url": "/audio/bark-defuse-2-01.ogg",
+          "duration": 1.463
+        }
+      ]
+    },
+    {
       "name": "ui-complete",
       "kind": "sfx",
       "bus": "ui",
@@ -1088,6 +1194,23 @@
         {
           "url": "/audio/ui-alert-01.ogg",
           "duration": 1.2
+        }
+      ]
+    },
+    {
+      "name": "ui-lockdown",
+      "kind": "sfx",
+      "bus": "ui",
+      "loop": false,
+      "volume": 0.7,
+      "volumeVariance": 0,
+      "pitchVariance": 0,
+      "cooldownMs": 8000,
+      "maxInstances": 1,
+      "files": [
+        {
+          "url": "/audio/ui-lockdown-01.ogg",
+          "duration": 1.931
         }
       ]
     }
