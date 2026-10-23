@@ -148,6 +148,16 @@ const ACCENT_TINT = 0x6e1624;
 const HVT_TINT = 0x8c877c;
 const HVT_ACCENT = 0xd49a24;
 const HVT_HEALTH = 160;
+/**
+ * The target does not hold ground: once alert he wants cover a long way from
+ * the operator (and will run for it), peeks half as often, and only fights
+ * where he stands when he is cornered. His shout carries further, too
+ * (`scenes/mission.ts`): the riflemen are there to keep him alive.
+ */
+const HVT_COVER = { searchRadius: 12, minThreatDistance: 12, maxThreatDistance: 40, preferredThreatDistance: 26, preferredWeight: 1 } as const;
+const HVT_FLEE_DISTANCE = 10;
+const HVT_CORNERED = 8;
+const HVT_PEEK_SCALE = 2;
 /** An enemy round passing within this of the operator's head is heard as a whiz. */
 const WHIZ_DISTANCE = 2.0;
 
@@ -323,6 +333,11 @@ export class Enemy implements Damageable {
     this.rifle = new RifleProp(this.root, findBone(visual, BONES.weapon), new THREE.Vector3(0.26, 1.32 - OPERATOR.height / 2, 0.12), 0x33363c);
     // A reinforcement is built now and held: the arrival costs a pose, not a model load.
     if (spec.reinforcement) this.sleep();
+  }
+
+  /** The mission's named target (`role=hvt`). */
+  get isTarget(): boolean {
+    return this.spec.role === 'hvt';
   }
 
   /** Whether this one only exists when the sector calls for it. */
@@ -819,6 +834,7 @@ export class Enemy implements Damageable {
     if (!usable) {
       this.inCover = false;
       this.peeking = false;
+      if (this.isTarget) return this.retreat(sample, player, now);
       if (visible) {
         this.nav.clear();
         this.shoot(sample, player, now);
@@ -843,7 +859,7 @@ export class Enemy implements Damageable {
         this.peeking = false;
         this.inCover = true;
         this.nav.clear();
-        this.peekAt = now + random.range(PEEK_WAIT[0], PEEK_WAIT[1]);
+        this.peekAt = now + random.range(PEEK_WAIT[0], PEEK_WAIT[1]) * (this.isTarget ? HVT_PEEK_SCALE : 1);
         return { moveSpeed: 0, wantsMove: false };
       }
       return { moveSpeed: INVESTIGATE_SPEED, wantsMove: moving };
@@ -856,7 +872,7 @@ export class Enemy implements Damageable {
       if (!moving || this.feetPos.distanceTo(this.cover) < COVER_ARRIVE) {
         this.inCover = true;
         this.nav.clear();
-        this.peekAt = now + random.range(PEEK_WAIT[0], PEEK_WAIT[1]);
+        this.peekAt = now + random.range(PEEK_WAIT[0], PEEK_WAIT[1]) * (this.isTarget ? HVT_PEEK_SCALE : 1);
         return { moveSpeed: 0, wantsMove: false };
       }
       return { moveSpeed: CHASE_SPEED, wantsMove: moving };
@@ -869,6 +885,24 @@ export class Enemy implements Damageable {
     }
     if (now >= this.peekAt) this.startPeek(now);
     return { moveSpeed: 0, wantsMove: false };
+  }
+
+  /**
+   * The target with no cover to reach: back away from the operator rather
+   * than close on him, firing only when he is right on top of him.
+   */
+  private retreat(sample: { visible: boolean; distance: number }, player: OperatorView, now: number): { moveSpeed: number; wantsMove: boolean } {
+    if (sample.visible && sample.distance < HVT_CORNERED) {
+      this.nav.clear();
+      this.shoot(sample, player, now);
+      return { moveSpeed: 0, wantsMove: false };
+    }
+    this.tmpA.copy(this.feetPos).sub(this.playerFeet).setY(0);
+    if (this.tmpA.lengthSq() < 1e-4) this.tmpA.set(Math.sin(this.facing), 0, Math.cos(this.facing));
+    this.tmpA.normalize().multiplyScalar(HVT_FLEE_DISTANCE).add(this.feetPos);
+    const away = this.deps.navigation.nearestPoint(this.tmpA, this.tmpB);
+    if (!away) return { moveSpeed: 0, wantsMove: false };
+    return { moveSpeed: CHASE_SPEED, wantsMove: this.pathTo(this.tmpB, now) };
   }
 
   /** Sample navmesh points near the enemy and keep the closest one the player cannot see into. */
@@ -894,6 +928,7 @@ export class Enemy implements Damageable {
         maxThreatDistance: COVER_MAX_PLAYER_DIST,
         hideHeight: CHEST_HEIGHT * 0.8,
         preferredThreatDistance: 14,
+        ...(this.isTarget ? HVT_COVER : {}),
       },
       this.cover,
     );

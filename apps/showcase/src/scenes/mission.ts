@@ -268,7 +268,8 @@ export const missionScene: SceneDefinition = {
       for (const other of enemies) {
         if (other === source) continue;
         other.feet(otherFeet);
-        if (otherFeet.distanceTo(enemyFeet) <= AWARENESS.warnRadius) other.warn(feet, now);
+        // The broker's shout carries twice as far: his guard is the street.
+        if (otherFeet.distanceTo(enemyFeet) <= AWARENESS.warnRadius * (source.isTarget ? 2 : 1)) other.warn(feet, now);
       }
     };
 
@@ -293,6 +294,7 @@ export const missionScene: SceneDefinition = {
     };
     let interactHeld = false;
     let qaInteract = false;
+    let qaGhost = false;
     let wasAlert = false;
     let hitsShown = 0;
     const listenerPos = new THREE.Vector3();
@@ -309,7 +311,7 @@ export const missionScene: SceneDefinition = {
         return operator.eid;
       },
       get dead() {
-        return operator.dead || debrief !== null;
+        return operator.dead || debrief !== null || qaGhost;
       },
       get stance() {
         return operator.stance;
@@ -537,6 +539,15 @@ export const missionScene: SceneDefinition = {
         const health = operator.health;
         operator.respawn(new THREE.Vector3(x, y, z), camera.getYaw());
         operator.health = health;
+      },
+      /**
+       * Hostiles perceive nobody, the way they do once the operator is out at
+       * extraction. A probe about the sector calming down needs the operator
+       * out of every sight line for a minute, and nothing on the street
+       * guarantees one; this does, and the rest of the alert model runs as is.
+       */
+      ghost: (on: boolean) => {
+        qaGhost = on;
       },
       /** The level's mantle zones, so a probe can find a crate to vault without hard-coding where the seed put it. */
       mantleZones: () => level.mantles,

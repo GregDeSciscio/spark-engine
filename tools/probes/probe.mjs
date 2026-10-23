@@ -550,6 +550,47 @@ const PROBES = [
     },
   },
   {
+    name: 'the-broker-keeps-his-distance',
+    describe: 'alerted at close range, the broker backs off where a rifleman would close in, and his shout carries',
+    async run(p) {
+      // Close on him unseen (rounds pass through: this is about what he does, not about surviving his guard).
+      await p.call('invulnerable', true);
+      await p.call('ghost', true);
+      const broker = async () => (await p.stats()).enemies.find((e) => e.name === 'Broker');
+      const start = await broker();
+      await p.call('teleport', start.feet[0] + 6, start.feet[2] + 6);
+      await p.call('ghost', false);
+      // One round from close: being shot is the loudest possible tell.
+      await p.call('damage', 'Broker', 10);
+      await p.until('the broker goes alert', 2, () => broker(), (b) => b.state === 'alert');
+      const near = await p.distanceTo((await broker()).feet[0], (await broker()).feet[2]);
+      await p.run(6);
+      const b = await broker();
+      const far = await p.distanceTo(b.feet[0], b.feet[2]);
+      p.expect(far > near + 4, `he puts ground between himself and the operator (${near.toFixed(1)} m -> ${far.toFixed(1)} m)`);
+      const answering = (await p.stats()).enemies.filter((e) => e.name !== 'Broker' && !e.dead && e.state !== 'unaware').length;
+      p.expect(answering >= 3, `his shout brings the street (${answering} hostiles answering)`);
+    },
+  },
+  {
+    name: 'the-street-calms-down',
+    describe: 'once nobody can find the operator, the sector settles from alerted back to quiet and stands its wave down',
+    async run(p) {
+      await p.call('invulnerable', true);
+      await p.call('fire', 6);
+      await p.until('the sector goes alerted', 20, () => p.alert(), (a) => a.tier !== 'quiet');
+      // Gone: nobody can see the operator from here on (the extraction stand-down's view).
+      await p.call('ghost', true);
+      await p.until('every hostile loses contact', 10, () => p.stats(), (s) => s.enemies.every((e) => e.dead || e.state !== 'alert'));
+      const settled = await p.until('the sector settles back to quiet', 90, () => p.alert(), (a) => a.tier === 'quiet');
+      if (settled === null) {
+        const s = await p.stats();
+        console.log(`    (still ${(await p.alert()).tier}; states ${JSON.stringify(s.enemies.map((e) => e.state))})`);
+      }
+      p.expect((await p.alert()).pending === 0, 'a quiet street receives nobody: the wave stood down');
+    },
+  },
+  {
     name: 'start-to-extraction',
     describe: 'the whole mission plays through: square, broker, charge, blast, extraction, debrief, replay',
     async run(p) {
@@ -567,18 +608,25 @@ const PROBES = [
         return e ? [e.feet[0], e.feet[2]] : null;
       };
       await p.walkTo('the operator closes on the broker', 0, 0, 40, 9, broker);
-      await p.call('aim', true);
-      let downAt = null;
-      for (let t = 0; t < 30 && downAt === null; t += 0.5) {
+      // He does not stand and fight: alerted, he backs off toward cover, so run
+      // him down. Inside 14 m stop, aim and fire bursts; beyond it, close in.
+      for (let t = 0; t < 45; t += 0.5) {
         const at = await broker();
-        if (at === null) {
-          downAt = t;
-          break;
+        if (at === null) break;
+        const d = await p.distanceTo(at[0], at[1]);
+        if (d > 14) {
+          await p.call('aim', false);
+          await p.call('lookAt', at[0], 1.2, at[1]);
+          await p.call('move', 1, 0);
+        } else {
+          await p.call('move', 0, 0);
+          await p.call('aim', true);
+          await p.call('lookAt', at[0], 1.3, at[1]);
+          await p.call('fire', 3);
         }
-        await p.call('lookAt', at[0], 1.3, at[1]);
-        await p.call('fire', 3);
         await p.run(0.5);
       }
+      await p.call('move', 0, 0);
       await p.call('aim', false);
       await p.until('the broker is eliminated by gunfire', 2, () => p.objective(), (o) => o.kind === 'plant');
       await p.shot('broker-down');
