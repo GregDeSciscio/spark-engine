@@ -81,8 +81,8 @@
       "cpuMs": 14.338333333283662,
       "renderMs": 12.896666666120291,
       "gpuMs": 3.261439999999999,
-      "drawCalls": 1053,
-      "triangles": 1346352
+      "drawCalls": 718,
+      "triangles": 1244595
     }
   }
 }

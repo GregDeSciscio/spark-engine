@@ -16,11 +16,21 @@ Each scene runs twice by default and the better pass counts, metric by metric. C
 
 This matters more than it sounds. Two consecutive runs of the old single-pass suite on a busy machine flagged completely different scenes — bootstrap, entities and physics the first time, streaming and lights the second — while nothing in the engine had changed at all. A suite that cries wolf gets ignored, and then it is worth nothing when it is right.
 
-## The current baseline's provenance (2026-09-07)
+## The current baseline's provenance
 
-`desktop-pn02eil-win32-nvidia-lovelace.json` was recorded on a quiet machine, and the showcase mission's row predates a day of draw-call work (1053 draws then, 719 now). Comparing against it today reads as a regression on `cpuMs` for **every** entry, including scenes nothing has touched — bootstrap is +23% on CPU while its `gpuMs` and its 165 fps are back at baseline exactly. That is a machine with forty-six Chrome processes and seven gigabytes resident, not an engine that got slower.
+`desktop-pn02eil-win32-nvidia-lovelace.json` was recorded on a quiet machine on 2026-09-07. Later that day it read red on `cpuMs` for **every** entry, including scenes nothing had touched (bootstrap +23% on CPU with its `gpuMs` and its 165 fps back at baseline exactly): a machine with forty-six Chrome processes and seven gigabytes resident, not an engine that got slower.
 
-Re-record it on an idle machine before trusting an absolute comparison. Until then the trustworthy numbers are the deterministic counters and same-session A/B runs.
+**2026-10-23, after six weeks idle:** with the GPU at 10% and nothing else running, the unchanged baseline compared **green across all nine entries**. September's red was the machine, and the baseline needed no re-recording for that.
+
+The mission's row was then updated, **counters only**. It had been recorded before a day of draw-call work, at 1053 draws against the 721 the scene actually made, so a regression of up to 330 draws would have passed unnoticed. Milestone 10 added the broker and a demolition rig (six emitters, three lights, a satchel) and taught the particle system to skip idle emitters, leaving the mission at **718 draws and 1,244,595 triangles**, the values now in the file. Its timing metrics were deliberately left at the September quiet recording. That day another session was driving the same GPU (Unreal, often at 90%+ with the CPU at 40–60%), so re-recording timings would have baked contention in. Instead, the change was proven against HEAD with alternating A/B runs, each taken only in a quiet window and kept only if the GPU stayed quiet throughout (`cpuMs`, median of the run):
+
+| Run | HEAD (b9f9730) | Milestone 10 |
+| --- | --- | --- |
+| 1 | 16.89 ms, 721 draws | 16.07 ms, 718 draws |
+| 2 | 16.42 ms | 16.28 ms |
+| 3 | 16.23 ms | 16.52 ms |
+
+Both columns sit about 3.5 ms above that morning's quiet 12.9 ms, which is the CPU load, not the code. Re-record the timings on an idle machine before trusting an absolute comparison against them.
 
 ## Baselines are per machine
 
@@ -55,4 +65,4 @@ Because of that, `frameMs` is only reported when `cpuMs`, `renderMs` or `gpuMs` 
 
 ## Reading the numbers
 
-`cpuMs` is the whole frame on the CPU and `renderMs` is the part of it spent submitting draws, so `cpuMs - renderMs` is roughly what the game's systems cost. A scene where `renderMs` dominates and `gpuMs` is small is bound by draw submission — more draw calls, not heavier ones. That is the showcase mission today: 1053 draws, 13 ms of submission, 3 ms of GPU.
+`cpuMs` is the whole frame on the CPU and `renderMs` is the part of it spent submitting draws, so `cpuMs - renderMs` is roughly what the game's systems cost. A scene where `renderMs` dominates and `gpuMs` is small is bound by draw submission — more draw calls, not heavier ones. That is the showcase mission: about 720 draws, 11–14 ms of submission and 2–3 ms of GPU (2026-10-23).
