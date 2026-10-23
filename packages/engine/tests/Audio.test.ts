@@ -8,7 +8,7 @@ import { crossfadeGains, fadeCurve, intensityGain } from '../src/audio/Crossfade
 import { MusicPlayer, type MusicVoiceSource } from '../src/audio/MusicPlayer';
 import { impactVolume } from '../src/audio/bindings';
 import { DeadVoice, PendingVoice, type Voice } from '../src/audio/Voice';
-import { SoundBank } from '../src/audio/SoundBank';
+import { SoundBank, resolveManifestUrls } from '../src/audio/SoundBank';
 import { EmitterPool, Scatter } from '../src/audio/Emitters';
 import type { AudioSystem } from '../src/audio/AudioSystem';
 
@@ -412,6 +412,17 @@ describe('SoundBank', () => {
     bank.dispose();
     expect(f.undefined).toEqual(['shot']);
     expect(bank.has('shot')).toBe(false);
+  });
+});
+
+describe('resolveManifestUrls', () => {
+  it('resolves takes against the manifest, so a game served under a subpath finds its sounds', () => {
+    const manifest = { cues: [{ name: 'tick', bus: 'sfx' as const, files: [{ url: 'bike-tick-01.ogg' }, { url: '/audio/legacy-01.ogg' }] }] };
+    const at = resolveManifestUrls(manifest, 'https://example.com/games/late-edition/audio/manifest.json');
+    expect(at.cues[0]?.files.map((f) => f.url)).toEqual(['https://example.com/games/late-edition/audio/bike-tick-01.ogg', 'https://example.com/audio/legacy-01.ogg']);
+    // Served at the root, a relative take lands where the old absolute one did.
+    expect(resolveManifestUrls(manifest, 'http://localhost:5180/audio/manifest.json').cues[0]?.files[0]?.url).toBe('http://localhost:5180/audio/bike-tick-01.ogg');
+    expect(manifest.cues[0]?.files[0]?.url).toBe('bike-tick-01.ogg'); // the input is not mutated
   });
 });
 

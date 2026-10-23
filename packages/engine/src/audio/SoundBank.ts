@@ -27,6 +27,21 @@ export interface SoundBankManifest {
   readonly cues: readonly SoundBankCue[];
 }
 
+/**
+ * Resolve every take's file URL against the manifest's own URL, the way a
+ * browser resolves a stylesheet's `url()`. A take written relative to its
+ * manifest (`bike-tick-01.ogg`, what `tools/audio/build.mjs` writes) then
+ * follows the manifest wherever the game is served, `/games/late-edition/`
+ * included; a root-absolute one (`/audio/x.ogg`, what it used to write)
+ * resolves exactly as before.
+ */
+export function resolveManifestUrls(manifest: SoundBankManifest, manifestUrl: string): SoundBankManifest {
+  return {
+    ...manifest,
+    cues: manifest.cues.map((cue) => ({ ...cue, files: cue.files.map((file) => ({ ...file, url: new URL(file.url, manifestUrl).href })) })),
+  };
+}
+
 /** The subset of the audio system a bank (and the ambience helpers) play through. */
 export interface SoundSink {
   play(sound: string, options?: SoundPlayAtOptions): Voice | null;
@@ -84,7 +99,10 @@ export class SoundBank implements SoundSink {
     let manifest: SoundBankManifest | null = null;
     try {
       const res = await fetch(url);
-      if (res.ok) manifest = (await res.json()) as SoundBankManifest;
+      if (res.ok) {
+        const base = typeof document !== 'undefined' ? document.baseURI : globalThis.location?.href;
+        manifest = resolveManifestUrls((await res.json()) as SoundBankManifest, base ? new URL(url, base).href : url);
+      }
       else logger?.warn(`SoundBank: no manifest at ${url} (${res.status}); the bank is empty`);
     } catch (error) {
       logger?.warn(`SoundBank: manifest fetch failed: ${error instanceof Error ? error.message : String(error)}`);

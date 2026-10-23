@@ -180,7 +180,10 @@ export async function buildAll({ manifest = undefined, raw = null, out = null, o
         const base = `${cue.name}-${String(v + 1).padStart(2, '0')}`;
         if (!rawFiles.has(`${base}.mp3`)) continue;
         const output = path.join(OUT, `${base}.ogg`);
-        const url = `/audio/${base}.ogg`;
+        // Relative to manifest.json, which is written beside the takes: the
+        // engine's SoundBank resolves it against the manifest's own URL, so a
+        // game served under a subpath finds its sounds.
+        const url = `${base}.ogg`;
         const selected = !only || only.has(cue.name);
         let duration = 0;
         const have = await stat(output).catch(() => null);
