@@ -97,6 +97,41 @@ describe('PhysicsWorld', () => {
     f.dispose();
   });
 
+  it('holds every body exactly while paused and resumes as if no time had passed', async () => {
+    const run = async (pauseFor: number) => {
+      const f = await fixture();
+      addGround(f);
+      const box = f.entities.create([Transform, { y: 4 }]);
+      f.physics.addBody(box, { type: 'dynamic', shape: { kind: 'box', hx: 0.5, hy: 0.5, hz: 0.5 }, layer: 'debris' });
+      f.physics.setAngularVelocity(box, { x: 0, y: 3, z: 0 });
+      const landed: string[] = [];
+      f.physics.events.on('collisionStart', () => landed.push('hit'));
+      f.tick(20); // mid-air, falling and spinning
+      const t = f.entities.store(Transform);
+      const heldAt = t.y[box] ?? 0;
+      const heldV = f.physics.getVelocity(box).y;
+      const steps = f.physics.steps;
+      f.physics.paused = true;
+      f.tick(pauseFor);
+      expect(t.y[box]).toBe(heldAt);
+      expect(f.physics.getVelocity(box).y).toBe(heldV);
+      expect(f.physics.steps).toBe(steps);
+      expect(landed).toEqual([]); // no events while the clock is stopped
+      // The frozen world still answers queries.
+      expect(f.physics.raycast({ x: 0, y: 10, z: 0 }, { x: 0, y: -1, z: 0 }, 20)?.eid).toBe(box);
+      f.physics.paused = false;
+      f.tick(60);
+      const after = t.y[box] ?? 0;
+      f.dispose();
+      return { after, landed: landed.length };
+    };
+    // However long the pause, the fall afterwards is the same fall.
+    const short = await run(1);
+    const long = await run(300);
+    expect(long.after).toBe(short.after);
+    expect(long.landed).toBe(short.landed);
+  });
+
   it('raycasts against the box with the right distance and normal', async () => {
     const f = await fixture();
     addGround(f);

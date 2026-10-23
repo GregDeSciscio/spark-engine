@@ -181,6 +181,14 @@ export class PhysicsWorld implements Disposable {
   readonly fixedStep: number;
   /** The underlying Rapier world. Engine-internal; scenes should not need it. */
   readonly raw: RAPIER.World;
+  /**
+   * Stop the clock for a pause menu: while paused, `step` advances nothing
+   * and delivers no events, so every body keeps its pose and velocity exactly
+   * and resumes as if no time had passed. Queries (raycasts, overlaps) still
+   * answer against the frozen world. Games used to fake this by pinning each
+   * body's pose every tick and guessing its spin back afterwards.
+   */
+  paused = false;
 
   private readonly bodies: SideTable<RAPIER.RigidBody>;
   private readonly joints = new Map<number, RAPIER.ImpulseJoint>();
@@ -257,6 +265,7 @@ export class PhysicsWorld implements Disposable {
     if (Math.abs(dt - this.fixedStep) > 1e-9) {
       throw new Error(`PhysicsWorld.step: dt ${dt} does not match the fixed step ${this.fixedStep}`);
     }
+    if (this.paused) return;
     this.raw.step(this.eventQueue);
     this.stepCount += 1;
     this.drainEvents();

@@ -189,6 +189,12 @@ export class ParticleSystem implements System {
   private noticeLogged = false;
   private lastDispatchFrame = -1;
   private dispatchCount = 0;
+  /**
+   * Freeze every emitter for a pause menu: no spawning, no simulation and no
+   * simulation time, so the particles alive stay on screen exactly as they
+   * are. Bursts asked for while paused wait for the resume.
+   */
+  paused = false;
   private computeMs: number | null = null;
   private disposed = false;
 
@@ -318,7 +324,7 @@ export class ParticleSystem implements System {
   // ---- system ------------------------------------------------------------------
 
   run(world: EntityWorld, dt: number): void {
-    if (!this.available || this.disposed || this.emitters.size === 0) return;
+    if (!this.available || this.disposed || this.emitters.size === 0 || this.paused) return;
     const store = world.store(ParticleEmitter);
     // three publishes the frame id in beginFrame() (see SparkRenderer), so it
     // changes exactly once per rendered frame: the first fixed step after a
