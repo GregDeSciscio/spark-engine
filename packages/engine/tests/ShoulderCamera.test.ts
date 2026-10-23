@@ -101,4 +101,37 @@ describe('ShoulderCamera', () => {
     cam.look(0, 1e6);
     expect(cam.getPitch()).toBeCloseTo(SHOULDER_PRESET.maxPitchDown);
   });
+  it('shakes the view and never the aim, and the shake dies away', () => {
+    const cam = new ShoulderCamera();
+    cam.snap();
+    const aim0 = cam.viewForward(new THREE.Vector3());
+    const rot0 = cam.camera.rotation.clone();
+    cam.shake(1);
+    expect(cam.shakeTrauma).toBe(1);
+    let moved = 0;
+    for (let i = 0; i < 12; i++) {
+      cam.update(1 / 60);
+      moved = Math.max(moved, Math.abs(cam.camera.rotation.x - rot0.x) + Math.abs(cam.camera.rotation.y - rot0.y) + Math.abs(cam.camera.rotation.z));
+      expect(cam.viewForward(new THREE.Vector3()).distanceTo(aim0)).toBeCloseTo(0);
+    }
+    expect(moved).toBeGreaterThan(THREE.MathUtils.degToRad(0.5));
+    for (let i = 0; i < 120; i++) cam.update(1 / 60);
+    expect(cam.shakeTrauma).toBe(0);
+    expect(cam.camera.rotation.z).toBe(0);
+    expect(cam.camera.rotation.x).toBeCloseTo(rot0.x);
+  });
+
+  it('caps trauma at one and shakes the same way twice (no random stream)', () => {
+    const a = new ShoulderCamera();
+    const b = new ShoulderCamera();
+    a.shake(0.7);
+    a.shake(0.7);
+    expect(a.shakeTrauma).toBe(1);
+    b.shake(1);
+    for (let i = 0; i < 20; i++) {
+      a.update(1 / 60);
+      b.update(1 / 60);
+    }
+    expect(a.camera.rotation.z).toBe(b.camera.rotation.z);
+  });
 });

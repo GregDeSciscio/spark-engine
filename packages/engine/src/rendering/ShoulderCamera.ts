@@ -81,6 +81,21 @@ export function shoulderFrame(yaw: number, pitch: number, forward: THREE.Vector3
 
 const _tmpRight = new THREE.Vector3();
 
+/** Seconds a full-trauma shake takes to die away. */
+const SHAKE_SECONDS = 1.1;
+/** Largest view offsets at full trauma, radians: pitch, yaw, roll. */
+const SHAKE_MAX = { pitch: THREE.MathUtils.degToRad(3.2), yaw: THREE.MathUtils.degToRad(2.4), roll: THREE.MathUtils.degToRad(2.0) } as const;
+
+/**
+ * Smooth deterministic wobble in -1..1: three incommensurate sines per
+ * channel, so it never visibly repeats and never reads a random stream (the
+ * fixed-clock capture must reproduce a shake exactly).
+ */
+function wobble(t: number, channel: number): number {
+  const c = channel * 1.7;
+  return Math.sin(t * 23.1 + c) * 0.5 + Math.sin(t * 37.7 + c * 2.3) * 0.3 + Math.sin(t * 59.3 + c * 3.1) * 0.2;
+}
+
 /** Frame-rate independent exponential damping (same curve as `CameraRig`'s `damp`). */
 function damp(current: number, target: number, rate: number, dt: number): number {
   return current + (target - current) * (1 - Math.exp(-rate * dt));
@@ -106,6 +121,8 @@ export class ShoulderCamera {
   recoilYaw = 0;
 
   private readonly preset: ShoulderCameraPreset;
+  private trauma = 0;
+  private shakeTime = 0;
   private yaw = 0;
   private pitch = 0;
   private aimBlend = 0;
@@ -138,6 +155,21 @@ export class ShoulderCamera {
     const s = this.preset.sensitivity * (this.aiming ? this.preset.aimSensitivityScale : 1);
     this.yaw -= dx * s;
     this.pitch = clampPitch(this.pitch + dy * s, this.preset);
+  }
+
+  /**
+   * Knock the view: an explosion, a heavy landing. `amount` adds to a 0..1
+   * trauma that drains over about a second; the view moves by trauma squared,
+   * so small knocks stay subtle and big ones stack. Presentation only: the
+   * aim ray (`viewForward`, `directionFor`) and the pivot never shake.
+   */
+  shake(amount: number): void {
+    this.trauma = Math.min(1, Math.max(0, this.trauma + amount));
+  }
+
+  /** Current shake trauma, 0..1. */
+  get shakeTrauma(): number {
+    return this.trauma;
   }
 
   setAspect(aspect: number): void {
@@ -204,6 +236,10 @@ export class ShoulderCamera {
 
   update(dt: number, occluder?: CameraOccluder): void {
     this.aimBlend = damp(this.aimBlend, this.aiming ? 1 : 0, this.preset.aimRate, dt);
+    if (this.trauma > 0) {
+      this.shakeTime += dt;
+      this.trauma = Math.max(0, this.trauma - dt / SHAKE_SECONDS);
+    }
     this.resolve(occluder);
   }
 
@@ -231,7 +267,13 @@ export class ShoulderCamera {
     this.desired.copy(this.pivot).addScaledVector(this.toCamera, reach);
 
     this.camera.position.copy(this.desired);
-    this.camera.rotation.set(-pitch, yaw, 0, 'YXZ');
+    // Shake goes on the view after the aim basis is fixed, so it never moves the shot.
+    const k = this.trauma * this.trauma;
+    if (k === 0) this.camera.rotation.set(-pitch, yaw, 0, 'YXZ');
+    else {
+      const t = this.shakeTime;
+      this.camera.rotation.set(-pitch + k * SHAKE_MAX.pitch * wobble(t, 0), yaw + k * SHAKE_MAX.yaw * wobble(t, 1), k * SHAKE_MAX.roll * wobble(t, 2), 'YXZ');
+    }
     if (this.camera.fov !== fov) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();
