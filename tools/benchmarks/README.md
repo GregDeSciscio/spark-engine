@@ -32,6 +32,19 @@ The mission's row was then updated, **counters only**. It had been recorded befo
 
 Both columns sit about 3.5 ms above that morning's quiet 12.9 ms, which is the CPU load, not the code. Re-record the timings on an idle machine before trusting an absolute comparison against them.
 
+**Later the same day, the second lanes:** the level pass added a west service alley with back blocks, plus a stair and catwalk overwatch: 32 more draws and 462,307 more triangles, past the counter tolerance by design. So the mission row was re-recorded, timings included, from one `--record --filter=mission` run. The GPU stayed under 35% throughout. The row read 15.23 ms CPU, 13.45 ms render, 750 draws and 1,706,902 triangles, until the freeze fix below re-recorded it. Before recording, the change was A/B'd against HEAD (7213218) with the GPU at 0–9%:
+
+| | CPU (median) | Render | Draws | Render per draw |
+| --- | --- | --- | --- | --- |
+| HEAD, two runs | 15.35, 15.46 ms | 13.71 ms | 716–718 | 19.1 µs |
+| Second lanes, two runs | 16.36, 17.17 ms | 14.44 ms | 748–750 | 19.3 µs |
+
+The cost per draw is the same, so the difference is the alley's content plus about 0.3 ms of new gameplay (mantle, the broker's retreat, the moon-shadow ray), not the engine. The other eight entries keep the September recording (the file's `recordedAt` is the last record of any entry). Run on both trees in the same window that afternoon, they agreed to within 0.1 ms, while both read 15–30% over September. Other apps were busy on the machine then (Chrome, Edge, ChatGPT, Docker), so `pnpm perf` read red on code that had not changed.
+
+**The mission entry used to measure a freeze.** For 2–3 s just after `ready` the mission froze, on an idle GPU as well as a loaded one, and HEAD did too: one long animation frame with no long task inside. The harness settles for only 1.5 s, and the snapshot's `fps` and `cpuMs` are 60-frame rolling averages. When the freeze landed in the sampling window, the mission read 7–15 fps and 23–77 ms on code that runs at 60 fps once settled. When it landed beside the window, the run read clean, and samples taken during the freeze carried stale GPU times. So every earlier mission row, September's included, was read through it to some degree.
+
+The freeze was the GPU process compiling the particle emitters' update kernels on their first dispatch (gap 17 in `docs/design/milestone-10-gaps.md`). Once it was fixed, the row was recorded again from one clean run: 61.7 fps, 15.16 ms CPU, 13.46 ms render, 3.80 ms GPU, 746 draws and 1,702,278 triangles. The draws are now steady at 746 rather than 746–750, because idle emitters stay hidden from the first frame. GPU time is the number that moved: 3.3–3.4 ms on the unfixed tree, 3.8–4.2 ms with the fix, in alternating harness runs. Measured 8 s after `ready`, both trees spend the same on the GPU (4.60–4.70 ms, particle compute 0.07 ms), so the harness now sees frames that render instead of a freeze. If the mission reads below 50 fps again, look for a long animation frame after `ready` before believing it.
+
 ## Baselines are per machine
 
 Results land in `tests/perf/baselines/<hostname>-<platform>-<gpu>.json`, so two machines never fight over one file, and a run on an unknown machine records rather than fails. `--record` **merges**: recording one entry keeps every other entry that run did not measure.
