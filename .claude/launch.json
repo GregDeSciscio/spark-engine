@@ -55,6 +55,18 @@
       ],
       "port": 5180,
       "autoPort": true
+    },
+    {
+      "name": "blackstone-breach",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "../blackstone-breach",
+        "run",
+        "dev"
+      ],
+      "port": 5173,
+      "autoPort": true
     }
   ]
 }
