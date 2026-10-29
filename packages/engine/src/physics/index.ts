@@ -15,6 +15,7 @@ export {
   type ColliderHandle,
   type ColliderInfo,
   type ColliderInit,
+  type ContactForceVisitor,
   type JointAnchors,
   type JointDesc,
   type JointHandle,

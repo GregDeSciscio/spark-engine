@@ -17,7 +17,7 @@ import { findConnections, type Connection } from './core/connections';
 import type { Piece } from './core/pieces';
 import type { NodeLoad } from './core/strain';
 import { buildStructure } from './core/structure';
-import { Debris, GONE, STANDING, type Census, type DebrisOptions, type Fling, type Sink } from './Debris';
+import { Debris, GONE, RUBBLE, STANDING, type Census, type DebrisOptions, type Fling, type Sink } from './Debris';
 import { DestructionFx, type Heard } from './DestructionFx';
 import { GravelField } from './Gravel';
 import { Hinges, type HingeOptions } from './Hinges';
@@ -93,6 +93,19 @@ export interface DestructionOptions {
    * net of hundreds of bodies that fought its own contacts and writhed where the tower had stood.
    */
   looseIsland?: number | undefined;
+  /**
+   * A standing chunk Strain breaks while loose weight rests on it of more than this many times its
+   * own is crushed: it goes to grit and dust instead of becoming a block that, stacked where it
+   * stood, would hold the same weight up forever. Default 10.
+   */
+  crushRatio?: number | undefined;
+  /**
+   * A loose body pressed by more than this many times its own weight, two reads running, is crushed
+   * the same way. Far higher than `crushRatio`: the walls of a building's top, still carrying the
+   * storeys above as it comes down, are pressed by tens of times their weight (at 40 its front walls
+   * ground away and left a hollow shell); a block left under the whole top, by hundreds. Default 80.
+   */
+  squeezeRatio?: number | undefined;
   /** Velocity change (m/s in one step) of a hung body that clangs: it hit something, or a rope snapped taut. Default 0.9. */
   clangDeltaV?: number | undefined;
   /** Gravity (m/s²) for hanging loads. Default: the physics world's. */
@@ -170,6 +183,8 @@ interface Resolved {
   detachPerTick: number;
   netIsland: number;
   looseIsland: number;
+  crushRatio: number;
+  squeezeRatio: number;
   clangDeltaV: number;
   gravity: number;
   solverIterations: number;
@@ -264,6 +279,18 @@ export class Destruction implements Disposable {
   private blastAfterDetach = false;
   /** Hanging loads last sent to Strain, per standing chunk. */
   private readonly sentLoads = new Map<number, number>();
+  /**
+   * Loose bodies resting on standing chunks: what each pressed down on them (N per chunk), raw
+   * as last read and as it counts, from the last step it was awake (asleep, its contacts are not
+   * solved and say nothing). `marker` is one of its chunks, to follow it into the rubble.
+   */
+  private readonly resting = new Map<BodyHandle, { marker: number; raw: Map<number, number>; load: Map<number, number> }>();
+  /** What bodies that settled on the structure press on it, by one of their chunks, while that stays rubble. */
+  private readonly settledOn = new Map<number, Map<number, number>>();
+  /** Resting weight (N) per standing chunk as last sent to Strain: what crushes it if it breaks. */
+  private readonly restOn = new Map<number, number>();
+  /** Loose bodies pressed past `squeezeRatio` at the last read: a second read in a row crushes them. */
+  private squeezed = new Set<BodyHandle>();
   /** Dents per standing chunk: how far it has been shoved, and which way (accumulates, capped). */
   private readonly dents = new Map<number, THREE.Vector3>();
   private disposed = false;
@@ -288,6 +315,8 @@ export class Destruction implements Disposable {
       detachPerTick: options.detachPerTick ?? 90,
       netIsland: options.netIsland ?? 120,
       looseIsland: options.looseIsland ?? 1000,
+      crushRatio: options.crushRatio ?? 10,
+      squeezeRatio: options.squeezeRatio ?? 80,
       clangDeltaV: options.clangDeltaV ?? 0.9,
       gravity: options.gravity ?? Math.abs(deps.physics.gravity.y),
       solverIterations: options.solverIterations ?? 6,
@@ -442,7 +471,9 @@ export class Destruction implements Disposable {
     }
     // What Strain broke becomes hinges; they wake when the two sides end up on different bodies.
     hinges.add(step.broken);
-    for (const island of step.detached) {
+    for (const cut of step.detached) {
+      const island = this.crush(cut);
+      if (island.length === 0) continue;
       const set = new Set(island);
       if (island.length <= this.o.netIsland) {
         // A small island (a bridge deck, part of a roof): every chunk its own body and all of
@@ -471,6 +502,31 @@ export class Destruction implements Disposable {
     this.events.emit('step', step);
   }
 
+  /** The chunks of a freshly cut-loose island that loose weight was crushing (`crushRatio`) go to grit; returns the rest. */
+  private crush(island: readonly number[]): readonly number[] {
+    if (this.restOn.size === 0) return island;
+    const { debris, chunks, pieces } = this;
+    const crushed = island.filter((p) => (this.restOn.get(p) ?? 0) > this.o.crushRatio * pieces[p]!.mass * this.o.gravity);
+    if (crushed.length === 0) return island;
+    let mass = 0;
+    const at = new THREE.Vector3();
+    for (const p of crushed) {
+      const { centroid: c, mass: m } = pieces[p]!;
+      debris.remove(p);
+      chunks.setVisible(p, false);
+      this.restOn.delete(p);
+      this.gravel.spawn(new THREE.Vector3(c[0], c[1], c[2]), 8, 3);
+      at.x += c[0];
+      at.y += c[1];
+      at.z += c[2];
+      mass += m;
+    }
+    this.fx.shatter(at.divideScalar(crushed.length), mass);
+    this.smokes.markDirty();
+    const gone = new Set(crushed);
+    return island.filter((p) => !gone.has(p));
+  }
+
   /** Chunks leave the structure: tell Strain, and queue a cascade (its first step on the next tick). */
   private strainRemove(nodes: number[]): void {
     if (nodes.length === 0) return;
@@ -494,8 +550,79 @@ export class Destruction implements Disposable {
     if (this.inFlight) this.changedInFlight = true;
   }
 
-  /** Hanging loads: what dangles off standing chunks pulls on them (sent to Strain when it changes). */
+  /**
+   * What loose bodies pressed on standing chunks in the last physics step. A building's top cut
+   * loose by Strain sat on the columns whose joints had just failed under it, and stood there: once
+   * it was debris its weight was nobody's, so the columns never felt it.
+   */
+  private readResting(): void {
+    const { debris } = this;
+    const bodies = this.physics.bodies;
+    const fresh = new Map<BodyHandle, Map<number, number>>();
+    const markers = new Map<BodyHandle, number>();
+    const pressed = new Map<BodyHandle, number>();
+    this.physics.contactForces((a, b, force) => {
+      const ia = bodies.info(a);
+      const ib = bodies.info(b);
+      if (!ia || !ib) return;
+      // How hard each of our loose bodies is pressed: by its hardest-pressing neighbour.
+      const f = Math.hypot(force.x, force.y, force.z);
+      for (const i of [ia, ib]) {
+        if (i.owner === this.entity && i.body !== debris.building && i.body !== debris.rubble) pressed.set(i.body, Math.max(f, pressed.get(i.body) ?? 0));
+      }
+      // `a` pushes `b` with `force`: a standing chunk is pressed down by -force.y as `b`, by force.y as `a`.
+      const aStands = ia.body === debris.building;
+      if (aStands === (ib.body === debris.building)) return;
+      const [piece, other, down] = aStands ? [ia.part, ib, force.y] : [ib.part, ia, -force.y];
+      if (down <= 0 || bodies.type(other.body) !== 'dynamic') return;
+      let on = fresh.get(other.body);
+      if (!on) {
+        fresh.set(other.body, (on = new Map()));
+        markers.set(other.body, other.part);
+      }
+      on.set(piece, (on.get(piece) ?? 0) + down);
+    });
+    for (const [body, rec] of this.resting) {
+      if (fresh.has(body) || (bodies.exists(body) && bodies.isSleeping(body))) continue;
+      // Gone into the rubble on the structure: what it pressed with stays while it lies there.
+      if (rec.marker >= 0 && debris.state[rec.marker] === RUBBLE) this.settledOn.set(rec.marker, rec.load);
+      this.resting.delete(body);
+    }
+    for (const [body, raw] of fresh) {
+      const prev = this.resting.get(body)?.raw;
+      // A load counts once two reads in a row see it: a landing's spike lasts a step or two.
+      const load = new Map<number, number>();
+      for (const [p, f] of raw) load.set(p, Math.min(f, prev?.get(p) ?? 0));
+      this.resting.set(body, { marker: markers.get(body)!, raw, load });
+    }
+    for (const marker of this.settledOn.keys()) if (debris.state[marker] !== RUBBLE) this.settledOn.delete(marker);
+
+    // Debris is not structure. A block pressed by many times its own weight, two reads running (not
+    // one landing), is ground to grit: stacked where a column stood, the blocks of the column held the
+    // building it had failed under.
+    const over = new Set<BodyHandle>();
+    for (const [body, f] of pressed) if (f > this.o.squeezeRatio * bodies.mass(body) * this.o.gravity) over.add(body);
+    for (const body of over) {
+      if (!this.squeezed.has(body)) continue;
+      over.delete(body);
+      const gone = debris.crush(body);
+      if (!gone) continue;
+      this.gravel.spawn(gone.at, Math.min(40, Math.round(gone.mass / 60)), 3);
+      this.fx.shatter(gone.at, gone.mass);
+      this.smokes.markDirty();
+    }
+    this.squeezed = over;
+  }
+
+  /** Hanging loads, and resting ones (`readResting`): what weighs on standing chunks (sent to Strain when it changes). */
   private syncLoads(pull: Map<number, number>): void {
+    this.restOn.clear();
+    const add = (on: ReadonlyMap<number, number>): void => {
+      for (const [p, f] of on) if (f > 0) this.restOn.set(p, (this.restOn.get(p) ?? 0) + f);
+    };
+    for (const rec of this.resting.values()) add(rec.load);
+    for (const on of this.settledOn.values()) add(on);
+    for (const [p, f] of this.restOn) pull.set(p, (pull.get(p) ?? 0) + f);
     const { debris } = this;
     for (const r of this.ropes) {
       if (r.joint === null || debris.state[r.piece] !== STANDING) continue;
@@ -778,6 +905,9 @@ export class Destruction implements Disposable {
     if (this.disposed) return;
     const { debris, hinges, fx } = this;
     this.tick++;
+    const loadTick = this.tick % this.o.loadTicks === 0;
+    // First, while the last step's colliders are all still where it left them.
+    if (loadTick) this.readResting();
 
     // Bring loose what Strain cut free, a budget per step (always at least one group).
     for (let budget = this.o.detachPerTick; this.detachQueue.length > 0 && budget > 0; ) {
@@ -794,7 +924,7 @@ export class Destruction implements Disposable {
     debris.fixedUpdate();
     const pull = hinges.fixedUpdate(dt, this.o.gravity);
     this.syncRopes();
-    if (this.tick % this.o.loadTicks === 0) this.syncLoads(pull);
+    if (loadTick) this.syncLoads(pull);
 
     // Something hanging off its last hinges groans now and then; a hung body clangs when it hits.
     const { ratio, at } = hinges.strain;
@@ -866,6 +996,8 @@ export class Destruction implements Disposable {
       const n = Math.min(segs.length, attr.array.length);
       (attr.array as Float32Array).set(segs.slice(0, n));
       lines.geometry.setDrawRange(0, n / 3);
+      // Every rope cut: no draw at all (WebGPU warns at a draw of no vertices).
+      lines.visible = n > 0;
       attr.needsUpdate = true;
     }
     this.rebar.setSpans(this.hinges.spans(this.spanPoints));

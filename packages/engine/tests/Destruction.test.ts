@@ -1,3 +1,4 @@
+import * as THREE from 'three/webgpu';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { Random } from '../src/core/Random';
 import { Transform } from '../src/ecs/components/Transform';
@@ -5,7 +6,7 @@ import { EntityWorld } from '../src/ecs/EntityWorld';
 import { Destructible } from '../src/destruction/components';
 import { buildBuilding } from '../src/destruction/core/building';
 import { Destruction, type DestructionEvents } from '../src/destruction/Destruction';
-import { STANDING } from '../src/destruction/Debris';
+import { GONE, STANDING } from '../src/destruction/Debris';
 import { PhysicsWorld, initRapier } from '../src/physics/PhysicsWorld';
 import { createPhysicsSystems } from '../src/physics/systems';
 
@@ -148,6 +149,38 @@ describe('Destruction', () => {
     expect(linked).toBeGreaterThan(20);
     expect(loose).toBeLessThan(linked / 3);
   });
+
+  it('a top left on columns that failed under it comes down: the column blocks are crushed', async () => {
+    // The sandbox's report: blow out a building's front and sides at street level, and the storeys
+    // above, cut loose by Strain, stayed up on the columns and the back wall whose joints had failed.
+    const run = async (crush: boolean): Promise<{ up: number; top: number; crushed: number }> => {
+      const r = await rig();
+      const options = crush ? {} : { crushRatio: Infinity, squeezeRatio: Infinity };
+      const d = new Destruction({ entities: r.entities, physics: r.physics, random: new Random(7) }, { pieces: buildBuilding({ columnSpacing: 3 }).pieces }, options);
+      for (const s of d.systems()) r.entities.addSystem(s);
+      const zBack = Math.max(...d.pieces.map((p) => p.max[2]));
+      d.remove(d.pieces.filter((p) => p.max[1] < 3.0 && p.kind === 'wall' && p.min[2] < zBack - 0.6).map((p) => p.id));
+      r.frames(480);
+      // The upper storeys' chunks still within half a metre of where they were built.
+      const m = new THREE.Matrix4();
+      const top = d.pieces.filter((p) => p.min[1] > 2.9);
+      let up = 0;
+      for (const p of top) {
+        if (d.debris.state[p.id] === GONE) continue;
+        if (new THREE.Vector3(...p.centroid).applyMatrix4(d.debris.restToWorld(p.id, m)).y > p.centroid[1] - 0.5) up++;
+      }
+      const crushed = d.stats().debris.crushed;
+      r.dispose();
+      return { up, top: top.length, crushed };
+    };
+    // Rigid blocks never give: without crushing, the top stands on the blocks of its columns.
+    const off = await run(false);
+    expect(off.up).toBeGreaterThan(off.top / 2);
+    // Crushed under it, they let it down.
+    const on = await run(true);
+    expect(on.crushed).toBeGreaterThan(0);
+    expect(on.up).toBeLessThan(on.top / 10);
+  }, 60_000);
 
   it('leaves no body, collider or joint behind when disposed, ropes and hinges included', async () => {
     const r = await rig();

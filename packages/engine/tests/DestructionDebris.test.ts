@@ -157,6 +157,28 @@ describe('gradual destruction (hinges)', () => {
     r.dispose();
   });
 
+  it('nothing settles on a loose body, and stillness under a hinge does not count', async () => {
+    // A block on a block on the ground, both loose; the lower one held (as a hinge would hold it).
+    const w = await world([box(0, [0, 0, 0], [1, 1, 1]), box(1, [0, 1, 0], [1, 1.5, 1])]);
+    let held = true;
+    w.debris.canPile = (id) => !(held && w.debris.body(id)!.pieces.includes(0));
+    w.debris.detach([0]);
+    w.debris.detach([1]);
+    steps(w, 120);
+    // Still for two seconds, but what the upper one rests on can still move away.
+    expect(w.debris.state[0]).toBeGreaterThanOrEqual(0);
+    expect(w.debris.state[1]).toBeGreaterThanOrEqual(0);
+    // Let go, the lower one has to stay put on its own before it settles; then the upper one settles on it.
+    held = false;
+    steps(w, 1);
+    expect(w.debris.state[0]).toBeGreaterThanOrEqual(0);
+    steps(w, 30);
+    expect(w.debris.state[0]).toBe(RUBBLE);
+    steps(w, 30);
+    expect(w.debris.state[1]).toBe(RUBBLE);
+    w.dispose();
+  });
+
   it('a chunk asleep on something wakes and falls when that is destroyed', async () => {
     const w = await world([box(0, [0, 0, 0], [1, 2, 1]), box(1, [0, 2, 0], [1, 2.5, 1])]);
     w.debris.canPile = () => false; // held, as if a hinge had it: Rapier sleeps it as a body instead of it turning to rubble

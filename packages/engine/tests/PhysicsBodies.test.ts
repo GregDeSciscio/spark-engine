@@ -559,6 +559,49 @@ describe('Contact events count per owner pair', () => {
   });
 });
 
+describe('Contact forces', () => {
+  it('a block at rest on a slab presses down with its weight; one under the threshold, or asleep, says nothing', async () => {
+    for (const iterations of [4, 6]) {
+      const f = await fixture();
+      f.physics.solverIterations = iterations;
+      const building = f.entities.create();
+      const slab = f.physics.bodies.create({ type: 'fixed' });
+      const floor = f.physics.bodies.addCollider(slab, { shape: { kind: 'box', hx: 5, hy: 0.25, hz: 5 }, owner: building, forceEvents: 500 });
+      const owner = f.entities.create();
+      const block = f.physics.bodies.create({ type: 'dynamic', position: { x: 0, y: 0.75, z: 0 } });
+      const chunk = f.physics.bodies.addCollider(block, { shape: { kind: 'box', hx: 0.5, hy: 0.5, hz: 0.5 }, owner, mass: 200 });
+      // 196 N, under the slab's 500 N threshold.
+      const light = f.physics.bodies.create({ type: 'dynamic', position: { x: 3, y: 0.75, z: 0 } });
+      f.physics.bodies.addCollider(light, { shape: { kind: 'box', hx: 0.5, hy: 0.5, hz: 0.5 }, owner, mass: 20 });
+      const read = (): { down: number; pairs: number } => {
+        let down = 0;
+        let pairs = 0;
+        f.physics.contactForces((a, b, force) => {
+          pairs++;
+          // What the block pushes the slab with, whichever way round Rapier names the pair.
+          if (a === chunk && b === floor) down -= force.y;
+          else if (a === floor && b === chunk) down += force.y;
+        });
+        return { down, pairs };
+      };
+      f.tick(10);
+      const { down, pairs } = read();
+      expect(pairs).toBe(1);
+      expect(down).toBeGreaterThan(200 * 9.81 * 0.98);
+      expect(down).toBeLessThan(200 * 9.81 * 1.02);
+      // Read once: a second read between the same steps finds nothing; after two steps, only the last is there.
+      expect(read().pairs).toBe(0);
+      f.tick(2);
+      expect(read().pairs).toBe(1);
+      // Asleep, its contact is not solved.
+      f.tick(90);
+      expect(f.physics.bodies.isSleeping(block)).toBe(true);
+      expect(read().pairs).toBe(0);
+      f.dispose();
+    }
+  });
+});
+
 describe('The entity API sits on the handle layer, unchanged', () => {
   it('an entity body is a one-collider body owned by its entity', async () => {
     const f = await fixture();

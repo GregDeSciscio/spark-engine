@@ -54,6 +54,10 @@ const BREAK_COLLIDERS_PER_STEP = 64;
 const LANDING = 2.5;
 const FRICTION = 0.8;
 const RESTITUTION = 0.05;
+/** Contact force (N) on a standing chunk worth reporting (`PhysicsWorld.contactForces`): about a tonne. */
+export const RESTING_FORCE = 10_000;
+/** The same for a loose chunk: pressed this hard (two tonnes), it may be being crushed. */
+export const SQUEEZE_FORCE = 20_000;
 
 /** `Debris.state` of a chunk still part of the structure. */
 export const STANDING = -1;
@@ -216,7 +220,7 @@ export class Debris {
   private tick = 0;
   private nextBodyId = 0;
   /** Bodies created, split, settled and cleared, for the HUD. */
-  readonly counters = { created: 0, shattered: 0, piled: 0, cleared: 0, flung: 0, sunk: 0 };
+  readonly counters = { created: 0, shattered: 0, piled: 0, cleared: 0, crushed: 0, flung: 0, sunk: 0 };
   /** The latest flings, for the soak and probes. */
   readonly flings: Fling[] = [];
   /** Bodies seen going through the floor, for the soak: how they came loose, how old, how fast. */
@@ -267,7 +271,10 @@ export class Debris {
   private addChunkCollider(body: BodyHandle, piece: number, shrunk: boolean, position: Vec3Like, rotation?: QuatLike, density?: number): ColliderHandle | 0 {
     const shape = this.shapes[piece]!;
     const vertices = shrunk ? shape.shrunk : shape.full;
-    const base = { owner: this.owner, part: piece, position, rotation, density, friction: FRICTION, restitution: RESTITUTION };
+    // Standing chunks report what presses on them: loose weight resting on the structure is Strain's to carry.
+    // Loose ones report being squeezed: debris can't hold up what a column could.
+    const forceEvents = body === this.building ? RESTING_FORCE : body === this.rubble ? undefined : SQUEEZE_FORCE;
+    const base = { owner: this.owner, part: piece, position, rotation, density, friction: FRICTION, restitution: RESTITUTION, forceEvents };
     const bodies = this.physics.bodies;
     if (shape.kind === 'mesh') {
       try {
@@ -405,11 +412,12 @@ export class Debris {
   }
 
   /**
-   * Is this rubble chunk still resting on something? Its hull, moved down a few
+   * Is this chunk resting on something? Its hull, moved down a few
    * centimetres, must meet standing structure, or a collider lower than itself
    * (the ground, rubble beneath it), not just a rubble neighbour beside it.
+   * `settled`: and not a loose body, which can still move away from under it.
    */
-  private supported(piece: number): boolean {
+  private supported(piece: number, settled = false): boolean {
     const c = this.colliderOf(piece);
     if (c === null) return true;
     const bodies = this.physics.bodies;
@@ -426,7 +434,7 @@ export class Debris {
         // Anything else holds it if that chunk is lower: by where the chunk is, not its body's frame,
         // which (for a body that lost chunks) can sit metres away and held rubble up in mid-air.
         const info = bodies.info(other);
-        if (!info) return true;
+        if (!info || (settled && info.body !== this.building && bodies.type(info.body) === 'dynamic')) return true;
         const below = info.body === this.building || (bodies.colliderPose(other, _t2) && _t2.y < t.y - 0.05);
         if (below) {
           held = true;
@@ -437,6 +445,24 @@ export class Debris {
       { excludeCollider: c },
     );
     return held;
+  }
+
+  /**
+   * One more still step for a loose body: it becomes rubble (`toPile`) once it
+   * has been still for `pileAfterTicks` with nothing holding it, resting on
+   * something settled.
+   */
+  private still(b: Body, toPile: Body[]): void {
+    // Stillness while hinges hold it says nothing: let go, it has to show it stays put on its own.
+    if (!this.canPile(b.id)) {
+      b.asleepTicks = 0;
+      return;
+    }
+    if (++b.asleepTicks < this.options.pileAfterTicks) return;
+    // On a loose body is not settled. A building's top, cut loose and held by a few hinges, froze in
+    // the air: what lay on the hinged pieces turned to rubble where it was, and stayed when they fell.
+    if (b.pieces.some((p) => this.supported(p, true))) toPile.push(b);
+    else b.asleepTicks = 0;
   }
 
   /**
@@ -581,7 +607,7 @@ export class Debris {
     const v = new THREE.Vector3();
     const toSplit: Body[] = [];
     const toPile: Body[] = [];
-    const { pileAfterTicks, shatterDeltaV } = this.options;
+    const { shatterDeltaV } = this.options;
     let landed: Body | null = null;
     let landedHit = 0;
     let landedSpeed = 0;
@@ -590,7 +616,7 @@ export class Debris {
       // Asleep: nothing to read or clamp (every getter is a call into the physics module).
       if (bodies.isSleeping(b.body)) {
         b.jolt = 0;
-        if (++b.asleepTicks >= pileAfterTicks && this.canPile(b.id)) toPile.push(b);
+        this.still(b, toPile);
         continue;
       }
       bodies.velocity(b.body, _lv, _av);
@@ -614,7 +640,7 @@ export class Debris {
       b.motion = v.length() + spin * 0.5;
       // Still by our measure counts as asleep.
       if (b.motion < STILL && this.tick - b.born > 20) {
-        if (++b.asleepTicks >= pileAfterTicks && this.canPile(b.id)) toPile.push(b);
+        this.still(b, toPile);
       } else {
         b.asleepTicks = 0;
       }
@@ -691,14 +717,30 @@ export class Debris {
     }
   }
 
-  private clear(b: Body): void {
+  private clear(b: Body, crushed = false): void {
     for (const p of b.pieces) {
       this.setState(p, GONE);
       this.collider[p] = 0;
     }
     this.removeBody(b);
-    this.counters.cleared++;
+    if (crushed) this.counters.crushed++;
+    else this.counters.cleared++;
     this.onGone?.(b.pieces);
+  }
+
+  /**
+   * A loose body ground to grit under more than debris can bear: it and its
+   * chunks are gone. Returns where its centre of mass was and its mass, or
+   * null if no loose body has that handle.
+   */
+  crush(body: BodyHandle): { at: THREE.Vector3; mass: number } | null {
+    const b = this.byHandle.get(body);
+    if (!b) return null;
+    const bodies = this.physics.bodies;
+    bodies.centerOfMass(b.body, _t);
+    const out = { at: new THREE.Vector3(_t.x, _t.y, _t.z), mass: bodies.mass(b.body) };
+    this.clear(b, true);
+    return out;
   }
 
   private addBody(init: Omit<Body, 'lastPos' | 'lastRot' | 'streak' | 'flungAt' | 'sunk'>): void {

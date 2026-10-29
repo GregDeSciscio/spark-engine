@@ -12,6 +12,7 @@ import { PhysicsDebugRenderer } from './PhysicsDebugRenderer';
 import type {
   BodyHandle,
   ColliderHandle,
+  ContactForceVisitor,
   JointDesc,
   JointHandle,
   OverlapOptions,
@@ -122,6 +123,7 @@ export function initRapier(): Promise<void> {
 const _v = { x: 0, y: 0, z: 0 };
 const _q = { x: 0, y: 0, z: 0, w: 1 };
 const _rayDir = { x: 0, y: 0, z: 0 };
+const _force = { x: 0, y: 0, z: 0 };
 const _identity: QuatLike = { x: 0, y: 0, z: 0, w: 1 };
 
 /** Pair key for active-contact bookkeeping. Entity ids are far below 2^20. */
@@ -196,6 +198,8 @@ export class PhysicsWorld implements Disposable {
   private readonly pairs = new Map<number, OwnerPair>();
   private readonly pairsOf = new Map<Entity, Set<OwnerPair>>();
   private readonly eventQueue: RAPIER.EventQueue;
+  /** The last step's contact forces are still queued (`contactForces` has not read them). */
+  private forceEventsUnread = false;
   /** Collider handle pairs from the last drain, flat. */
   private readonly pendingStart: number[] = [];
   private readonly pendingStop: number[] = [];
@@ -288,6 +292,9 @@ export class PhysicsWorld implements Disposable {
     if (this.paused) return;
     // Colliders removed before this step are named in its stop events; forget them once those are counted.
     const removed = this.bodies.takeGraveyard();
+    // Rapier's auto-drain leaves contact force events queued: drop the last step's, unread, so a read sees one step.
+    if (this.forceEventsUnread) this.eventQueue.drainContactForceEvents(() => {});
+    this.forceEventsUnread = true;
     this.raw.step(this.eventQueue);
     this.stepCount += 1;
     try {
@@ -658,6 +665,32 @@ export class PhysicsWorld implements Disposable {
       filter.predicate,
     );
     return visited;
+  }
+
+  /**
+   * The contact forces of the last step, for every touching pair where a
+   * collider made with `forceEvents` pushed harder than its threshold: one
+   * `visit` per pair. Read them between steps; the next step drops what was
+   * not read. A sleeping body's contacts are not solved, so they report
+   * nothing.
+   */
+  contactForces(visit: ContactForceVisitor): void {
+    this.assertLive();
+    this.forceEventsUnread = false;
+    // Rapier sums its stabilization pass in with the n solver iterations: a block at rest read
+    // (n + 1) / n times its weight (2x at one iteration, 1.25x at four). Scaled back to the weight.
+    const n = this.solverIterations;
+    const scale = n / (n + 1);
+    this.eventQueue.drainContactForceEvents((e) => {
+      const r1 = this.bodies.ofRapier(e.collider1());
+      const r2 = this.bodies.ofRapier(e.collider2());
+      if (!r1?.alive || !r2?.alive) return;
+      e.totalForce(_force);
+      _force.x *= scale;
+      _force.y *= scale;
+      _force.z *= scale;
+      visit(r1.id, r2.id, _force);
+    });
   }
 
   /**

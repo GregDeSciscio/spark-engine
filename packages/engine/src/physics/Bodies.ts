@@ -413,7 +413,9 @@ export class Bodies {
     } else if (init.density !== undefined) {
       desc.setDensity(init.density);
     }
-    if (init.events) desc.setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+    const force = init.forceEvents !== undefined;
+    if (init.events || force) desc.setActiveEvents((init.events ? RAPIER.ActiveEvents.COLLISION_EVENTS : 0) | (force ? RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS : 0));
+    if (init.forceEvents !== undefined) desc.setContactForceEventThreshold(init.forceEvents);
     // Sensors should notice kinematic and fixed bodies too, not only dynamic ones. (Rapier never pairs
     // two fixed bodies, so a sensor on a sharded body still never sees that body's other shards.)
     if (sensor) desc.setActiveCollisionTypes(RAPIER.ActiveCollisionTypes.ALL);

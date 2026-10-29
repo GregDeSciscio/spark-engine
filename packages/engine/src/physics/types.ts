@@ -119,6 +119,11 @@ export interface ColliderInit {
    * when the other collider has events on.
    */
   events?: boolean | undefined;
+  /**
+   * Report this collider's contact forces above this many newtons, through
+   * `PhysicsWorld.contactForces`. Default: none.
+   */
+  forceEvents?: number | undefined;
 }
 
 /** Who a collider belongs to. */
@@ -154,3 +159,6 @@ export interface OverlapOptions {
  * stop the query early.
  */
 export type OverlapVisitor = (collider: ColliderHandle, owner: Entity, part: number) => boolean | void;
+
+/** One touching pair's contact force in the last step: `force` (N, world) is what `a` pushes `b` with. */
+export type ContactForceVisitor = (a: ColliderHandle, b: ColliderHandle, force: Readonly<Vec3Like>) => void;
