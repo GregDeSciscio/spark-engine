@@ -87,6 +87,12 @@ export interface DestructionOptions {
    * fall as their authored elements, hinged to each other. Default 120.
    */
   netIsland?: number | undefined;
+  /**
+   * Islands bigger than this (chunks) fall as loose elements with nothing linking them. Default 1,000.
+   * A whole tower in free fall has nothing it could hang from: its elements hinged to each other made a
+   * net of hundreds of bodies that fought its own contacts and writhed where the tower had stood.
+   */
+  looseIsland?: number | undefined;
   /** Velocity change (m/s in one step) of a hung body that clangs: it hit something, or a rope snapped taut. Default 0.9. */
   clangDeltaV?: number | undefined;
   /** Gravity (m/s²) for hanging loads. Default: the physics world's. */
@@ -163,6 +169,7 @@ interface Resolved {
   loadTicks: number;
   detachPerTick: number;
   netIsland: number;
+  looseIsland: number;
   clangDeltaV: number;
   gravity: number;
   solverIterations: number;
@@ -280,6 +287,7 @@ export class Destruction implements Disposable {
       loadTicks: options.loadTicks ?? 6,
       detachPerTick: options.detachPerTick ?? 90,
       netIsland: options.netIsland ?? 120,
+      looseIsland: options.looseIsland ?? 1000,
       clangDeltaV: options.clangDeltaV ?? 0.9,
       gravity: options.gravity ?? Math.abs(deps.physics.gravity.y),
       solverIterations: options.solverIterations ?? 6,
@@ -376,6 +384,11 @@ export class Destruction implements Disposable {
         this.smokes.blast(at, 2);
         this.events.emit('shatter', { at, mass, pieces: shards });
       }
+      // The impact that broke it up snaps the steel tying it to its neighbours too. Kept, those links
+      // held an eight-storey tower up after its ground storey went: each counts only its neighbour's
+      // weight, never the storeys above, so the net stood like a frame.
+      const body = first === undefined ? null : debris.bodyOf(first);
+      if (body !== null) hinges.release(body);
       // The glue inside a slab that hit the ground becomes a weak net: it drapes before it tears.
       const set = new Set(shards);
       hinges.add(
@@ -438,12 +451,15 @@ export class Destruction implements Disposable {
         for (const p of island) this.detachQueue.push([p]);
       } else {
         // A big one falls as its authored elements, hinged to each other by the glue between them
-        // (a chunk-by-chunk net of a whole building would blow the joint and body budgets).
-        hinges.add(
-          this.glueWithin(set, (a, b) => pieces[a]!.element !== pieces[b]!.element),
-          0.6,
-          0.7,
-        );
+        // (a chunk-by-chunk net of a whole building would blow the joint and body budgets). A very big
+        // one (a whole tower) falls as loose elements: see `looseIsland`.
+        if (island.length <= this.o.looseIsland) {
+          hinges.add(
+            this.glueWithin(set, (a, b) => pieces[a]!.element !== pieces[b]!.element),
+            0.6,
+            0.7,
+          );
+        }
         for (const cluster of this.elementClusters(island)) this.detachQueue.push(cluster);
       }
     }

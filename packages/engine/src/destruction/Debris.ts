@@ -423,10 +423,11 @@ export class Debris {
       (other) => {
         // Any standing chunk it rests on or against holds it (the sandbox's rule since its first
         // rubble: there the building's hulls were in world coordinates, so they all sat at y = 0).
-        // A loose body counts by its frame (its centre of mass when it came loose), as it did there.
+        // Anything else holds it if that chunk is lower: by where the chunk is, not its body's frame,
+        // which (for a body that lost chunks) can sit metres away and held rubble up in mid-air.
         const info = bodies.info(other);
         if (!info) return true;
-        const below = info.body === this.building || (info.owner === this.owner && info.body !== this.rubble ? bodies.pose(info.body, _t2) : bodies.colliderPose(other, _t2)) && _t2.y < t.y - 0.05;
+        const below = info.body === this.building || (bodies.colliderPose(other, _t2) && _t2.y < t.y - 0.05);
         if (below) {
           held = true;
           return false;

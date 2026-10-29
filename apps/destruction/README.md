@@ -12,7 +12,7 @@ Built from Embark's GDC 2024 talk *Engineering Mayhem* (Måns Isaksson) and the 
 
 ```bash
 pnpm install                # at the repo root
-pnpm dev:destruction        # (root) or `pnpm dev` here: http://localhost:5186   (?strain=inline puts the solve on the main thread; ?fixedclock does too)
+pnpm dev:destruction        # (root) or `pnpm dev` here: http://localhost:5186   (?tower=1 adds an eight-storey tower behind the street; ?strain=inline puts the solve on the main thread; ?fixedclock does too)
 pnpm test                   # (root) the engine's StrainSolver, StrainFactor, DestructionDebris, Rebar, DestructionSmoke and Destruction suites, and this app's arena and sound tests
 pnpm bench:solver           # (root) solver costs by building size (3–12 storeys) and cascades against an always-refactor reference → tools/benchmarks/solver-results.md
 pnpm capture      # headless stills (fixed clock) + a real-time perf run → captures/
@@ -24,6 +24,7 @@ pnpm sfx          # rebuild public/sfx from the ElevenLabs takes in assets/sfx (
 pnpm check:sounds # each sound take against the acoustic signature it should have (needs ffmpeg, numpy, scipy)
 pnpm clip         # a 20 s MP4 of the bridge, the smoke and a collapse, with the game's sound mixed in on the same clock → captures/clip.mp4 + clip.wav + clip-sounds.json (what played when; needs ffmpeg)
 pnpm collapse     # a collapse frame by frame on a fixed clock: frame and Rapier time, the worst frames, the sandbox's stats at checkpoints (--scenario, --frames, --lead)
+pnpm tower        # the eight-storey tower (?tower=1) brought down: stills on a fixed clock (captures/tower-*.png), the loose debris census, and real-time frame pacing with the solve in the worker
 ```
 
 The commands without a "(root)" run in `apps/destruction`.
@@ -176,6 +177,8 @@ A second pass timed each frame of the collapse section by section (a fixed-clock
 |---|---:|---:|---:|
 | before | 34–42 ms | 2,440–2,610 ms | 1,035–1,170 ms |
 | after | 20–21 ms | 2,190–2,250 ms | 760–820 ms |
+
+**The tower** (`?tower=1`, `pnpm tower`): eight storeys, 1,574 chunks, 3,369 in the scene. Taking its ground storey out (`T-ground`, all but a corner) brings the whole tower down within half a second of solving. In real time, with the solve in the worker: median frame 15.8 ms, p95 23.5, p99 30.1, longest 31.5, none over 33 ms (a busy machine). It first stood back up as a writhing jointed frame: its elements, hinged to each other like any big island's, made a net of hundreds of bodies whose links each count only a neighbour's weight, and that net fought its own contacts where the tower had been. Islands over `looseIsland` (1,000 chunks) now fall as loose elements, a body that shatters lets go of its links (the impact snaps the steel too), and rubble is held only by chunks that are really lower than it, not by a body's frame.
 
 The collapse heaps differently: walls fold down in large panels instead of hanging as chunk nets that spray single chunks forward.
 

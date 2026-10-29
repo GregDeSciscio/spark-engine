@@ -127,6 +127,28 @@ describe('Destruction', () => {
     r.dispose();
   });
 
+  it('a building that loses its ground storey falls as linked elements, or loose past `looseIsland`', async () => {
+    // Everything above a ground storey cut out but for one corner comes loose as one island (~300 chunks).
+    const links = async (looseIsland?: number): Promise<number> => {
+      const r = await rig();
+      const d = new Destruction({ entities: r.entities, physics: r.physics, random: new Random(7) }, { pieces: buildBuilding().pieces }, looseIsland === undefined ? {} : { looseIsland });
+      for (const s of d.systems()) r.entities.addSystem(s);
+      const cut = d.pieces.filter((p) => p.max[1] < 3.0 && p.kind !== 'slab' && !(p.centroid[0] < -4.5 && p.centroid[2] < -2.5));
+      d.remove(cut.map((p) => p.id));
+      // Loose, but not yet landed (three metres take ~0.8 s).
+      r.frames(24);
+      expect(d.stats().bodies).toBeGreaterThan(10);
+      const n = d.hinges.linkCount;
+      r.dispose();
+      return n;
+    };
+    const linked = await links();
+    const loose = await links(100);
+    // Linked, its elements hang together as a net; loose, only what broke at the corner still holds.
+    expect(linked).toBeGreaterThan(20);
+    expect(loose).toBeLessThan(linked / 3);
+  });
+
   it('leaves no body, collider or joint behind when disposed, ropes and hinges included', async () => {
     const r = await rig();
     const before = { bodies: r.physics.bodyCount, colliders: r.physics.bodies.colliderCount, joints: r.physics.joints.count, entities: r.entities.count };

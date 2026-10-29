@@ -42,6 +42,8 @@ const WEAPONS: Record<Weapon, { radius: number; label: string }> = {
 
 export interface SandboxOptions {
   strain: 'worker' | 'inline';
+  /** Add the eight-storey tower (`?tower=1`). */
+  tower?: boolean | undefined;
 }
 
 export interface SandboxStats extends DestructionStats {
@@ -49,7 +51,7 @@ export interface SandboxStats extends DestructionStats {
   weapon: Weapon;
 }
 
-export type Scenario = 'A-ground' | 'bridge-A-end' | 'B-corner' | 'A-top-walls';
+export type Scenario = 'A-ground' | 'bridge-A-end' | 'B-corner' | 'A-top-walls' | 'T-ground';
 
 /** The probe surface on `window.__spark.game`. */
 export interface SandboxApi {
@@ -127,7 +129,7 @@ export function sandboxScene(options: SandboxOptions, onApi: (api: SandboxApi) =
       spawned.push(ground);
 
       // ---- the arena: one destructible structure -------------------------------------------
-      const arena = buildArena();
+      const arena = buildArena({ tower: options.tower === true });
       const { pieces } = arena;
       const destruction = new Destruction(ctx, { pieces, connections: findConnections(pieces) }, { worker: options.strain === 'worker', sounds: SOUNDS });
       scene.add(destruction.object);
@@ -202,6 +204,9 @@ export function sandboxScene(options: SandboxOptions, onApi: (api: SandboxApi) =
               return g === 'bridge' && p.min[0] < arena.groups[0]!.params!.x + arena.groups[0]!.params!.width + 1.3 && p.id >= bridge.first;
             case 'B-corner':
               return g === 'B' && y < 3 && x > 16 && z < -1;
+            case 'T-ground':
+              // The tower's ground storey but its front-left corner: eight storeys above it.
+              return g === 'T' && p.max[1] < 3.0 && p.kind !== 'slab' && !(x < -2.5 && z < 13.5);
             case 'A-top-walls':
               // The top storey's walls and columns under the right half: only the roof is left to hang.
               return g === 'A' && p.min[1] > 6.3 && p.max[1] < 9.4 && p.kind !== 'slab' && x > -11;

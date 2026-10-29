@@ -18,8 +18,10 @@ export interface Arena {
 
 export const ARENA_A: Partial<BuildingParams> = { x: -16, z: -4, width: 12, depth: 8, floors: 3, seed: 7 };
 export const ARENA_B: Partial<BuildingParams> = { x: 6, z: -5, width: 14, depth: 10, floors: 4, seed: 11 };
+/** The optional tower (`?tower=1`): eight storeys behind the street, for the solver at the size it was scaled for. */
+export const TOWER: Partial<BuildingParams> = { x: -4, z: 12, width: 10, depth: 8, floors: 8, seed: 19 };
 
-export function buildArena(): Arena {
+export function buildArena(options: { tower?: boolean } = {}): Arena {
   const pieces: Piece[] = [];
   const groups: Arena['groups'] = [];
   let elementBase = 0;
@@ -84,5 +86,11 @@ export function buildArena(): Arena {
     return { anchor: [ax, top - deck, 0] as V3, piece: best };
   });
   const half: V3 = [2.2, 0.75, 0.9];
+
+  // Last, so every id before it is the same with or without it.
+  if (options.tower) {
+    const t = buildBuilding(TOWER);
+    take('T', t.pieces, t.elements, t.params);
+  }
   return { pieces, groups, ropes, container: { center: [mid, top - deck - 2.6 - half[1], 0], half } };
 }
