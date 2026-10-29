@@ -44,4 +44,23 @@ export default tseslint.config(
     files: ['**/*.mjs', '**/*.js'],
     languageOptions: { globals: nodeGlobals },
   },
+  {
+    // ADR-002 / ADR-010: Rapier stays behind the physics module's handles.
+    files: ['**/*.ts', '**/*.mjs', '**/*.js'],
+    ignores: ['packages/engine/src/physics/**'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          // @dimforge/rapier3d-compat and any other Rapier build.
+          patterns: [
+            {
+              group: ['@dimforge/*'],
+              message: 'Only packages/engine/src/physics imports Rapier. Use physics.bodies / physics.joints / the queries (ADR-010).',
+            },
+          ],
+        },
+      ],
+    },
+  },
 );

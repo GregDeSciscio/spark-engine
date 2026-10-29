@@ -4,39 +4,28 @@ import { EventEmitter } from '../core/Events';
 import { Transform } from '../ecs/components/Transform';
 import type { Entity, EntityWorld } from '../ecs/EntityWorld';
 import { SideTable } from '../ecs/SideTable';
+import { Bodies, queryShapeFor, type BodyRecord } from './Bodies';
 import { BODY_TYPE, RigidBody, type BodyType } from './components';
+import { Joints } from './Joints';
 import { Layers, type LayerSpec } from './Layers';
 import { PhysicsDebugRenderer } from './PhysicsDebugRenderer';
+import type {
+  BodyHandle,
+  ColliderHandle,
+  JointDesc,
+  JointHandle,
+  OverlapOptions,
+  OverlapVisitor,
+  Pose,
+  QuatLike,
+  ShapeDesc,
+  Vec3Like,
+} from './types';
+
+// The value types moved to `types.ts`; re-exported here for code that imports them from this module.
+export type { JointDesc, QuatLike, ShapeDesc, Vec3Like } from './types';
 
 // ---- public types ----------------------------------------------------------
-
-export interface Vec3Like {
-  x: number;
-  y: number;
-  z: number;
-}
-
-export interface QuatLike {
-  x: number;
-  y: number;
-  z: number;
-  w: number;
-}
-
-export type ShapeDesc =
-  | { kind: 'box'; hx: number; hy: number; hz: number }
-  | { kind: 'sphere'; radius: number }
-  | { kind: 'capsule'; halfHeight: number; radius: number }
-  | { kind: 'trimesh'; vertices: Float32Array; indices: Uint32Array }
-  | {
-      kind: 'heightfield';
-      /** Row-major `rows × cols` heights (Rapier layout: rows along Z, columns along X). */
-      rows: number;
-      cols: number;
-      heights: Float32Array;
-      /** World size of the field along x/z and the height multiplier along y. */
-      scale: Vec3Like;
-    };
 
 export interface BodyDesc {
   type: BodyType;
@@ -69,17 +58,11 @@ export interface PhysicsPair {
   b: Entity;
 }
 
-/** Anchors are in each body's local frame. */
-export type JointDesc =
-  | { kind: 'spherical'; anchorA: Vec3Like; anchorB: Vec3Like }
-  | { kind: 'revolute'; anchorA: Vec3Like; anchorB: Vec3Like; axis: Vec3Like }
-  | { kind: 'fixed'; anchorA: Vec3Like; anchorB: Vec3Like };
-
 export interface PhysicsEvents extends Record<string, unknown> {
-  /** A sensor and another collider started overlapping. `a` is the sensor. */
+  /** A sensor and another collider started overlapping. `a` is the sensor's owner. */
   triggerEnter: PhysicsPair;
   triggerExit: PhysicsPair;
-  /** Two non-sensor colliders came into contact. `a < b`. */
+  /** Two non-sensor colliders of different owners came into contact. `a < b`. */
   collisionStart: PhysicsPair;
   collisionEnd: PhysicsPair;
 }
@@ -87,8 +70,15 @@ export interface PhysicsEvents extends Record<string, unknown> {
 export interface RaycastOptions {
   /** Only hit colliders belonging to these layers. Default all. */
   layers?: LayerSpec;
-  /** Ignore this entity's body (e.g. the caster). */
+  /**
+   * Ignore this entity (e.g. the caster): its body, and every collider it
+   * owns on other bodies.
+   */
   excludeEid?: Entity;
+  /** Ignore every collider on this body. */
+  excludeBody?: BodyHandle | undefined;
+  /** Ignore this collider. */
+  excludeCollider?: ColliderHandle | undefined;
   /** Treat shapes as solid: a ray starting inside one hits at distance 0. Default true. */
   solid?: boolean;
   /** Include sensor colliders. Default false. */
@@ -96,7 +86,12 @@ export interface RaycastOptions {
 }
 
 export interface RaycastHit {
+  /** The entity that owns the collider hit. */
   eid: Entity;
+  /** Which part of it (`NO_PART` when the collider was given none). */
+  part: number;
+  collider: ColliderHandle;
+  body: BodyHandle;
   point: Vec3Like;
   normal: Vec3Like;
   distance: number;
@@ -108,6 +103,8 @@ export interface PhysicsWorldOptions {
   /** Simulation ticks per second. The Rapier world timestep is `1 / fixedStepHz`, never wall time. */
   fixedStepHz: number;
   gravity?: Vec3Like;
+  /** Constraint solver iterations per step. Default Rapier's (4); jointed nets and ropes want more. */
+  solverIterations?: number | undefined;
 }
 
 // ---- Rapier init ------------------------------------------------------------
@@ -132,43 +129,43 @@ function pairKey(a: Entity, b: Entity): number {
   return a < b ? a * 0x100000 + b : b * 0x100000 + a;
 }
 
-function colliderDescFor(shape: ShapeDesc): RAPIER.ColliderDesc {
-  switch (shape.kind) {
-    case 'box':
-      return RAPIER.ColliderDesc.cuboid(shape.hx, shape.hy, shape.hz);
-    case 'sphere':
-      return RAPIER.ColliderDesc.ball(shape.radius);
-    case 'capsule':
-      return RAPIER.ColliderDesc.capsule(shape.halfHeight, shape.radius);
-    case 'trimesh':
-      return RAPIER.ColliderDesc.trimesh(shape.vertices, shape.indices);
-    case 'heightfield':
-      return RAPIER.ColliderDesc.heightfield(shape.rows, shape.cols, shape.heights, shape.scale);
-  }
+/** Contacts and trigger overlaps between the same two owners are counted apart. */
+function ownerPairKey(a: Entity, b: Entity, sensor: boolean): number {
+  return pairKey(a, b) * 2 + (sensor ? 1 : 0);
 }
 
-function bodyDescFor(type: BodyType): RAPIER.RigidBodyDesc {
-  switch (type) {
-    case 'dynamic':
-      return RAPIER.RigidBodyDesc.dynamic();
-    case 'fixed':
-      return RAPIER.RigidBodyDesc.fixed();
-    case 'kinematicPosition':
-      return RAPIER.RigidBodyDesc.kinematicPositionBased();
-  }
+/**
+ * Two owners touching: `count` collider pairs between them are in contact (or
+ * overlapping, for a sensor pair). Start and end fire as it leaves and returns
+ * to zero, so a building of a thousand hulls lands on the ground once.
+ */
+interface OwnerPair {
+  readonly a: Entity;
+  readonly b: Entity;
+  readonly sensor: boolean;
+  readonly key: number;
+  count: number;
 }
 
-interface ActivePair {
-  a: Entity;
-  b: Entity;
-  sensor: boolean;
+/** What a query skips. Rapier takes one body and one collider natively; anything more is a predicate. */
+interface QueryFilter {
+  body: RAPIER.RigidBody | undefined;
+  collider: RAPIER.Collider | undefined;
+  predicate: ((collider: RAPIER.Collider) => boolean) | undefined;
 }
 
 /**
  * The engine's physics world: Rapier 3D on the main thread at the fixed step
- * (ADR-002). Bodies are attached to entities; the Rapier objects live in side
- * tables here and are released when the entity is destroyed. Only this module
- * imports Rapier.
+ * (ADR-002). Only this module imports Rapier.
+ *
+ * Two ways in:
+ * - the entity API (`addBody`, `setPose`, `addJoint`, ...): one body and one
+ *   collider per entity, its pose mirrored into the entity's Transform;
+ * - the handle layer under it (`bodies`, `joints`, ADR-010): bodies with any
+ *   number of colliders, each owned by an entity and tagged with a part.
+ *
+ * Every collider has an owner, so raycasts, overlaps and contact events
+ * always name an entity (and a part), whichever API made the collider.
  *
  * Lifecycle per fixed tick (see `createPhysicsSystems`):
  *   PhysicsKinematicPush (90) → gameplay forces (< 90 ran earlier) →
@@ -179,8 +176,12 @@ export class PhysicsWorld implements Disposable {
   readonly layers = new Layers();
   readonly events = new EventEmitter<PhysicsEvents>();
   readonly fixedStep: number;
-  /** The underlying Rapier world. Engine-internal; scenes should not need it. */
+  /** The underlying Rapier world. Engine-internal; scenes and engine code outside `physics/` should not need it. */
   readonly raw: RAPIER.World;
+  /** Bodies with any number of owned colliders (the handle layer, ADR-010). */
+  readonly bodies: Bodies;
+  /** Joints between any two bodies, with the engine's own per-body index. */
+  readonly joints: Joints;
   /**
    * Stop the clock for a pause menu: while paused, `step` advances nothing
    * and delivers no events, so every body keeps its pose and velocity exactly
@@ -190,14 +191,19 @@ export class PhysicsWorld implements Disposable {
    */
   paused = false;
 
-  private readonly bodies: SideTable<RAPIER.RigidBody>;
-  private readonly joints = new Map<number, RAPIER.ImpulseJoint>();
-  private readonly colliders: SideTable<RAPIER.Collider>;
-  private readonly colliderToEid = new Map<number, Entity>();
-  private readonly activePairs = new Map<number, ActivePair>();
+  /** Each entity's own body (`addBody`). */
+  private readonly entityBodies: SideTable<BodyRecord>;
+  private readonly pairs = new Map<number, OwnerPair>();
+  private readonly pairsOf = new Map<Entity, Set<OwnerPair>>();
   private readonly eventQueue: RAPIER.EventQueue;
-  private readonly pendingStart: Array<[number, number]> = [];
-  private readonly pendingStop: Array<[number, number]> = [];
+  /** Collider handle pairs from the last drain, flat. */
+  private readonly pendingStart: number[] = [];
+  private readonly pendingStop: number[] = [];
+  private readonly filter: QueryFilter = { body: undefined, collider: undefined, predicate: undefined };
+  private exBodyA: BodyRecord | undefined;
+  private exBodyB: BodyRecord | undefined;
+  private exOwner: Entity = -1;
+  private readonly offDestroy: () => void;
   private stepCount = 0;
   private disposed = false;
   private debugRendererInstance: PhysicsDebugRenderer | null = null;
@@ -207,11 +213,14 @@ export class PhysicsWorld implements Disposable {
     this.fixedStep = 1 / options.fixedStepHz;
     this.raw = new RAPIER.World(options.gravity ?? { x: 0, y: -9.81, z: 0 });
     this.raw.timestep = this.fixedStep;
+    if (options.solverIterations !== undefined) this.solverIterations = options.solverIterations;
     this.eventQueue = new RAPIER.EventQueue(true);
-    // Removing the body also removes its colliders. Register the body table
-    // first so it runs first on entity destroy.
-    this.bodies = new SideTable<RAPIER.RigidBody>(this.entities, (body, eid) => this.releaseBody(body, eid));
-    this.colliders = new SideTable<RAPIER.Collider>(this.entities);
+    this.bodies = new Bodies(this.raw, this.layers, this.entities);
+    this.joints = new Joints(this.raw, this.bodies);
+    // Destroy listeners run before side tables: the owner's contacts end and its
+    // colliders on other bodies go first, then its own body (this table).
+    this.offDestroy = this.entities.onDestroy((eid) => this.ownerDestroyed(eid));
+    this.entityBodies = new SideTable<BodyRecord>(this.entities, (rec, eid) => this.releaseEntityBody(rec, eid));
   }
 
   static async create(options: PhysicsWorldOptions): Promise<PhysicsWorld> {
@@ -235,13 +244,24 @@ export class PhysicsWorld implements Disposable {
     this.raw.gravity.z = value.z;
   }
 
+  /** Constraint solver iterations per step (Rapier's default is 4). */
+  get solverIterations(): number {
+    return this.raw.numSolverIterations;
+  }
+
+  set solverIterations(value: number) {
+    if (!Number.isInteger(value) || value < 1) throw new Error(`PhysicsWorld: solverIterations must be a positive integer, got ${value}`);
+    this.raw.numSolverIterations = value;
+  }
+
   /** Fixed steps taken so far. */
   get steps(): number {
     return this.stepCount;
   }
 
+  /** Bodies alive: entity bodies and handle-layer bodies. */
   get bodyCount(): number {
-    return this.bodies.size;
+    return this.bodies.count;
   }
 
   /**
@@ -266,15 +286,26 @@ export class PhysicsWorld implements Disposable {
       throw new Error(`PhysicsWorld.step: dt ${dt} does not match the fixed step ${this.fixedStep}`);
     }
     if (this.paused) return;
+    // Colliders removed before this step are named in its stop events; forget them once those are counted.
+    const removed = this.bodies.takeGraveyard();
     this.raw.step(this.eventQueue);
     this.stepCount += 1;
-    this.drainEvents();
+    try {
+      this.drainEvents();
+    } finally {
+      this.bodies.purge(removed);
+    }
   }
 
-  // ---- bodies ------------------------------------------------------------------
+  // ---- entity bodies -------------------------------------------------------------
 
   hasBody(eid: Entity): boolean {
-    return this.bodies.has(eid);
+    return this.entityBodies.has(eid);
+  }
+
+  /** The handle of an entity's own body, for the handle-layer calls (`bodies`, `joints`). */
+  bodyOf(eid: Entity): BodyHandle | undefined {
+    return this.entityBodies.get(eid)?.id;
   }
 
   /**
@@ -284,34 +315,41 @@ export class PhysicsWorld implements Disposable {
   addBody(eid: Entity, desc: BodyDesc): void {
     this.assertLive();
     if (!this.entities.exists(eid)) throw new Error(`PhysicsWorld.addBody: entity ${eid} does not exist`);
-    if (this.bodies.has(eid)) throw new Error(`PhysicsWorld.addBody: entity ${eid} already has a body`);
+    if (this.entityBodies.has(eid)) throw new Error(`PhysicsWorld.addBody: entity ${eid} already has a body`);
     if (!this.entities.has(eid, Transform)) this.entities.add(eid, Transform);
     const t = this.entities.store(Transform);
 
-    const bodyDesc = bodyDescFor(desc.type)
-      .setTranslation(t.x[eid] ?? 0, t.y[eid] ?? 0, t.z[eid] ?? 0)
-      .setRotation({ x: t.qx[eid] ?? 0, y: t.qy[eid] ?? 0, z: t.qz[eid] ?? 0, w: t.qw[eid] ?? 1 });
-    if (desc.ccd) bodyDesc.setCcdEnabled(true);
-    if (desc.lockRotations) bodyDesc.lockRotations();
-    if (desc.linearDamping !== undefined) bodyDesc.setLinearDamping(desc.linearDamping);
-    if (desc.angularDamping !== undefined) bodyDesc.setAngularDamping(desc.angularDamping);
-    const body = this.raw.createRigidBody(bodyDesc);
-
-    const colliderDesc = colliderDescFor(desc.shape)
-      .setFriction(desc.friction ?? 0.5)
-      .setRestitution(desc.restitution ?? 0)
-      .setCollisionGroups(this.layers.groups(desc.layer ?? 'default', desc.collidesWith ?? 'all'))
-      .setSensor(desc.isSensor ?? false);
-    if (desc.mass !== undefined) colliderDesc.setMass(desc.mass);
-    if (desc.events ?? true) colliderDesc.setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
-    // Sensors should notice kinematic and fixed bodies too, not only dynamic ones.
-    if (desc.isSensor) colliderDesc.setActiveCollisionTypes(RAPIER.ActiveCollisionTypes.ALL);
-    const collider = this.raw.createCollider(colliderDesc, body);
+    const rec = this.bodies.createRecord(
+      {
+        type: desc.type,
+        position: { x: t.x[eid] ?? 0, y: t.y[eid] ?? 0, z: t.z[eid] ?? 0 },
+        rotation: { x: t.qx[eid] ?? 0, y: t.qy[eid] ?? 0, z: t.qz[eid] ?? 0, w: t.qw[eid] ?? 1 },
+        ccd: desc.ccd,
+        lockRotations: desc.lockRotations,
+        linearDamping: desc.linearDamping,
+        angularDamping: desc.angularDamping,
+      },
+      eid,
+    );
+    try {
+      this.bodies.addColliderTo(rec, {
+        shape: desc.shape,
+        owner: eid,
+        friction: desc.friction,
+        restitution: desc.restitution,
+        layer: desc.layer,
+        collidesWith: desc.collidesWith,
+        isSensor: desc.isSensor,
+        mass: desc.mass,
+        events: desc.events ?? true,
+      });
+    } catch (error) {
+      this.bodies.destroyRecord(rec);
+      throw error;
+    }
 
     this.entities.add(eid, RigidBody, { type: BODY_TYPE[desc.type], sleeping: 0 });
-    this.bodies.set(eid, body);
-    this.colliders.set(eid, collider);
-    this.colliderToEid.set(collider.handle, eid);
+    this.entityBodies.set(eid, rec);
   }
 
   /**
@@ -321,7 +359,7 @@ export class PhysicsWorld implements Disposable {
    */
   setCapsule(eid: Entity, halfHeight: number, radius: number): void {
     this.assertLive();
-    const collider = this.colliders.get(eid);
+    const collider = this.rawCollider(eid);
     if (!collider) throw new Error(`PhysicsWorld.setCapsule: entity ${eid} has no collider`);
     if (collider.shape.type !== RAPIER.ShapeType.Capsule) throw new Error(`PhysicsWorld.setCapsule: entity ${eid} is not a capsule`);
     collider.setHalfHeight(Math.max(0, halfHeight));
@@ -329,66 +367,60 @@ export class PhysicsWorld implements Disposable {
   }
 
   /**
-   * Connect two bodies with an impulse joint. Returns a handle for
+   * Connect two entities' bodies with an impulse joint. Returns a handle for
    * `removeJoint`; joints also go away with either body.
    */
   addJoint(a: Entity, b: Entity, desc: JointDesc): number {
     this.assertLive();
-    const bodyA = this.bodies.get(a);
-    const bodyB = this.bodies.get(b);
+    const bodyA = this.entityBodies.get(a);
+    const bodyB = this.entityBodies.get(b);
     if (!bodyA || !bodyB) throw new Error(`PhysicsWorld.addJoint: entities ${a} and ${b} both need bodies`);
-    let data: RAPIER.JointData;
-    switch (desc.kind) {
-      case 'spherical':
-        data = RAPIER.JointData.spherical(desc.anchorA, desc.anchorB);
-        break;
-      case 'revolute':
-        data = RAPIER.JointData.revolute(desc.anchorA, desc.anchorB, desc.axis);
-        break;
-      case 'fixed':
-        data = RAPIER.JointData.fixed(desc.anchorA, _identity, desc.anchorB, _identity);
-        break;
-    }
-    const joint = this.raw.createImpulseJoint(data, bodyA, bodyB, true);
-    this.joints.set(joint.handle, joint);
-    return joint.handle;
+    return this.joints.create(bodyA.id, bodyB.id, desc);
   }
 
   removeJoint(handle: number): boolean {
-    const joint = this.joints.get(handle);
-    if (!joint) return false;
-    this.joints.delete(handle);
-    if (!this.disposed) this.raw.removeImpulseJoint(joint, true);
-    return true;
+    return this.joints.remove(handle as JointHandle);
   }
 
+  /** Joints alive, whichever API made them. */
   get jointCount(): number {
-    return this.joints.size;
+    return this.joints.count;
   }
 
   /** Remove the body and collider from the entity. The entity itself survives. */
   removeBody(eid: Entity): void {
     if (this.disposed) return;
-    if (!this.bodies.delete(eid)) return;
-    this.colliders.delete(eid);
+    if (!this.entityBodies.delete(eid)) return;
     if (this.entities.exists(eid)) this.entities.remove(eid, RigidBody);
   }
 
-  private releaseBody(body: RAPIER.RigidBody, eid: Entity): void {
-    // Anything still touching this body gets its end/exit event now, since
-    // Rapier's own "stopped" event would arrive with a handle we no longer know.
-    for (const [key, pair] of this.activePairs) {
-      if (pair.a !== eid && pair.b !== eid) continue;
-      this.activePairs.delete(key);
-      this.events.emit(pair.sensor ? 'triggerExit' : 'collisionEnd', { a: pair.a, b: pair.b });
+  /** An entity body is going (removeBody, entity destroyed, world disposed). */
+  private releaseEntityBody(rec: BodyRecord, eid: Entity): void {
+    if (this.disposed) return; // the records and the Rapier world go together in dispose()
+    // Anything still touching the entity gets its end/exit event now, as it
+    // always has, unless the entity also owns colliders on other bodies:
+    // those are still touching things, so Rapier's stop events count down instead.
+    const owned = this.bodies.ownedBy(eid);
+    let elsewhere = false;
+    if (owned) {
+      for (const c of owned) {
+        if (c.bodyRec !== rec) {
+          elsewhere = true;
+          break;
+        }
+      }
     }
-    const collider = this.colliders.get(eid);
-    if (collider) this.colliderToEid.delete(collider.handle);
-    // Rapier drops the joints with the body; forget their handles too.
-    for (const [handle, joint] of this.joints) {
-      if (joint.body1().handle === body.handle || joint.body2().handle === body.handle) this.joints.delete(handle);
-    }
-    if (!this.disposed) this.raw.removeRigidBody(body);
+    if (!elsewhere) this.endContactsOf(eid);
+    this.bodies.destroyRecord(rec);
+  }
+
+  /** An entity was destroyed: whatever it owned goes with it. */
+  private ownerDestroyed(eid: Entity): void {
+    if (this.disposed) return;
+    if (this.bodies.ownedBy(eid) || this.bodies.removedBy(eid) || this.pairsOf.has(eid)) this.endContactsOf(eid);
+    this.entityBodies.delete(eid);
+    const rest = this.bodies.ownedBy(eid);
+    if (rest) for (const c of [...rest]) this.bodies.dropCollider(c, false);
   }
 
   bodyType(eid: Entity): BodyType | undefined {
@@ -398,32 +430,32 @@ export class PhysicsWorld implements Disposable {
   }
 
   isSleeping(eid: Entity): boolean {
-    return this.bodies.get(eid)?.isSleeping() ?? false;
+    return this.entityBodies.get(eid)?.rb.isSleeping() ?? false;
   }
 
   wake(eid: Entity): void {
-    this.bodies.get(eid)?.wakeUp();
+    this.entityBodies.get(eid)?.rb.wakeUp();
   }
 
   setLinearVelocity(eid: Entity, v: Vec3Like): void {
-    this.bodies.require(eid).setLinvel(v, true);
+    this.entityBodies.require(eid).rb.setLinvel(v, true);
   }
 
   setAngularVelocity(eid: Entity, v: Vec3Like): void {
-    this.bodies.require(eid).setAngvel(v, true);
+    this.entityBodies.require(eid).rb.setAngvel(v, true);
   }
 
   applyImpulse(eid: Entity, v: Vec3Like): void {
-    this.bodies.require(eid).applyImpulse(v, true);
+    this.entityBodies.require(eid).rb.applyImpulse(v, true);
   }
 
   /** Persistent force for this step; Rapier resets user forces after each step. */
   applyForce(eid: Entity, v: Vec3Like): void {
-    this.bodies.require(eid).addForce(v, true);
+    this.entityBodies.require(eid).rb.addForce(v, true);
   }
 
   getVelocity(eid: Entity, out: Vec3Like = { x: 0, y: 0, z: 0 }): Vec3Like {
-    const v = this.bodies.require(eid).linvel(_v);
+    const v = this.entityBodies.require(eid).rb.linvel(_v);
     out.x = v.x;
     out.y = v.y;
     out.z = v.z;
@@ -436,7 +468,7 @@ export class PhysicsWorld implements Disposable {
    * pose directly so it takes effect even if called after the push.
    */
   setKinematicTarget(eid: Entity, position: Vec3Like, quaternion: QuatLike = _identity): void {
-    const body = this.bodies.require(eid);
+    const body = this.entityBodies.require(eid).rb;
     const t = this.entities.store(Transform);
     t.x[eid] = position.x;
     t.y[eid] = position.y;
@@ -451,7 +483,7 @@ export class PhysicsWorld implements Disposable {
 
   /** Teleport any body (dynamic bodies keep their velocity). Also writes Transform. */
   setPose(eid: Entity, position: Vec3Like, quaternion: QuatLike = _identity): void {
-    const body = this.bodies.require(eid);
+    const body = this.entityBodies.require(eid).rb;
     const t = this.entities.store(Transform);
     t.x[eid] = position.x;
     t.y[eid] = position.y;
@@ -468,17 +500,19 @@ export class PhysicsWorld implements Disposable {
 
   /** @internal */
   rawBody(eid: Entity): RAPIER.RigidBody | undefined {
-    return this.bodies.get(eid);
+    return this.entityBodies.get(eid)?.rb;
   }
 
-  /** @internal */
+  /** @internal The collider `addBody` made. */
   rawCollider(eid: Entity): RAPIER.Collider | undefined {
-    return this.colliders.get(eid);
+    const rec = this.entityBodies.get(eid);
+    return rec ? this.bodies.primaryOf(rec)?.rc : undefined;
   }
 
-  /** @internal */
+  /** @internal The owner of a live collider, by Rapier handle. */
   entityOfCollider(handle: number): Entity | undefined {
-    return this.colliderToEid.get(handle);
+    const rec = this.bodies.ofRapier(handle);
+    return rec?.alive ? rec.owner : undefined;
   }
 
   // ---- per-tick sync (called by the systems) -----------------------------------
@@ -489,7 +523,7 @@ export class PhysicsWorld implements Disposable {
     const rb = this.entities.store(RigidBody);
     for (const eid of this.entities.query(RigidBody, Transform)) {
       if (rb.type[eid] !== BODY_TYPE.kinematicPosition) continue;
-      const body = this.bodies.get(eid);
+      const body = this.entityBodies.get(eid)?.rb;
       if (!body) continue;
       _v.x = t.x[eid] ?? 0;
       _v.y = t.y[eid] ?? 0;
@@ -510,7 +544,7 @@ export class PhysicsWorld implements Disposable {
     for (const eid of this.entities.query(RigidBody, Transform)) {
       const type = rb.type[eid];
       if (type === BODY_TYPE.fixed) continue;
-      const body = this.bodies.get(eid);
+      const body = this.entityBodies.get(eid)?.rb;
       if (!body) continue;
       const sleeping = body.isSleeping();
       rb.sleeping[eid] = sleeping ? 1 : 0;
@@ -529,7 +563,10 @@ export class PhysicsWorld implements Disposable {
 
   // ---- queries ------------------------------------------------------------------
 
-  /** Closest hit along a ray. `direction` need not be normalised; `distance` is in world units. */
+  /**
+   * Closest hit along a ray, naming the owner, part, collider and body.
+   * `direction` need not be normalised; `distance` is in world units.
+   */
   raycast(origin: Vec3Like, direction: Vec3Like, maxDistance: number, options: RaycastOptions = {}): RaycastHit | null {
     this.assertLive();
     const len = Math.hypot(direction.x, direction.y, direction.z);
@@ -539,22 +576,26 @@ export class PhysicsWorld implements Disposable {
     _rayDir.z = direction.z / len;
     const ray = new RAPIER.Ray(origin, _rayDir);
     const flags = options.includeSensors ? undefined : RAPIER.QueryFilterFlags.EXCLUDE_SENSORS;
-    const exclude = options.excludeEid !== undefined ? this.bodies.get(options.excludeEid) : undefined;
+    const filter = this.prepareFilter(options.excludeEid, options.excludeBody, options.excludeCollider);
     const hit = this.raw.castRayAndGetNormal(
       ray,
       maxDistance,
       options.solid ?? true,
       flags,
       this.layers.queryGroups(options.layers ?? 'all'),
-      undefined,
-      exclude,
+      filter.collider,
+      filter.body,
+      filter.predicate,
     );
     if (!hit) return null;
-    const eid = this.colliderToEid.get(hit.collider.handle);
-    if (eid === undefined) return null;
+    const rec = this.bodies.ofRapier(hit.collider.handle);
+    if (!rec) return null; // a collider made around the engine (through `raw`) has no owner
     const d = hit.timeOfImpact;
     return {
-      eid,
+      eid: rec.owner,
+      part: rec.part,
+      collider: rec.id,
+      body: rec.body,
       distance: d,
       point: { x: origin.x + _rayDir.x * d, y: origin.y + _rayDir.y * d, z: origin.z + _rayDir.z * d },
       normal: { x: hit.normal.x, y: hit.normal.y, z: hit.normal.z },
@@ -571,8 +612,8 @@ export class PhysicsWorld implements Disposable {
       _identity,
       shape,
       (collider) => {
-        const eid = this.colliderToEid.get(collider.handle);
-        if (eid !== undefined) found.add(eid);
+        const rec = this.bodies.ofRapier(collider.handle);
+        if (rec?.alive) found.add(rec.owner);
         return true;
       },
       includeSensors ? undefined : RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
@@ -581,52 +622,183 @@ export class PhysicsWorld implements Disposable {
     return [...found].sort((a, b) => a - b);
   }
 
+  /**
+   * Every collider overlapping `shape` placed at `pose`, one `visit` per
+   * collider (return false from it to stop). `shape` can be a live collider's
+   * handle to test its own shape somewhere else (e.g. a little lower, to ask
+   * whether something holds it up); pass it as `excludeCollider` too so it
+   * does not find itself. Returns how many colliders were visited.
+   */
+  overlapShape(shape: ShapeDesc | ColliderHandle, pose: Pose, visit: OverlapVisitor, options: OverlapOptions = {}): number {
+    this.assertLive();
+    let query: RAPIER.Shape;
+    if (typeof shape === 'number') {
+      const rec = this.bodies.colliderRecord(shape);
+      if (!rec?.alive) throw new Error(`PhysicsWorld.overlapShape: collider ${shape} does not exist`);
+      query = rec.rc.shape;
+    } else {
+      query = queryShapeFor(shape);
+    }
+    const filter = this.prepareFilter(options.excludeEid, options.excludeBody, options.excludeCollider);
+    let visited = 0;
+    this.raw.intersectionsWithShape(
+      pose.position,
+      pose.rotation ?? _identity,
+      query,
+      (collider) => {
+        const rec = this.bodies.ofRapier(collider.handle);
+        if (!rec?.alive) return true;
+        visited += 1;
+        return visit(rec.id, rec.owner, rec.part) !== false;
+      },
+      options.includeSensors ? undefined : RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
+      this.layers.queryGroups(options.layers ?? 'all'),
+      filter.collider,
+      filter.body,
+      filter.predicate,
+    );
+    return visited;
+  }
+
+  /**
+   * Build the exclusions for one query. The common cases (one entity body, one
+   * body, one collider) use Rapier's own filters; an entity that owns colliders
+   * on other bodies, two bodies, or a sharded fixed body fall back to a predicate.
+   */
+  private prepareFilter(excludeEid: Entity | undefined, excludeBody: BodyHandle | undefined, excludeCollider: ColliderHandle | undefined): QueryFilter {
+    const f = this.filter;
+    f.body = undefined;
+    f.predicate = undefined;
+    const c = excludeCollider !== undefined ? this.bodies.colliderRecord(excludeCollider) : undefined;
+    f.collider = c?.alive ? c.rc : undefined;
+
+    let bodyA: BodyRecord | undefined;
+    let bodyB: BodyRecord | undefined;
+    let owner: Entity = -1;
+    if (excludeEid !== undefined) {
+      bodyA = this.entityBodies.get(excludeEid);
+      const owned = this.bodies.ownedBy(excludeEid);
+      // More than the one collider its own body was made with: skip by owner.
+      if (owned && !(bodyA && owned.size === 1)) owner = excludeEid;
+    }
+    if (excludeBody !== undefined) {
+      const rec = this.bodies.record(excludeBody);
+      if (rec && rec !== bodyA) {
+        if (bodyA) bodyB = rec;
+        else bodyA = rec;
+      }
+    }
+    if (owner < 0 && !bodyB && (!bodyA || bodyA.shards.length === 1)) {
+      f.body = bodyA?.rb;
+      return f;
+    }
+    this.exBodyA = bodyA;
+    this.exBodyB = bodyB;
+    this.exOwner = owner;
+    f.predicate = this.excludePredicate;
+    return f;
+  }
+
+  private readonly excludePredicate = (collider: RAPIER.Collider): boolean => {
+    const rec = this.bodies.ofRapier(collider.handle);
+    if (!rec) return true;
+    return rec.bodyRec !== this.exBodyA && rec.bodyRec !== this.exBodyB && rec.owner !== this.exOwner;
+  };
+
   // ---- events ---------------------------------------------------------------------
 
   private drainEvents(): void {
-    this.pendingStart.length = 0;
-    this.pendingStop.length = 0;
+    const starts = this.pendingStart;
+    const stops = this.pendingStop;
+    starts.length = 0;
+    stops.length = 0;
     this.eventQueue.drainCollisionEvents((h1, h2, started) => {
-      (started ? this.pendingStart : this.pendingStop).push([h1, h2]);
+      const list = started ? starts : stops;
+      list.push(h1, h2);
     });
-    // Stops first so a pair that ended and restarted in one step nets out in order.
-    for (const [h1, h2] of this.pendingStop) this.emitPair(h1, h2, false);
-    for (const [h1, h2] of this.pendingStart) this.emitPair(h1, h2, true);
+    // Starts before stops: when one collider pair of two owners parts as another
+    // meets, the owners never stopped touching, and no end/start blip goes out.
+    for (let i = 0; i < starts.length; i += 2) this.countPair(starts[i] as number, starts[i + 1] as number, true);
+    for (let i = 0; i < stops.length; i += 2) this.countPair(stops[i] as number, stops[i + 1] as number, false);
   }
 
-  private emitPair(h1: number, h2: number, started: boolean): void {
-    const e1 = this.colliderToEid.get(h1);
-    const e2 = this.colliderToEid.get(h2);
-    if (e1 === undefined || e2 === undefined) return; // already handled by releaseBody
-    const c1 = this.raw.colliders.get(h1);
-    const c2 = this.raw.colliders.get(h2);
-    const s1 = c1?.isSensor() ?? false;
-    const s2 = c2?.isSensor() ?? false;
-    const sensor = s1 || s2;
-    // Sensor first for triggers; ascending id for contacts.
+  private countPair(h1: number, h2: number, started: boolean): void {
+    const r1 = this.bodies.ofRapier(h1);
+    const r2 = this.bodies.ofRapier(h2);
+    if (!r1 || !r2 || r1.ended || r2.ended) return;
+    if (r1.owner === r2.owner) return; // a building's chunks pressing on each other are not news
+    const sensor = r1.sensor || r2.sensor;
+    // Sensor's owner first for triggers; ascending id for contacts.
     let a: Entity;
     let b: Entity;
     if (sensor) {
-      a = s1 ? e1 : e2;
-      b = s1 ? e2 : e1;
+      a = r1.sensor ? r1.owner : r2.owner;
+      b = r1.sensor ? r2.owner : r1.owner;
     } else {
-      a = Math.min(e1, e2);
-      b = Math.max(e1, e2);
+      a = Math.min(r1.owner, r2.owner);
+      b = Math.max(r1.owner, r2.owner);
     }
-    const key = pairKey(a, b);
+    const key = ownerPairKey(a, b, sensor);
+    let pair = this.pairs.get(key);
     if (started) {
-      if (this.activePairs.has(key)) return;
-      this.activePairs.set(key, { a, b, sensor });
-      this.events.emit(sensor ? 'triggerEnter' : 'collisionStart', { a, b });
+      if (!pair) {
+        pair = { a, b, sensor, key, count: 0 };
+        this.indexPair(pair);
+      }
+      pair.count += 1;
+      if (pair.count === 1) this.events.emit(sensor ? 'triggerEnter' : 'collisionStart', { a: pair.a, b: pair.b });
     } else {
-      if (!this.activePairs.delete(key)) return;
-      this.events.emit(sensor ? 'triggerExit' : 'collisionEnd', { a, b });
+      if (!pair) return;
+      pair.count -= 1;
+      if (pair.count > 0) return;
+      this.unindexPair(pair);
+      this.events.emit(sensor ? 'triggerExit' : 'collisionEnd', { a: pair.a, b: pair.b });
+    }
+  }
+
+  private indexPair(pair: OwnerPair): void {
+    this.pairs.set(pair.key, pair);
+    for (const owner of [pair.a, pair.b]) {
+      let set = this.pairsOf.get(owner);
+      if (!set) {
+        set = new Set();
+        this.pairsOf.set(owner, set);
+      }
+      set.add(pair);
+    }
+  }
+
+  private unindexPair(pair: OwnerPair): void {
+    this.pairs.delete(pair.key);
+    for (const owner of [pair.a, pair.b]) {
+      const set = this.pairsOf.get(owner);
+      if (!set) continue;
+      set.delete(pair);
+      if (set.size === 0) this.pairsOf.delete(owner);
+    }
+  }
+
+  /**
+   * End everything an owner is touching, now, and mark its colliders (live,
+   * and removed since the last step) so the stop events Rapier sends for them
+   * are not counted again, against this owner or an entity that reuses its id.
+   */
+  private endContactsOf(eid: Entity): void {
+    const owned = this.bodies.ownedBy(eid);
+    if (owned) for (const c of owned) c.ended = true;
+    const removed = this.bodies.removedBy(eid);
+    if (removed) for (const c of removed) c.ended = true;
+    const set = this.pairsOf.get(eid);
+    if (!set) return;
+    for (const pair of [...set]) {
+      this.unindexPair(pair);
+      this.events.emit(pair.sensor ? 'triggerExit' : 'collisionEnd', { a: pair.a, b: pair.b });
     }
   }
 
   /** Is `a` currently overlapping/touching `b`? */
   isTouching(a: Entity, b: Entity): boolean {
-    return this.activePairs.has(pairKey(a, b));
+    return this.pairs.has(ownerPairKey(a, b, false)) || this.pairs.has(ownerPairKey(a, b, true));
   }
 
   // ---- lifecycle ------------------------------------------------------------------
@@ -640,13 +812,15 @@ export class PhysicsWorld implements Disposable {
     this.disposed = true;
     // No exit events on teardown; side tables detach from the entity world and
     // the bodies are freed with the world.
-    this.activePairs.clear();
+    this.offDestroy();
+    this.pairs.clear();
+    this.pairsOf.clear();
     this.events.clear();
     this.debugRendererInstance?.dispose();
     this.debugRendererInstance = null;
+    this.entityBodies.dispose();
+    this.joints.dispose();
     this.bodies.dispose();
-    this.colliders.dispose();
-    this.colliderToEid.clear();
     this.eventQueue.free();
     this.raw.free();
   }

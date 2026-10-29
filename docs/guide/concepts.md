@@ -18,7 +18,7 @@ bitecs under the hood: components are typed arrays, entities are integers. `Tran
 
 ## Physics
 
-Rapier on the main thread at the fixed step. `physics.addBody(eid, { type, shape, layer, collidesWith })` with named layers defined on first use. `physics.raycast` and the contact events (`physics.events`) are the query surface. `CharacterController` moves a kinematic capsule with slopes, steps, ground snapping, jumping and airborne time. `RagdollWorld` turns a skeleton into jointed capsules with real mass.
+Rapier on the main thread at the fixed step. `physics.addBody(eid, { type, shape, layer, collidesWith })` with named layers defined on first use. Under it, `physics.bodies` and `physics.joints` handle bodies with many colliders (compounds, convex hulls, ropes) where every collider is owned by an entity and tagged with a part (ADR-010). `physics.raycast`, `physics.overlapShape` and the contact events (`physics.events`) are the query surface, and they always name the owner. `CharacterController` moves a kinematic capsule with slopes, steps, ground snapping, jumping and airborne time. `RagdollWorld` turns a skeleton into jointed capsules with real mass.
 
 ## Rendering
 

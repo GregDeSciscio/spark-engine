@@ -32,7 +32,11 @@ Everything `@spark/engine` exports, grouped as in `packages/engine/src/index.ts`
 
 | Export | What it is |
 | --- | --- |
-| `PhysicsWorld`, `initRapier` | Rapier world at the fixed step: bodies, joints, raycasts, contact and trigger events. |
+| `PhysicsWorld`, `initRapier` | Rapier world at the fixed step: entity bodies (`addBody`), joints, raycasts and `overlapShape`, contact and trigger events, `bodyOf(eid)`, `solverIterations`. Hits name the owner entity, the part, the collider and the body. |
+| `Bodies` (`physics.bodies`) | The handle layer under the entity API (ADR-010): `create` a body, then `addCollider(body, { shape, owner, part, position, rotation, density, events })` as many times as it takes; `destroy`, `pose`/`setPose`, `velocity`/`setVelocity`, `applyImpulse(b, impulse, torque?)`, `mass`, `isSleeping`/`wake`, `removeCollider(c, wake?)`, `info(c)`, `colliderPose`. |
+| `Joints` (`physics.joints`) | Joints between any two bodies, with the engine's own per-body index: `create(a, b, { kind, ..., contacts? })`, `remove`, `exists`, `of(body)`, `anchors(j)`. |
+| `BodyHandle`, `ColliderHandle`, `JointHandle`, `NO_PART`, `SHARD_CAPACITY` | Integer handles, never reused; the part id of a collider given none; colliders per internal shard of a fixed body. |
+| `ShapeDesc`, `JointDesc`, `JointOptions`, `BodyInit`, `ColliderInit`, `ColliderInfo`, `JointAnchors`, `OverlapOptions`, `OverlapVisitor`, `Pose` | The value types; shapes include `convexHull` and `convexMesh`, joints include `rope`. |
 | `Character`, `RigidBody`, `BODY_TYPE` | Components. |
 | `CharacterController` | Kinematic capsule movement with slopes, steps, snapping, jumping and airborne time. |
 | `Layers` | Named collision layers, defined on first use. |
