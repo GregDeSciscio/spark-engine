@@ -8,7 +8,8 @@
  * same frame count its visual golden uses (so the pile has settled and the
  * particles have spawned), and the canvas is written as a JPEG into
  * `apps/benchmark/public/thumbs/`. The `showcase` entry is the showcase app
- * itself (served from apps/showcase), shot in free look at its spawn. JPEG rather than PNG because these ship in
+ * itself (served from apps/showcase), shot in free look at its spawn. `destruction.jpg` is not made here: it is a
+ * still of the tower collapse from apps/destruction (a 1600×900 capture scaled down). JPEG rather than PNG because these ship in
  * the bundle — the goldens are 160 KB–1 MB each, which is not menu material.
  *
  * Re-run it whenever a scene's look changes; the images are committed.

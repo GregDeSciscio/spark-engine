@@ -17,7 +17,15 @@ import { lightsScene } from './lights';
  */
 const SHOWCASE_URL: string = (import.meta.env.VITE_SHOWCASE_URL as string | undefined) ?? (import.meta.env.DEV ? 'http://localhost:5174/' : '../showcase/');
 
-/** A card in the launcher: a scene of this app, or a link to another app (the showcase). */
+/**
+ * The destruction sandbox (apps/destruction) for its launcher card: its dev server in development,
+ * else the copy hosted on Greg's portfolio (`pnpm --filter destruction build:portfolio`).
+ * `VITE_DESTRUCTION_URL` overrides either.
+ */
+const DESTRUCTION_URL: string =
+  (import.meta.env.VITE_DESTRUCTION_URL as string | undefined) ?? (import.meta.env.DEV ? 'http://localhost:5186/' : 'https://www.gregdesciscio.com/games/spark-destruction/');
+
+/** A card in the launcher: a scene of this app, or a link to another app (the showcase, the destruction sandbox). */
 export interface SceneEntry {
   /** The scene this card launches, or null when `href` points at another app. */
   readonly definition: SceneDefinition | null;
@@ -46,6 +54,13 @@ const entries: readonly SceneEntry[] = [
     title: 'The Showcase',
     blurb: 'A demo built with the engine: one operator on a neon street in the rain, hostiles, gunplay, a generated soundscape.',
     featured: true,
+  },
+  {
+    definition: null,
+    key: 'destruction',
+    href: DESTRUCTION_URL,
+    title: 'Destruction',
+    blurb: 'Buildings that carry their own weight: blow out supports and floors sag, bridges hang on rebar, a tower topples.',
   },
   { definition: alleyScene, key: alleyScene.name, title: 'Rainy Alley', blurb: 'Wet brick and asphalt, puddle ripples, volumetrics, screen-space reflections, GPU rain.' },
   { definition: hudScene, key: hudScene.name, title: 'Audio & UI', blurb: 'HUD, name plates, damage numbers, spatial audio and adaptive music.' },

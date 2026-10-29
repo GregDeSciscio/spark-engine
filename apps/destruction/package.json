@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:portfolio": "tsc -b && vite build --mode portfolio --outDir ../../../portfolio/public/games/spark-destruction --emptyOutDir",
     "preview": "vite preview",
     "capture": "node tools/capture.mjs",
     "check:input": "node tools/input-check.mjs",
