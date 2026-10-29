@@ -48,9 +48,10 @@ export interface DebugStatsSource {
 }
 
 /**
- * The always-on developer overlay. Reads a snapshot each frame, averages over
- * a short window, and repaints the DOM at a fixed cadence so the overlay itself
- * does not become a frame-time cost.
+ * The developer stats panel, hidden until `showStats` or the backquote key.
+ * Reads a snapshot each frame (shown or not, so probes can read it), averages
+ * over a short window, and repaints the DOM at a fixed cadence so the overlay
+ * itself does not become a frame-time cost.
  */
 export class DebugStats implements Disposable {
   private readonly root: HTMLElement;
@@ -110,6 +111,16 @@ export class DebugStats implements Disposable {
   setVisible(visible: boolean): void {
     this.visible = visible;
     this.root.style.display = visible ? 'block' : 'none';
+  }
+
+  get isVisible(): boolean {
+    return this.visible;
+  }
+
+  /** Show it if hidden, hide it if shown; returns whether it is showing now. */
+  toggle(): boolean {
+    this.setVisible(!this.visible);
+    return this.visible;
   }
 
   /** Call once per frame with the wall-clock time and the frame's stats. */

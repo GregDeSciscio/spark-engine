@@ -106,8 +106,9 @@ export class Engine implements Disposable {
       input: () => {
         this.frameStart = performance.now();
         this.inputInstance?.update();
-        // Engine-level hotkey: F2 opens/closes the inspector (kickoff §25).
+        // Engine-level hotkeys: F2 opens/closes the inspector (kickoff §25), backquote the stats panel.
         if (this.inputInstance?.wasPressed('F2')) void this.toggleInspector();
+        if (this.config.debugOverlay && this.inputInstance?.wasPressed('Backquote')) this.statsInstance?.toggle();
       },
       fixedUpdate: (dt) => {
         this.world.fixedUpdate(dt);
@@ -272,7 +273,8 @@ export class Engine implements Disposable {
     this.audioInstance.installGestureUnlock(window);
     this.uiInstance = new UIHost({ container, renderer: this.rendererInstance, entities: this.entities, input: this.inputInstance, camera: liveCamera });
     for (const system of this.uiInstance.createSystems()) this.entities.addSystem(system);
-    this.statsInstance = new DebugStats(container, this.config.debugOverlay);
+    // Hidden, it still measures: probes read its snapshot either way.
+    this.statsInstance = new DebugStats(container, this.config.debugOverlay && this.config.showStats);
     this.lastSize = { ...this.rendererInstance.size };
     this.stateValue = 'ready';
     // `overlay=0` (every capture) also suppresses the inspector, so goldens never see it.

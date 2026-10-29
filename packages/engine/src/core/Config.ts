@@ -21,8 +21,17 @@ export interface EngineConfig {
   maxPixelRatio: number;
   /** Internal render scale relative to the swap chain, 0.5–1.0. Dynamic resolution moves this. */
   renderScale: number;
-  /** Show the DebugStats overlay. */
+  /**
+   * Developer DOM overlays may show: the DebugStats panel (`showStats`), the
+   * inspector, and scenes' own readouts. Captures turn it off (`overlay=0`) so
+   * goldens never see any of them.
+   */
   debugOverlay: boolean;
+  /**
+   * Show the DebugStats panel at start. Off by default; the backquote key (`)
+   * toggles it at runtime either way, unless `debugOverlay` is false.
+   */
+  showStats: boolean;
   /**
    * Open the engine inspector (three's Inspector addon plus engine panels) at
    * start. Off by default; F2 toggles it at runtime either way. Ignored when
@@ -59,6 +68,7 @@ export const DEFAULT_CONFIG: Omit<EngineConfig, 'container'> = {
   maxPixelRatio: 2,
   renderScale: 1,
   debugOverlay: true,
+  showStats: false,
   inspector: false,
   entityCapacity: 10_000,
   seed: 1,
@@ -69,7 +79,7 @@ export const DEFAULT_CONFIG: Omit<EngineConfig, 'container'> = {
 
 /**
  * Parse the subset of config that may be overridden from the URL.
- * Recognised: `backend`, `preset`, `scale`, `dpr`, `seed`, `overlay`, `inspector`, `fixedclock`, `warmup`, `log`.
+ * Recognised: `backend`, `preset`, `scale`, `dpr`, `seed`, `overlay`, `stats`, `inspector`, `fixedclock`, `warmup`, `log`.
  * Unknown or malformed values are ignored, never thrown on.
  */
 export function configFromSearch(search: string): Partial<Omit<EngineConfig, 'container'>> {
@@ -91,9 +101,14 @@ export function configFromSearch(search: string): Partial<Omit<EngineConfig, 'co
   const seed = parseInt(params.get('seed') ?? '', 10);
   if (Number.isFinite(seed)) out.seed = seed;
 
+  // `overlay=1` still means "show the stats", as it did when the panel was on by default.
   const overlay = params.get('overlay');
   if (overlay === '0' || overlay === 'false') out.debugOverlay = false;
-  if (overlay === '1' || overlay === 'true') out.debugOverlay = true;
+  if (overlay === '1' || overlay === 'true') out.debugOverlay = out.showStats = true;
+
+  const stats = params.get('stats');
+  if (stats === '1' || stats === 'true') out.showStats = true;
+  if (stats === '0' || stats === 'false') out.showStats = false;
 
   const inspector = params.get('inspector');
   if (inspector === '1' || inspector === 'true') out.inspector = true;

@@ -42,4 +42,4 @@ Buses (music, sfx, ui, ambience), a capped voice pool, spatial voices that follo
 
 ## Debugging
 
-The stats overlay, the F2 inspector, `?overlay=0`, `?preset=`, `?backend=`, and `window.__spark` for scripted probes. `pnpm capture` boots a scene headless and screenshots it; `pnpm visual` compares against goldens; `pnpm perf` measures.
+The stats panel (the backquote key, or `?stats=1`), the F2 inspector, `?overlay=0` (no developer overlays at all, for captures), `?preset=`, `?backend=`, and `window.__spark` for scripted probes. `pnpm capture` boots a scene headless and screenshots it; `pnpm visual` compares against goldens; `pnpm perf` measures.

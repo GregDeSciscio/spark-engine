@@ -29,6 +29,14 @@ describe('configFromSearch', () => {
     expect(c.fixedFrameDelta).toBeCloseTo(1 / 60);
   });
 
+  it('keeps the stats panel off unless asked: ?stats=1, or ?overlay=1 as before', () => {
+    expect(DEFAULT_CONFIG.showStats).toBe(false);
+    expect(DEFAULT_CONFIG.debugOverlay).toBe(true);
+    expect(configFromSearch('?stats=1')).toEqual({ showStats: true });
+    expect(configFromSearch('?overlay=1')).toEqual({ debugOverlay: true, showStats: true });
+    expect(configFromSearch('?overlay=0')).toEqual({ debugOverlay: false });
+  });
+
   it('returns an empty object for an empty query', () => {
     expect(configFromSearch('')).toEqual({});
   });
