@@ -108,6 +108,7 @@ packages/engine          @spark/engine, the reusable engine. Public API is src/i
 apps/starter             the smallest complete app; `pnpm create-app` copies it
 apps/showcase            the demo game; `pnpm dev:showcase`
 apps/benchmark           the launcher and one scene per engine system; `pnpm dev`
+apps/destruction         the THE FINALS-style destruction sandbox (ADR-011); `pnpm dev:destruction`
 tools/asset-pipeline     glTF → optimised GLB (dedup, meshopt, KTX2, budgets, navmesh bake); character build
 tools/level-authoring    Blender scripts: the street level, the character retarget
 tools/audio              sound generation (ElevenLabs) and mastering (ffmpeg) from a game's manifest

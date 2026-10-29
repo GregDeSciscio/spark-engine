@@ -1,0 +1,51 @@
+# ADR-011: Destruction: an engine subsystem, with its strain solve in an engine-owned worker
+
+## Context
+
+The THE FINALS-style destruction sandbox (the `destruction` repo) proved out structural destruction on Spark: pre-fractured buildings whose glued contacts are solved for stress every cascade step (Strain), hinges that let broken structure sag and hang (Season 12's gradual layer), debris that shatters and settles into rubble, rebar, soot, dust, gravel, smoke that takes the shape of the space, and the sounds of all of it. It lived beside the engine, drove Rapier through `physics.raw`, and owned its own worker for the solve. ADR-010 gave the physics module what it needed (owned colliders, compound and convex bodies, ropes, shape queries). What remained was to make destruction something a game can drop into a scene: one module, one owner per structure, and no build plumbing for the worker.
+
+Three facts shaped it:
+
+- **The solve has to leave the main thread.** A cascade step costs 2–40 ms at the arena's 1,795 chunks with the kept factor and its downdates (workstream C), and a first factor 30–200 ms; a refactor while idle is 200 ms at 4,230 chunks. On the main thread that is a hitch per step.
+- **A fixed-clock run must be deterministic.** Captures, clips and probes step the engine synchronously (`stepFrames`), and a worker's answer arrives whenever it arrives. The sandbox already solved inline under `?strain=inline` for that.
+- **A worker is a bundler concern.** `new Worker(new URL('./x.ts', import.meta.url), { type: 'module' })` is the form Vite (and webpack, and esbuild's own bundling) recognise and emit as a worker chunk. A dependency pre-bundled by Vite's optimizer is rewritten into `node_modules/.vite`, and the relative URL then points at nothing.
+
+## Decision
+
+**`packages/engine/src/destruction/` is an engine subsystem. A scene creates one `Destruction` per structure; the engine owns the strain worker.**
+
+- **Layout.** `core/` is the engine-agnostic part (fracture, contacts, the structure arrays, the sparse factor and its WebAssembly kernels, the strain solver; `building.ts` stays as a prototyping and test fixture). The runtime sits beside it: `Debris`, `Hinges`, `Rebar`, `ChunkMesh`, `DestructionFx`, `Gravel`, `Smoke`, `sounds` (the sound names and the mix), `strain/` (the runner, the hosts and the worker), and `Destruction`, which wires them.
+- **One structure, one entity.** `Destruction` creates an entity with a numbers-only `Destructible` component (`chunks`, `standing`, `loose`) and keeps itself in a side table on it. Every chunk's collider (standing, loose or rubble) is owned by that entity with the chunk id as its `part` (ADR-010), so `physics.raycast` reports `{ eid, part }` and `Destruction.of(entities, eid)?.damage(part)` acts on it. Destroying the entity releases the runtime; `dispose()` removes everything, the entity included: bodies, colliders, joints (hinges and ropes), meshes and the worker.
+- **A scene-owned helper, in `RagdollWorld`'s style.** `new Destruction(ctx, { pieces, connections? }, options)`; the scene adds `object` to its three scene and registers `systems()`: a fixed-stage system at order 80, before `PhysicsKinematicPush` (90), where debris splits and settles, hinges regroup and wear, ropes follow their chunks and the cascade is paced; and a late-stage one at 990, before `RenderSync` (1000), for the step guard, matrices, rebar, ropes, smoke and gravel. The API is `explode`, `damage`, `remove`, `smoke`, `heatView`, `hang` (a dynamic body on ropes that follow their chunk and are cut with it), typed `events` (shatter, land, tear, weakening, step, blast), `stats`, `census` and `sanity` for probes, and `dispose`. The sandbox's tuning constants are options with the sandbox's values as defaults.
+- **Engine rules hold.** No Rapier outside `physics/`; each chunk's convex mesh is built once from its faces and placed by collider offset. Randomness comes from the context's `Random`, forked once per structure and once per layer. Options are `?: T | undefined`. The engine ships no audio: `options.sounds` names the takes per sound and an air bed, and without them the structure is silent.
+- **The engine owns the worker.** `WorkerStrainHost` builds it with the literal `new Worker(new URL('./strain.worker.ts', import.meta.url), { type: 'module' })`, on first use. If it cannot be made, fails to load, throws, or sends something unreadable (`error`, `messageerror`), the host terminates it, replays every request so far into a main-thread runner (the solver is deterministic, so it reaches the same state), answers whatever was waiting, logs one warning, and solves inline from then on: a step in flight can never wedge the cascade.
+- **Inline where it must be.** `InlineStrainHost` is used in Node (no `Worker`), when the engine runs a fixed clock (`config.fixedFrameDelta`, i.e. `?fixedclock`), and when `options.worker === false`.
+- **The worker idles a refactor.** After posting a step that came back stable, the worker rebuilds the factor from scratch once a second has passed with no request (any request cancels it), so downdate rounding never piles up. The inline host never does: it would stall the main thread.
+- **The worker bundle is the solver and nothing else.** `strain.worker.ts` imports only `StrainRunner`, which imports only `destruction/core`, which imports only itself. An ESLint `no-restricted-imports` rule holds it, so three, Rapier and the engine barrel can never be pulled into the worker chunk. The production chunk is 44.5 KB.
+
+**For apps:**
+
+- An app that consumes `@spark/engine` as workspace source (every app here) needs nothing; Vite emits the worker. Set `worker: { format: 'es' }` (the sandbox does), since the worker is a module.
+- An app that pre-bundles the engine (it comes from a registry, or is forced into `optimizeDeps.include`) must exclude it: `optimizeDeps: { exclude: ['@spark/engine'] }`. Otherwise the optimizer rewrites the engine into `node_modules/.vite/deps`, the worker's relative URL resolves to nothing, and the host falls back to the main thread with a warning.
+- A Content Security Policy needs `worker-src 'self'` (or `blob:` if a bundler inlines the worker) and `'wasm-unsafe-eval'` in `script-src`: the solver's kernels are a 2.8 KB WebAssembly SIMD module compiled at run time. Without it the solver falls back to its JavaScript loops, about 2× slower, with the same answers.
+
+## Alternatives
+
+- **Keep destruction as app code on the handle layer.** Rejected: every game would carry the same 4,000 lines, and the raycast-names-the-chunk contract would be each game's to keep.
+- **One entity per chunk.** Rejected in ADR-010: thousands of entities per building, rebuilt each time a chunk changes body. The owner plus `part` carries the same information.
+- **The game builds the worker and hands it in.** Rejected as the default: every game would repeat the bundler incantation and the fallback. `options.worker: false` remains for a game that wants the solve on its own terms.
+- **SharedArrayBuffer between the worker and the main thread.** Not needed: a step's answer is small (broken contacts, islands, an optional heat array transferred, not copied), and cross-origin isolation is a deployment cost every host would pay.
+- **Fall back by restarting the solve from the current structure** instead of replaying. Rejected: the solver's state is the broken contacts and the factor, and the runtime never sees the factor. A replay is exact; its cost is one main-thread pass on a failure path that in practice happens at load, with nothing yet to replay.
+
+## Consequences
+
+- A game gets destruction with three lines: construct, add `object`, register `systems()`. `apps/destruction` is the reference, and `docs/guide/recipes.md` has the recipe.
+- Bullets, line of sight and overlap queries see buildings, rubble and debris, and name the chunk.
+- Measured on the sandbox arena (1,795 chunks, 4,358 contacts), production build in headless Chromium: the first factor and solve 44 ms in the worker; building A's ground storey taken out cascades in 6 steps and 22 ms of solving, all in the worker, with the main thread at an 8.3 ms median frame. With the worker file blocked, the same collapse runs inline after one warning.
+- A fixed-clock run of that collapse matches the destruction repo's sandbox on the same solver through the strain cascade (1,096 then 1,092 chunks standing, 100 bodies made, 5 steps, the same hinge counts at 0.5 s and 1 s) and then diverges as Rapier does once debris lands: starting the same collapse one frame later moves the shatter count at 4 s by as much as the port does (134 or 245 there, 249 or 152 here).
+- Tests: `StrainSolver` and `StrainFactor` (the core), `DestructionDebris` (hanging, tiring, the step guard, sleeping, landing, shattering into clusters, taking one chunk out of a body, the link budget, on real Rapier through the handle layer), `Rebar`, `DestructionSmoke`, `Destruction` (a raycast naming the entity and part, an explosion, a popped chunk, dispose leaving no body, collider or joint).
+- The worker keeps every request until the structure goes, so a fallback can replay them: a few kilobytes per cascade, and the structure arrays once.
+
+## Status
+
+Proposed. Built on branch `destruction` with ADR-010.

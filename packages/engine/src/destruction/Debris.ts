@@ -406,8 +406,8 @@ export class Debris {
 
   /**
    * Is this rubble chunk still resting on something? Its hull, moved down a few
-   * centimetres, must meet a collider lower than itself (the ground, standing
-   * structure, or rubble beneath it), not just a neighbour beside it.
+   * centimetres, must meet standing structure, or a collider lower than itself
+   * (the ground, rubble beneath it), not just a rubble neighbour beside it.
    */
   private supported(piece: number): boolean {
     const c = this.colliderOf(piece);
@@ -421,7 +421,13 @@ export class Debris {
       c,
       { position: { x: t.x, y: t.y - 0.06, z: t.z }, rotation: r },
       (other) => {
-        if (bodies.colliderPose(other, _t2) && _t2.y < t.y - 0.05) {
+        // Any standing chunk it rests on or against holds it (the sandbox's rule since its first
+        // rubble: there the building's hulls were in world coordinates, so they all sat at y = 0).
+        // A loose body counts by its frame (its centre of mass when it came loose), as it did there.
+        const info = bodies.info(other);
+        if (!info) return true;
+        const below = info.body === this.building || (info.owner === this.owner && info.body !== this.rubble ? bodies.pose(info.body, _t2) : bodies.colliderPose(other, _t2)) && _t2.y < t.y - 0.05;
+        if (below) {
           held = true;
           return false;
         }

@@ -43,6 +43,18 @@ Everything `@spark/engine` exports, grouped as in `packages/engine/src/index.ts`
 | `RagdollWorld`, `Ragdoll`, `RagdollConfig`, `capsuleVolume` | Skeleton to jointed capsules with mass, activation impulses and contact events. |
 | `PhysicsDebugRenderer` | The F3 wireframe. |
 
+## Destruction
+
+| Export | What it is |
+| --- | --- |
+| `Destruction` | One destructible structure (ADR-011): `new Destruction(ctx, { pieces, connections? }, options)`, add `object` to the scene, register `systems()`. `explode(point, radius, normal?)`, `damage(part, hits?, direction?)`, `remove(parts)`, `smoke(kind, point)`, `heatView(on)`, `hang(body, piece, anchorRest, hook, length)`, `events` (shatter, land, tear, weakening, step, blast), `stats()`, `census()`, `sanity()`, `listener`/`shakeOffset`, `dispose()`. `Destruction.of(entities, eid)` finds it from a raycast's `eid`; the hit's `part` is the chunk. |
+| `Destructible` | The structure entity's component: `chunks`, `standing`, `loose`. |
+| `DestructionOptions`, `DestructionDeps`, `DestructionStructure`, `DestructionEvents`, `DestructionStats`, `DestructionCensus`, `DESTRUCTION_ORDER` | Its value types and system orders (fixed 80, before physics; late 990, before RenderSync). |
+| `DESTRUCTION_SOUND_NAMES`, `DESTRUCTION_VOICES`, `DestructionSounds` | The sounds it plays and their mix; the game supplies the takes' URLs (the engine ships no audio). |
+| `Debris`, `Hinges`, `Rebar`, `ChunkMesh`, `DestructionFx`, `GravelField`, `SmokeSystem`, `STANDING`, `RUBBLE`, `GONE` | The layers `Destruction` wires, for games that assemble their own (and for tools and tests). |
+| `StrainSolver`, `StrainRunner`, `InlineStrainHost`, `WorkerStrainHost`, `StrainStep`, `NodeLoad` | The structural solve (a kept sparse Cholesky factor with exact downdates and WebAssembly kernels), its message runner, and where it runs. |
+| `prism`, `Piece`, `findConnections`, `Connection`, `GROUND`, `buildStructure`, `fractureRect`, `buildBuilding`, `rng` | Authoring: pre-fractured chunks, their glued contacts, the solver's arrays, Voronoi cells, a procedural test building. |
+
 ## Rendering
 
 | Export | What it is |

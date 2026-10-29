@@ -1,0 +1,31 @@
+{
+  "note": "How tools/prepare_sfx.py builds public/sfx/<sound>-<n>.mp3 from the ElevenLabs takes in raw/: each take is one or more layers (a raw file, its gain once every layer is leveled alike, its delay in seconds, and start: snap to cut in at its loudest transient). Loops (the air bed) keep their whole length, seamless, and are written as WAV at 24 kHz (MP3 padding can gap a loop). Raw takes come from the flow below; the prompts are recorded there and in flow.json.",
+  "flow": "https://elevenlabs.io/app/flows/g0isr3p2cyC2bGVldw77",
+  "sounds": {
+    "boom": [
+      [{ "raw": "boom-1", "gain": 0.7 }, { "raw": "crack-2", "gain": 1.0, "start": "snap" }, { "raw": "crumble-5", "gain": 0.6, "delay": 0.06 }],
+      [{ "raw": "boom-2", "gain": 0.7 }, { "raw": "crack-3", "gain": 1.0, "start": "snap" }, { "raw": "crumble-6", "gain": 0.6, "delay": 0.06 }],
+      [{ "raw": "boom-3", "gain": 0.7 }, { "raw": "crack-4", "gain": 1.0, "start": "snap" }, { "raw": "crumble-7", "gain": 0.6, "delay": 0.06 }],
+      [{ "raw": "boom-4", "gain": 0.7 }, { "raw": "crack-2", "gain": 1.0, "start": "snap" }, { "raw": "crumble-3", "gain": 0.6, "delay": 0.06 }]
+    ],
+    "collapse": [[{ "raw": "collapse-1" }], [{ "raw": "collapse-2" }], [{ "raw": "collapse-3" }], [{ "raw": "collapse-4" }]],
+    "crack": [[{ "raw": "crack-2", "start": "snap" }], [{ "raw": "crack-3", "start": "snap" }], [{ "raw": "crack-4", "start": "snap" }]],
+    "creak": [
+      [{ "raw": "creak-5" }, { "raw": "creak-1", "gain": 0.6 }],
+      [{ "raw": "creak-6" }, { "raw": "creak-2", "gain": 0.6 }],
+      [{ "raw": "creak-7" }, { "raw": "creak-3", "gain": 0.6 }],
+      [{ "raw": "creak-8" }, { "raw": "creak-4", "gain": 0.6 }]
+    ],
+    "crumble": [[{ "raw": "crumble-5" }], [{ "raw": "crumble-6" }], [{ "raw": "crumble-7" }], [{ "raw": "crumble-8" }]],
+    "clang": [[{ "raw": "clang-1" }], [{ "raw": "clang-2" }], [{ "raw": "clang-4" }]],
+    "thud": [
+      [{ "raw": "thud-5", "gain": 0.6 }, { "raw": "thud-1", "gain": 1.0 }],
+      [{ "raw": "thud-6", "gain": 0.6 }, { "raw": "thud-3", "gain": 1.0 }],
+      [{ "raw": "thud-7", "gain": 0.6 }, { "raw": "thud-4", "gain": 1.0 }],
+      [{ "raw": "thud-8", "gain": 0.6 }, { "raw": "thud-2", "gain": 1.0 }]
+    ]
+  },
+  "loops": {
+    "air": [{ "raw": "air-1" }]
+  }
+}

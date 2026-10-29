@@ -12,6 +12,9 @@
     },
     {
       "path": "apps/starter"
+    },
+    {
+      "path": "apps/destruction"
     }
   ]
 }

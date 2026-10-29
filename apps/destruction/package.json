@@ -1,0 +1,29 @@
+{
+  "name": "@spark/destruction",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "THE FINALS-style destruction sandbox on the engine's destruction subsystem: two fractured buildings, a footbridge and a slung container",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "capture": "node tools/capture.mjs",
+    "check:input": "node tools/input-check.mjs",
+    "soak": "node tools/soak.mjs",
+    "feel": "node tools/feel.mjs",
+    "rest": "node tools/rest.mjs",
+    "collapse": "node tools/collapse.mjs",
+    "check:sounds": "python -I tools/sound_signatures.py public/sfx",
+    "sfx": "python -I tools/prepare_sfx.py",
+    "clip": "node tools/clip.mjs"
+  },
+  "dependencies": {
+    "@spark/engine": "workspace:*",
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "@types/three": "0.185.0",
+    "@webgpu/types": "0.1.72"
+  }
+}

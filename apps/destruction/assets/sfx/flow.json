@@ -1,0 +1,19 @@
+{
+  "note": "ElevenLabs Creative flow holding the sandbox's sound generations (run through the ElevenLabs connector on 2026-10-29, about 1,200 credits in all). Each node's takes were downloaded into raw/ as <file>-<n>.mp3, numbered in the order listed; takes.json says which of them each sound is built from. Kept so takes can be re-picked or re-run on the canvas.",
+  "flow_id": "g0isr3p2cyC2bGVldw77",
+  "url": "https://elevenlabs.io/app/flows/g0isr3p2cyC2bGVldw77",
+  "model": "eleven_text_to_sound_v2",
+  "nodes": [
+    { "node": "TuylV3vFsaIM0PVTfxuR", "files": "boom-1..4", "seconds": 3, "prompt_influence": 0.5, "prompt": "Explosive charge detonating against a concrete wall, sharp concussive crack into a deep heavy boom, debris burst, low rolling rumble tail" },
+    { "node": "OGf81N5PGvJZrK41z92S", "files": "crumble-1..4", "seconds": 1.8, "prompt_influence": 0.5, "prompt": "Concrete chunk breaking apart, masonry and gravel crumbling and pouring onto concrete, gritty and dry" },
+    { "node": "7BhZSnoSqHXPTjEFIhPb", "files": "crack-1..4", "seconds": 0.8, "prompt_influence": 0.5, "prompt": "Reinforced concrete cracking under load, sharp brittle snap with a short gritty crackle" },
+    { "node": "0f0IJsjO4AIRDNj4K3S9", "files": "creak-1..4", "seconds": 2.5, "prompt_influence": 0.5, "prompt": "Building structure straining before collapse, deep groan of bending steel beams and grinding concrete" },
+    { "node": "stJz1F8qmrmvvcMgAdyQ", "files": "thud-1..4", "seconds": 1, "prompt_influence": 0.5, "prompt": "Heavy chunk of concrete hitting concrete ground, deep solid thud with a small scatter of debris" },
+    { "node": "ErekM58yMHjVm4lNK60z", "files": "collapse-1..4", "seconds": 4, "prompt_influence": 0.5, "prompt": "Large section of a concrete building collapsing, roar of tons of rubble crashing down, long heavy rumble settling" },
+    { "node": "NToYvh3VM7yZos9YekRE", "files": "thud-5..8", "seconds": 1.2, "prompt_influence": 0.7, "prompt": "Huge concrete block slamming onto a concrete floor, deep heavy bass impact, single hit, short rubble scatter" },
+    { "node": "l7xtYd8M2lrt3dWasfTh", "files": "crumble-5..8", "seconds": 1.8, "prompt_influence": 0.7, "prompt": "Brick and concrete wall breaking apart, heavy chunks tumbling and crunching onto the ground" },
+    { "node": "XPo0XLinXyzdSJl0B2lf", "files": "creak-5..8", "seconds": 2.2, "prompt_influence": 0.7, "prompt": "Steel girder bending under heavy load, loud metallic creak and groan, stressed metal straining" },
+    { "node": "k3Ve6tc1dvOfXXEPdBpL", "files": "air-1..2", "seconds": 20, "prompt_influence": 0.5, "loop": true, "prompt": "Outdoor industrial yard ambience, steady light wind, distant city traffic hum, no voices, no music" },
+    { "node": "R7tzDcl4491LnMy89I79", "files": "clang-1..4", "seconds": 1.8, "prompt_influence": 0.6, "prompt": "Heavy steel shipping container slamming onto concrete ground, deep hollow metallic boom and clang, short rattle" }
+  ]
+}

@@ -50,6 +50,35 @@ Reinforcements are built dormant at load and deployed with a pose, never instant
 
 `apps/showcase/src/mission/Objectives.ts`: reach, plant and eliminate objectives authored in the level, a runner with checkpoints and a retry. `mission.ts` shows how the HUD and audio hang off `status()` and `justCompleted`.
 
+## Add destruction to a scene
+
+`apps/destruction` (`pnpm dev:destruction`) is the reference; `src/scene.ts` is the whole wiring.
+
+1. **Pieces.** A structure is a list of pre-fractured convex chunks with ids `0..n−1` (`Piece`: vertices, faces, centroid, mass). `buildBuilding()` makes a fractured test building; `prism` extrudes a 2D cell through a slab, and `fractureRect` cuts a rectangle into Voronoi cells, which is how `apps/destruction/src/arena.ts` builds two buildings and a bridge into one piece list.
+2. **Construct, add, register.** In `create(ctx)`:
+
+   ```ts
+   const destruction = new Destruction(ctx, { pieces }, { sounds });
+   scene.add(destruction.object);
+   for (const system of destruction.systems()) bag.add(ctx.entities.addSystem(system));
+   bag.add(destruction);
+   ```
+
+   The contacts are found from the pieces (pass `connections` to reuse ones you built). The strain solve starts in a worker and answers within a frame or two (`destruction.ready`); under `?fixedclock` it runs inline.
+3. **Hit it with the engine's raycast.** Every chunk is a collider of the structure's entity, with the chunk id as its part:
+
+   ```ts
+   const hit = ctx.physics.raycast(from, dir, 250);
+   if (hit) Destruction.of(ctx.entities, hit.eid)?.damage(hit.part, 1, dir); // a bullet: three pop a chunk
+   destruction.explode(hit.point, 1.6, hit.normal); // a rocket (push the point a little into the wall)
+   ```
+
+4. **Sound.** Give `options.sounds` your takes per `DestructionSoundName` (boom, crumble, crack, creak, thud, collapse, clang) and an air bed; `apps/destruction/src/sounds.ts` and `public/sfx` are a full set, built from ElevenLabs takes by `pnpm --filter @spark/destruction sfx`.
+5. **Each frame.** Copy the camera position into `destruction.listener` (the blast shake falls off from it) and add `destruction.shakeOffset` to the camera.
+6. **Things that hang.** `destruction.hang(body, piece, anchor, hook, length)` slings any dynamic body from a chunk on a rope that follows the chunk and is cut with it; blasts shove it, and it clangs when it hits something.
+
+Read `docs/decisions/ADR-011-destruction-subsystem.md` for the worker (bundling, CSP, the fallback) and `docs/architecture/lessons-from-destruction.md` for what the sandbox taught.
+
 ## Probe a running game from the console
 
 `window.__spark.game` in the showcase: `lookAt`, `fire`, `aim`, `move`, `stance`, `hurt`, `anim`, `audio`, `alert`, `objective`, `stats`. `mission.ts` defines them; they are how the repo verifies gameplay without a mouse. Give your own scene a probe object through `exposeForCapture` and `api.game`.

@@ -10,6 +10,7 @@ A WebGPU-first browser game engine on Three.js (`three/webgpu`, TSL node materia
 - `apps/starter` — the smallest complete app: one scene file. Copy it with `pnpm create-app <name>`.
 - `apps/showcase` — a full demo built with the engine (a night street, a character, hostiles, gunplay, sound). The best worked example of every system.
 - `apps/benchmark` — the launcher menu plus one demo scene per engine system.
+- `apps/destruction` — the THE FINALS-style destruction sandbox on the engine's `Destruction` subsystem (ADR-011), with its feel, soak, clip and capture tools.
 - `tools/` — asset pipeline (glTF → optimised GLB), Blender level and character builds, audio generation and mastering, capture/thumbnail/visual/perf harnesses, `doctor`, `create-app`.
 - `docs/` — `guide/` (start here), `decisions/` (ADRs: why things are the way they are), `architecture/lessons-from-the-showcase.md` (what building a game taught the engine), design and audio notes.
 
@@ -36,9 +37,9 @@ A `SceneDefinition` is `{ name, create(ctx) }`; `create` returns a `SceneInstanc
 | --- | --- |
 | Make a first scene | `docs/guide/first-scene.md`, `apps/starter/src/scene.ts` |
 | Understand the engine's shape | `docs/guide/concepts.md`, `docs/guide/api-map.md` |
-| Do a specific thing (level, character, weapon, sound) | `docs/guide/recipes.md` (each points into the showcase) |
+| Do a specific thing (level, character, weapon, sound, destruction) | `docs/guide/recipes.md` (each points into the showcase or the destruction sandbox) |
 | Know why a decision was made | `docs/decisions/ADR-*.md` |
-| Avoid a known pitfall | `docs/architecture/lessons-from-the-showcase.md` |
+| Avoid a known pitfall | `docs/architecture/lessons-from-the-showcase.md`, `docs/architecture/lessons-from-destruction.md` |
 | Prove a mechanic still works | `pnpm probe`, `tools/probes/README.md` |
 | See whether it got slower | `pnpm perf`, `tools/benchmarks/README.md` |
 | Look at what it draws | `pnpm capture`, `pnpm visual`, `tools/capture/README.md` |
