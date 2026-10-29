@@ -101,6 +101,28 @@ describe('Bodies: compound bodies and convex shapes', () => {
     f.dispose();
   });
 
+  it('the centre of mass follows the colliders, not the frame', async () => {
+    const f = await fixture(0);
+    const owner = f.entities.create();
+    const b = f.physics.bodies.create({ type: 'dynamic', position: { x: 10, y: 5, z: 0 } });
+    // One part three times as dense as the other: the mass sits three quarters of the way over.
+    f.physics.bodies.addCollider(b, { shape: { kind: 'box', hx: 0.25, hy: 0.25, hz: 0.25 }, owner, position: { x: -1, y: 0, z: 0 }, density: 2 });
+    const heavy = f.physics.bodies.addCollider(b, { shape: { kind: 'box', hx: 0.25, hy: 0.25, hz: 0.25 }, owner, position: { x: 1, y: 0, z: 0 }, density: 6 });
+    f.tick();
+    const c = { x: 0, y: 0, z: 0 };
+    expect(f.physics.bodies.centerOfMass(b, c)).toBe(true);
+    expect(c.x).toBeCloseTo(10.5, 3);
+    // Lose the heavy part: the frame stays put, the mass is all at the other end now.
+    f.physics.bodies.removeCollider(heavy);
+    f.tick();
+    f.physics.bodies.centerOfMass(b, c);
+    expect(c.x).toBeCloseTo(9, 3);
+    const p = { x: 0, y: 0, z: 0 };
+    f.physics.bodies.pose(b, p);
+    expect(p.x).toBeCloseTo(10, 3);
+    f.dispose();
+  });
+
   it('a fixed compound places colliders at their offsets and rotations (rubble)', async () => {
     const f = await fixture();
     const owner = f.entities.create();

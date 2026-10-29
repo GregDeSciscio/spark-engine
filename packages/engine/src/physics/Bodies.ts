@@ -253,6 +253,19 @@ export class Bodies {
     if (torque) rec.rb.applyTorqueImpulse(torque, true);
   }
 
+  /**
+   * Where the body's mass is centred, in the world, into `out`. Not its pose:
+   * a body that has lost colliders keeps its frame, whose origin can sit well
+   * away from what is left. Fixed bodies made here are massless: their pose.
+   */
+  centerOfMass(b: BodyHandle, out: Vec3Like): boolean {
+    const rec = this.records.get(b);
+    if (!rec) return false;
+    if (rec.sharded) rec.rb.translation(out);
+    else rec.rb.worldCom(out);
+    return true;
+  }
+
   /** Total mass from the colliders' densities. 0 for fixed bodies made here and for unknown bodies. */
   mass(b: BodyHandle): number {
     return this.records.get(b)?.rb.mass() ?? 0;

@@ -63,4 +63,31 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // ADR-011: the strain worker bundles destruction/core and its runner and nothing else, so no three,
+    // no Rapier, no engine barrel. The core imports only itself.
+    files: ['packages/engine/src/destruction/core/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        { patterns: [{ regex: '^(?!\\./)', message: 'destruction/core is engine-agnostic: it imports only its own files (ADR-011).' }] },
+      ],
+    },
+  },
+  {
+    files: ['packages/engine/src/destruction/strain/StrainRunner.ts', 'packages/engine/src/destruction/strain/strain.worker.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              regex: '^(?!\\./StrainRunner$|\\.\\./core/)',
+              message: 'The strain worker imports only destruction/core and StrainRunner: no three, Rapier or engine barrel in its bundle (ADR-011).',
+            },
+          ],
+        },
+      ],
+    },
+  },
 );

@@ -73,6 +73,9 @@ export * from './ai/index';
 // ---- ui ----
 export * from './ui/index';
 
+// ---- destruction (ADR-011) ----
+export * from './destruction/index';
+
 export { Input, type PointerButton } from './input/Input';
 export { World } from './world/World';
 export type { SceneContext, SceneDefinition, SceneInstance } from './world/Scene';
