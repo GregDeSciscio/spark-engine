@@ -100,12 +100,21 @@ export interface DestructionOptions {
    */
   crushRatio?: number | undefined;
   /**
-   * A loose body pressed by more than this many times its own weight, two reads running, is crushed
-   * the same way. Far higher than `crushRatio`: the walls of a building's top, still carrying the
-   * storeys above as it comes down, are pressed by tens of times their weight (at 40 its front walls
-   * ground away and left a hollow shell); a block left under the whole top, by hundreds. Default 80.
+   * Debris still where it was built, at the bottom of a pile (a loose body at rest on the ground,
+   * standing structure or rubble, or a chunk of rubble), pressed by more than this many times its
+   * own weight and by more than `squeezeForce`, two reads running, is crushed the same way: the
+   * panels and blocks of a failed storey, still upright under the storeys they failed under.
+   * Debris that has fallen never is (a heap's bottom can be pressed as hard), nor debris resting on
+   * other loose debris: the walls of a building's top carry the storeys above as it comes down and
+   * as it pauses (crushed, they ground away and left a hollow shell). Default 20.
    */
   squeezeRatio?: number | undefined;
+  /**
+   * The least force (N) that crushes debris at the bottom of a pile (`squeezeRatio`). A failed
+   * storey's panels under a building's top carry a couple of hundred kN each; the bottom of a heap
+   * of rubble, tens. Default 100,000.
+   */
+  squeezeForce?: number | undefined;
   /** Velocity change (m/s in one step) of a hung body that clangs: it hit something, or a rope snapped taut. Default 0.9. */
   clangDeltaV?: number | undefined;
   /** Gravity (m/s²) for hanging loads. Default: the physics world's. */
@@ -185,6 +194,7 @@ interface Resolved {
   looseIsland: number;
   crushRatio: number;
   squeezeRatio: number;
+  squeezeForce: number;
   clangDeltaV: number;
   gravity: number;
   solverIterations: number;
@@ -204,6 +214,8 @@ function tableOf(entities: EntityWorld): SideTable<Destruction> {
 const _t: Vec3Like = { x: 0, y: 0, z: 0 };
 const _r = { x: 0, y: 0, z: 0, w: 1 };
 const _v: Vec3Like = { x: 0, y: 0, z: 0 };
+/** Below this speed (m/s) a squeezed loose body counts as at rest (`squeezeRatio`). */
+const RESTING_SPEED = 0.5;
 
 /**
  * A destructible structure, THE FINALS style (ADR-011): pre-fractured chunks
@@ -289,8 +301,9 @@ export class Destruction implements Disposable {
   private readonly settledOn = new Map<number, Map<number, number>>();
   /** Resting weight (N) per standing chunk as last sent to Strain: what crushes it if it breaks. */
   private readonly restOn = new Map<number, number>();
-  /** Loose bodies pressed past `squeezeRatio` at the last read: a second read in a row crushes them. */
+  /** Loose bodies and rubble chunks squeezed past `squeezeRatio` at the last read: a second read in a row crushes them. */
   private squeezed = new Set<BodyHandle>();
+  private squeezedRubble = new Set<number>();
   /** Dents per standing chunk: how far it has been shoved, and which way (accumulates, capped). */
   private readonly dents = new Map<number, THREE.Vector3>();
   private disposed = false;
@@ -316,7 +329,8 @@ export class Destruction implements Disposable {
       netIsland: options.netIsland ?? 120,
       looseIsland: options.looseIsland ?? 1000,
       crushRatio: options.crushRatio ?? 10,
-      squeezeRatio: options.squeezeRatio ?? 80,
+      squeezeRatio: options.squeezeRatio ?? 20,
+      squeezeForce: options.squeezeForce ?? 100_000,
       clangDeltaV: options.clangDeltaV ?? 0.9,
       gravity: options.gravity ?? Math.abs(deps.physics.gravity.y),
       solverIterations: options.solverIterations ?? 6,
@@ -561,14 +575,17 @@ export class Destruction implements Disposable {
     const fresh = new Map<BodyHandle, Map<number, number>>();
     const markers = new Map<BodyHandle, number>();
     const pressed = new Map<BodyHandle, number>();
+    const pressedRubble = new Map<number, number>();
     this.physics.contactForces((a, b, force) => {
       const ia = bodies.info(a);
       const ib = bodies.info(b);
       if (!ia || !ib) return;
-      // How hard each of our loose bodies is pressed: by its hardest-pressing neighbour.
+      // How hard each of our loose bodies and rubble chunks is pressed: by its hardest-pressing neighbour.
       const f = Math.hypot(force.x, force.y, force.z);
       for (const i of [ia, ib]) {
-        if (i.owner === this.entity && i.body !== debris.building && i.body !== debris.rubble) pressed.set(i.body, Math.max(f, pressed.get(i.body) ?? 0));
+        if (i.owner !== this.entity || i.body === debris.building) continue;
+        if (i.body === debris.rubble) pressedRubble.set(i.part, Math.max(f, pressedRubble.get(i.part) ?? 0));
+        else pressed.set(i.body, Math.max(f, pressed.get(i.body) ?? 0));
       }
       // `a` pushes `b` with `force`: a standing chunk is pressed down by -force.y as `b`, by force.y as `a`.
       const aStands = ia.body === debris.building;
@@ -597,21 +614,53 @@ export class Destruction implements Disposable {
     }
     for (const marker of this.settledOn.keys()) if (debris.state[marker] !== RUBBLE) this.settledOn.delete(marker);
 
-    // Debris is not structure. A block pressed by many times its own weight, two reads running (not
-    // one landing), is ground to grit: stacked where a column stood, the blocks of the column held the
-    // building it had failed under.
+    this.squeeze(pressed, pressedRubble);
+  }
+
+  /**
+   * Debris is not structure. A failed support still where it stood, pressed by many times its own
+   * weight two reads running (not one landing), is ground to grit. A building's top cut loose by
+   * Strain came to rest on the panels its failed storey broke into, upright on the ground where they
+   * had stood, and on the rubble some of them settled into in place: rigid, they held it there for
+   * good. Pressure alone could not tell them from the bottom of the heap the top lands in (crushing
+   * that too ground away a third of a building); that they never moved can.
+   */
+  private squeeze(pressed: ReadonlyMap<BodyHandle, number>, pressedRubble: ReadonlyMap<number, number>): void {
+    const { debris, pieces } = this;
+    const bodies = this.physics.bodies;
+    const { squeezeForce, squeezeRatio, gravity } = this.o;
     const over = new Set<BodyHandle>();
-    for (const [body, f] of pressed) if (f > this.o.squeezeRatio * bodies.mass(body) * this.o.gravity) over.add(body);
-    for (const body of over) {
-      if (!this.squeezed.has(body)) continue;
-      over.delete(body);
+    for (const [body, f] of pressed) {
+      if (f < squeezeForce || f < squeezeRatio * bodies.mass(body) * gravity) continue;
+      const first = debris.piecesOf(body)[0];
+      if (first === undefined || !debris.inPlace(first)) continue;
+      if (!bodies.velocity(body, _v) || Math.hypot(_v.x, _v.y, _v.z) > RESTING_SPEED || !debris.restsOnSettled(body)) continue;
+      if (!this.squeezed.has(body)) {
+        over.add(body);
+        continue;
+      }
       const gone = debris.crush(body);
-      if (!gone) continue;
-      this.gravel.spawn(gone.at, Math.min(40, Math.round(gone.mass / 60)), 3);
-      this.fx.shatter(gone.at, gone.mass);
-      this.smokes.markDirty();
+      if (gone) this.crumble(gone.at, gone.mass);
     }
     this.squeezed = over;
+    const overRubble = new Set<number>();
+    for (const [p, f] of pressedRubble) {
+      if (f < squeezeForce || f < squeezeRatio * pieces[p]!.mass * gravity || !debris.inPlace(p)) continue;
+      if (!this.squeezedRubble.has(p)) {
+        overRubble.add(p);
+        continue;
+      }
+      const at = debris.crushRubble(p);
+      if (at) this.crumble(at, pieces[p]!.mass);
+    }
+    this.squeezedRubble = overRubble;
+  }
+
+  /** Grit, dust and a crumble where something was crushed. */
+  private crumble(at: THREE.Vector3, mass: number): void {
+    this.gravel.spawn(at, Math.min(40, Math.round(mass / 60)), 3);
+    this.fx.shatter(at, mass);
+    this.smokes.markDirty();
   }
 
   /** Hanging loads, and resting ones (`readResting`): what weighs on standing chunks (sent to Strain when it changes). */

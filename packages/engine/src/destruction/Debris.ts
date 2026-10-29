@@ -56,8 +56,11 @@ const FRICTION = 0.8;
 const RESTITUTION = 0.05;
 /** Contact force (N) on a standing chunk worth reporting (`PhysicsWorld.contactForces`): about a tonne. */
 export const RESTING_FORCE = 10_000;
-/** The same for a loose chunk: pressed this hard (two tonnes), it may be being crushed. */
-export const SQUEEZE_FORCE = 20_000;
+/**
+ * The same for a loose or settled chunk: pressed this hard (five tonnes), it may be being crushed.
+ * Half of `Destruction`'s default `squeezeForce`: every pair over it is an event, and a heap has many.
+ */
+export const SQUEEZE_FORCE = 50_000;
 
 /** `Debris.state` of a chunk still part of the structure. */
 export const STANDING = -1;
@@ -186,6 +189,8 @@ const _t2: Vec3Like = { x: 0, y: 0, z: 0 };
 const _r: QuatLike = { x: 0, y: 0, z: 0, w: 1 };
 const _lv: Vec3Like = { x: 0, y: 0, z: 0 };
 const _av: Vec3Like = { x: 0, y: 0, z: 0 };
+const _where = new THREE.Matrix4();
+const _at = new THREE.Vector3();
 
 export class Debris {
   readonly options: DebrisSettings;
@@ -272,8 +277,8 @@ export class Debris {
     const shape = this.shapes[piece]!;
     const vertices = shrunk ? shape.shrunk : shape.full;
     // Standing chunks report what presses on them: loose weight resting on the structure is Strain's to carry.
-    // Loose ones report being squeezed: debris can't hold up what a column could.
-    const forceEvents = body === this.building ? RESTING_FORCE : body === this.rubble ? undefined : SQUEEZE_FORCE;
+    // Loose and settled ones report being squeezed: debris can't hold up what a column could.
+    const forceEvents = body === this.building ? RESTING_FORCE : SQUEEZE_FORCE;
     const base = { owner: this.owner, part: piece, position, rotation, density, friction: FRICTION, restitution: RESTITUTION, forceEvents };
     const bodies = this.physics.bodies;
     if (shape.kind === 'mesh') {
@@ -741,6 +746,35 @@ export class Debris {
     const out = { at: new THREE.Vector3(_t.x, _t.y, _t.z), mass: bodies.mass(b.body) };
     this.clear(b, true);
     return out;
+  }
+
+  /** The same for one chunk of the rubble. Returns where it was, or null if it is not rubble. */
+  crushRubble(piece: number): THREE.Vector3 | null {
+    if (this.state[piece] !== RUBBLE) return null;
+    const [cx, cy, cz] = this.pieces[piece]!.centroid;
+    const at = new THREE.Vector3(cx, cy, cz).applyMatrix4(this.rubblePose[piece]!);
+    this.remove(piece);
+    this.counters.crushed++;
+    this.onGone?.([piece]);
+    return at;
+  }
+
+  /** Does a loose body rest on something settled (the ground, standing structure, rubble), not just on other loose bodies? */
+  restsOnSettled(body: BodyHandle): boolean {
+    const b = this.byHandle.get(body);
+    return b !== undefined && b.pieces.some((p) => this.supported(p, true));
+  }
+
+  /** A loose body's chunks (empty if no loose body has that handle). */
+  piecesOf(body: BodyHandle): readonly number[] {
+    return this.byHandle.get(body)?.pieces ?? [];
+  }
+
+  /** Is this chunk (loose or settled) still within `within` metres of where it was built? */
+  inPlace(piece: number, within = 0.5): boolean {
+    const [x, y, z] = this.pieces[piece]!.centroid;
+    _at.set(x, y, z).applyMatrix4(this.restToWorld(piece, _where));
+    return Math.hypot(_at.x - x, _at.y - y, _at.z - z) < within;
   }
 
   private addBody(init: Omit<Body, 'lastPos' | 'lastRot' | 'streak' | 'flungAt' | 'sunk'>): void {

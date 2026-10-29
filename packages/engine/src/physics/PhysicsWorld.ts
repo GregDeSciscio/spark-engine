@@ -293,6 +293,7 @@ export class PhysicsWorld implements Disposable {
     // Colliders removed before this step are named in its stop events; forget them once those are counted.
     const removed = this.bodies.takeGraveyard();
     // Rapier's auto-drain leaves contact force events queued: drop the last step's, unread, so a read sees one step.
+    // Its `clear()` leaves them too (ten steps' worth were still there after it), so they are drained, unread.
     if (this.forceEventsUnread) this.eventQueue.drainContactForceEvents(() => {});
     this.forceEventsUnread = true;
     this.raw.step(this.eventQueue);
