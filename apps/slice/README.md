@@ -10,6 +10,8 @@ pnpm --filter @spark/slice probe       # the checks below, headless
 
 Controls: WASD to move, Space to jump, click to lock the mouse (or right-drag to look), left-click to fire. 1 rocket, 2 rifle, 3 gas grenade. F5 save, F9 load.
 
+The sounds are the destruction sandbox's ElevenLabs takes (`apps/destruction/public/sfx`), served at `/sfx` and copied into the build by `vite.config.ts` rather than duplicated.
+
 ## What it wires together
 
 - **Authored structures.** The level loader returns each building's boxes (`LoadedLevel.destructibles`); `authoredStructure` fractures them; one `Destruction` per building.
@@ -26,6 +28,8 @@ Fixed clock, strain inline:
 - a bot in gas: 70 health after 1.5 s, dead by 7.5 s;
 - the tower's and the depot's tops come straight down, timed every quarter second against free fall, never back up;
 - a checkpoint saved, the shed blown away, the checkpoint loaded: every structure, the dead bots and the player back as saved, and settling after.
+
+Real time also checks that every sound take is served and decodes (27 of 27), and that the collapse is heard: in one run 7 booms, 14 cracks, 28 crumbles, 6 collapse roars and 70 landings. `--throttle=2` slows the CPU (Chromium's emulation) and `--query=preset=low` passes page options.
 
 Real time, strain on the shared worker (headless Chromium, WebGPU, Ryzen 7 3700X and RTX 4070; three runs on 2026-10-30): the tower's ground storey, four rockets into the depot and three into the shed, 1 s apart, with the bots patrolling and the navmesh rebuilding:
 

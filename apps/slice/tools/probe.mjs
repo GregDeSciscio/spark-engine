@@ -19,7 +19,7 @@
  *   node tools/probe.mjs [--realtime-only] [--fixed-only] [--throttle=4] [--json]
  * Exits 1 if a check fails.
  */
-/* global requestAnimationFrame -- in page.evaluate, which runs in the browser */
+/* global requestAnimationFrame, OfflineAudioContext -- in page.evaluate, which runs in the browser */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
@@ -164,6 +164,26 @@ try {
     await page.waitForTimeout(7000);
     const s0 = await game('stats');
     check('three structures solve on one shared worker', s0.worker.structures === 3 && s0.worker.running && s0.structures.every((s) => s.strainMode === 'worker'), s0.worker);
+    // The sandbox's sound takes, served from its folder: every one fetched and decoded.
+    const decoded = await page.evaluate(async () => {
+      const names = { boom: 4, collapse: 4, crumble: 4, crack: 3, creak: 4, thud: 4, clang: 3 };
+      const urls = [...Object.entries(names).flatMap(([n, k]) => Array.from({ length: k }, (_, i) => `/sfx/${n}-${i + 1}.mp3`)), '/sfx/air.wav'];
+      const ctx = new OfflineAudioContext(1, 1, 44100);
+      let ok = 0;
+      for (const url of urls) {
+        const r = await fetch(url);
+        if (!r.ok) continue;
+        try {
+          await ctx.decodeAudioData(await r.arrayBuffer());
+          ok++;
+        } catch {
+          // counted as missing
+        }
+      }
+      return { ok, of: urls.length };
+    });
+    check('every sound take is served and decodes', decoded.ok === decoded.of, decoded);
+    await game('listen', true);
     const pacing = await page.evaluate(async () => {
       const g = window.__spark.game;
       const frames = [];
@@ -215,6 +235,9 @@ try {
       return { standingMedian: +(still[Math.floor(still.length / 2)] ?? 0).toFixed(1), frames: frames.length, median: q(0.5), p95: q(0.95), p99: q(0.99), longest: +sorted[sorted.length - 1].toFixed(1), over33: frames.filter((f) => f > 33.4).length, peakBodies: peak, limit: s.budgets.bodyLimit, rebuilt: s.nav.rebuilt, pending: s.nav.pendingTiles, standing: Object.fromEntries(s.structures.map((x) => [x.name, `${x.standing}/${x.chunks}`])), botsAlive: s.bots.filter((b) => b.alive).length };
     });
     report.realtime = pacing;
+    const heard = await game('heard');
+    report.heard = heard;
+    check('the collapse is heard: booms, debris coming down, landings', (heard.boom ?? 0) > 0 && (heard.crumble ?? 0) + (heard.collapse ?? 0) > 0 && (heard.thud ?? 0) > 0, heard);
     console.log(`real time: ${JSON.stringify(pacing)}`);
     check('three buildings coming down at once stay within the shared debris budget', pacing.peakBodies <= pacing.limit * 1.5, { peak: pacing.peakBodies, limit: pacing.limit });
     check('the navmesh rebuilt where they came down', pacing.rebuilt > 0, { rebuilt: pacing.rebuilt, pending: pacing.pending });

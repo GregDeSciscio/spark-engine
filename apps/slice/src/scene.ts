@@ -23,6 +23,7 @@ import {
   type SceneInstance,
 } from '@spark/engine';
 import { Hud } from './hud';
+import { SOUNDS } from './sounds';
 
 /**
  * The destruction slice (docs/design/destruction-game-readiness.md): a yard
@@ -106,6 +107,10 @@ export interface SliceApi {
    * are still within half a metre of where they were built: a top that floats shows here first.
    */
   drop(structure: string, aboveY: number): { drop: number; inPlace: number; count: number };
+  /** Start (or stop) logging every destruction sound played, over all the structures. */
+  listen(on: boolean): void;
+  /** The sounds played since the last call, by name, with a count each. */
+  heard(): Record<string, number>;
 }
 
 /**
@@ -209,7 +214,7 @@ export function sliceScene(onApi: (api: SliceApi) => void, demo: SliceDemo = 'ya
       // One Destruction per authored building: they share the world's budgets and its strain worker.
       const owned = new Map<string, () => void>();
       const build = (name: string, boxes: readonly PieceBox[]): Destruction => {
-        const d = new Destruction(ctx, authoredStructure(boxes, { seed: SEEDS[name] ?? 1 }), tuning.maxBodies === undefined ? {} : { debris: { maxBodies: tuning.maxBodies } });
+        const d = new Destruction(ctx, authoredStructure(boxes, { seed: SEEDS[name] ?? 1 }), { sounds: SOUNDS, ...(tuning.maxBodies === undefined ? {} : { debris: { maxBodies: tuning.maxBodies } }) });
         scene.add(d.object);
         const off = d.systems().map((s) => entities.addSystem(s));
         d.events.on('hit', (h) => hurt(h.eid, h.momentum * DEBRIS_DAMAGE));
@@ -252,6 +257,9 @@ export function sliceScene(onApi: (api: SliceApi) => void, demo: SliceDemo = 'ya
       let deaths = 0;
 
       const cam = new ShoulderCamera({ aspect: ctx.renderer.aspect, far: 300 });
+      // Sounds are heard from the camera.
+      ctx.audio.setListenerCamera(cam.camera);
+      bag.add(() => ctx.audio.setListenerCamera(null));
       cam.setLook(Math.PI, -0.12); // facing +z, up the yard
       const occluder = (origin: THREE.Vector3, direction: THREE.Vector3, maxDistance: number): number | null =>
         physics.raycast(origin, direction, maxDistance, { excludeEid: player })?.distance ?? null;
@@ -476,6 +484,14 @@ export function sliceScene(onApi: (api: SliceApi) => void, demo: SliceDemo = 'ya
             count++;
           }
           return { drop: count > 0 ? sum / count : 0, inPlace, count };
+        },
+        listen: (on) => {
+          for (const d of structures.values()) d.listen(on);
+        },
+        heard: () => {
+          const out: Record<string, number> = {};
+          for (const d of structures.values()) for (const h of d.takeHeard()) out[h.name] = (out[h.name] ?? 0) + 1;
+          return out;
         },
       };
       onApi(api);
