@@ -11,6 +11,7 @@ A WebGPU-first browser game engine on Three.js (`three/webgpu`, TSL node materia
 - `apps/showcase` — a full demo built with the engine (a night street, a character, hostiles, gunplay, sound). The best worked example of every system.
 - `apps/benchmark` — the launcher menu plus one demo scene per engine system.
 - `apps/destruction` — the THE FINALS-style destruction sandbox on the engine's `Destruction` subsystem (ADR-011), with its feel, soak, clip and capture tools.
+- `apps/slice` — destruction in something shaped like a game: a Blender-authored yard of destructible buildings, a player, bots on a navmesh that follows the damage, checkpoints, and a probe (`docs/design/destruction-game-readiness.md`).
 - `tools/` — asset pipeline (glTF → optimised GLB), Blender level and character builds, audio generation and mastering, capture/thumbnail/visual/perf harnesses, `doctor`, `create-app`.
 - `docs/` — `guide/` (start here), `decisions/` (ADRs: why things are the way they are), `architecture/lessons-from-the-showcase.md` (what building a game taught the engine), design and audio notes.
 

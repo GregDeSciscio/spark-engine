@@ -109,8 +109,9 @@ apps/starter             the smallest complete app; `pnpm create-app` copies it
 apps/showcase            the demo game; `pnpm dev:showcase`
 apps/benchmark           the launcher and one scene per engine system; `pnpm dev`
 apps/destruction         the THE FINALS-style destruction sandbox (ADR-011); `pnpm dev:destruction`
+apps/slice               destruction in a game-shaped scene: authored buildings, bots, checkpoints; `pnpm dev:slice`
 tools/asset-pipeline     glTF → optimised GLB (dedup, meshopt, KTX2, budgets, navmesh bake); character build
-tools/level-authoring    Blender scripts: the street level, the character retarget
+tools/level-authoring    Blender scripts: the street level, the slice's yard, the character retarget
 tools/audio              sound generation (ElevenLabs) and mastering (ffmpeg) from a game's manifest
 tools/capture            headless boot, screenshots, thumbnails, visual goldens, perf
 assets/source            CC0 props, characters and the showcase's audio takes, with SOURCES.md notes

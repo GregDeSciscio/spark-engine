@@ -77,7 +77,37 @@ Reinforcements are built dormant at load and deployed with a pose, never instant
 5. **Each frame.** Copy the camera position into `destruction.listener` (the blast shake falls off from it) and add `destruction.shakeOffset` to the camera.
 6. **Things that hang.** `destruction.hang(body, piece, anchor, hook, length)` slings any dynamic body from a chunk on a rope that follows the chunk and is cut with it; blasts shove it, and it clangs when it hits something.
 
-Read `docs/decisions/ADR-011-destruction-subsystem.md` for the worker (bundling, CSP, the fallback) and `docs/architecture/lessons-from-destruction.md` for what the sandbox taught.
+## Destruction in a game
+
+`apps/slice` (`pnpm dev:slice`) is the reference: its `src/scene.ts` does each of these, and `tools/probe.mjs` checks them.
+
+1. **Buildings from the level.** In Blender, give each box of a building `spark.type = destructible`, `spark.structure = <name>` and `spark.piece = wall | slab | column` (`tools/level-authoring/yard.py`). Boxes glue where their faces meet, so snap them; give them no `COL_` twin. After `LevelLoader.load`, build one structure per name:
+
+   ```ts
+   for (const [name, boxes] of level.destructibles) {
+     const d = new Destruction(ctx, authoredStructure(boxes, { seed }));
+     scene.add(d.object);
+     for (const system of d.systems()) bag.add(ctx.entities.addSystem(system));
+   }
+   ```
+
+   Every structure in a physics world shares one strain worker and one debris budget, so ten buildings cost what the debris costs, not ten times it.
+2. **Explosions that cross buildings.** `Destruction.of(entities, hit.eid)` names the building a ray hit. For a blast, call `explode` on every structure whose `bounds` is within a few radii of the point. A grenade belongs to `Destruction.nearest(entities, point)`.
+3. **Damage.** `Destruction.watchHits(physics, eid, capsuleGrownBySomeCm)` for the player and each bot, then turn every structure's `hit` event (`eid`, `momentum`) into damage. Gas is `Destruction.densityAt(entities, 'gas', head)`. A character controller is kinematic, so a floor that lands on one rests on its head until the game takes it away: treat a heavy hit as lethal, or move the character out.
+4. **Bots.** Build the navmesh tiled, from your static geometry and every structure as it stands, and let structures tell it where they changed:
+
+   ```ts
+   const nav = Navigation.tiled((soup, min, max) => {
+     addStaticBoxes(soup, min, max);
+     for (const d of Destruction.all(entities)) d.navGeometry(soup, min, max);
+   }, bounds);
+   d.events.on('reshape', ({ min, max }) => nav.invalidate(min, max));
+   // each frame:
+   nav.update(1); // a tile costs a few ms; agents repath on their own cadence
+   ```
+5. **Checkpoints.** `d.save()` is plain data. To load, dispose the structures, build them afresh from the same pieces, and `restore()` each; rebuild the navmesh after.
+
+Read `docs/decisions/ADR-011-destruction-subsystem.md` for the worker (bundling, CSP, the fallback), `docs/architecture/lessons-from-destruction.md` for what the sandbox and the slice taught, and `docs/design/destruction-game-readiness.md` for what is still open.
 
 ## Probe a running game from the console
 

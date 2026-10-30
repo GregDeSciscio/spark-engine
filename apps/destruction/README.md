@@ -257,6 +257,6 @@ The collapse heaps differently: walls fold down in large panels instead of hangi
 ## Spike shortcuts still standing
 
 - ~~`debris.ts` and `hinges.ts` drive Rapier directly (`physics.raw`).~~ Gone: the engine's handle layer (ADR-010) has convex shapes, compound bodies, ropes and shape queries, and the runtime is an engine subsystem (ADR-011).
-- The buildings are procedural; the Blender pipeline (glTF extras for connections) replaces them when there are real assets.
+- ~~The buildings are procedural.~~ The sandbox's still are, but a level can now author them: `spark.type = destructible` boxes become a structure through `authoredStructure` (`apps/slice`, `tools/level-authoring/yard.py`).
 - The sound takes are checked for signature and in-game mix but not yet heard by a person (the synthesized set they replace was). Gas does no damage, since there is no player.
 - Broken faces are flat: their relief is shading, not geometry, and soot is one shade per chunk rather than a decal.
