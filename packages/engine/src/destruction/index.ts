@@ -41,8 +41,8 @@ export { Rebar } from './Rebar';
 export { DestructionFx, type FxDeps, type Heard } from './DestructionFx';
 export { GravelField } from './Gravel';
 export { SmokeSystem, type SmokeKind } from './Smoke';
-export { InlineStrainHost, WorkerStrainHost, type StrainHost } from './strain/StrainHost';
-export { StrainRunner, type StrainInit, type StrainReply, type StrainRequest, type StrainStep } from './strain/StrainRunner';
+export { InlineStrainHost, StrainWorkerPool, WorkerStrainHost, type StrainHost } from './strain/StrainHost';
+export { StrainRunner, type StrainAnswer, type StrainEnvelope, type StrainInit, type StrainReply, type StrainRequest, type StrainStep } from './strain/StrainRunner';
 
 // The engine-agnostic core: fracture, contacts, the strain solve. Plain typed arrays, no three, no Rapier.
 export { prism, type Face as PieceFace, type Frame as PieceFrame, type Piece, type PieceKind, type PrismSpec, type Surface as PieceSurface } from './core/pieces';

@@ -11,6 +11,7 @@ import type { System } from '../ecs/System';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
 import type { BodyHandle, JointHandle, Vec3Like } from '../physics/types';
 import type { ParticleSystem } from '../vfx/ParticleSystem';
+import { budgetsOf } from './Budget';
 import { ChunkMesh } from './ChunkMesh';
 import { Destructible } from './components';
 import { findConnections, type Connection } from './core/connections';
@@ -24,7 +25,7 @@ import { Hinges, type HingeOptions } from './Hinges';
 import { Rebar } from './Rebar';
 import { SmokeSystem, type SmokeKind } from './Smoke';
 import type { DestructionSounds } from './sounds';
-import { InlineStrainHost, WorkerStrainHost, type StrainHost, type StrainInit, type StrainStep } from './strain/StrainHost';
+import { InlineStrainHost, StrainWorkerPool, WorkerStrainHost, type StrainHost, type StrainInit, type StrainStep } from './strain/StrainHost';
 
 /**
  * Fixed-stage and late-stage orders of `Destruction.systems()`. The fixed
@@ -368,8 +369,10 @@ export class Destruction implements Disposable {
     this.rebar = new Rebar(connections);
     this.object.add(this.rebar.stubs, this.rebar.spans);
     this.chunks.onMove = (p, m) => this.rebar.follow(p, m);
-    this.debris = new Debris(this.physics, this.entity, pieces, options.debris, this.random.fork());
-    this.hinges = new Hinges(this.debris, connections, pieces, options.hinges);
+    // Every structure in the physics world draws on the same budgets: a level's buildings share what Rapier can afford.
+    const budgets = budgetsOf(this.physics);
+    this.debris = new Debris(this.physics, this.entity, pieces, options.debris, this.random.fork(), budgets.bodies);
+    this.hinges = new Hinges(this.debris, connections, pieces, options.hinges, budgets.links);
     this.smokes = new SmokeSystem(this.debris, pieces);
     this.object.add(this.smokes.object);
     this.gravel = new GravelField(this.physics, this.random.fork());
@@ -395,7 +398,8 @@ export class Destruction implements Disposable {
     if (options.worker === false || fixedClock || typeof Worker === 'undefined') {
       this.host = new InlineStrainHost();
     } else {
-      const host = new WorkerStrainHost();
+      // One worker per physics world, shared by its structures (each keeps its own solver in it).
+      const host = new WorkerStrainHost(StrainWorkerPool.of(this.physics));
       host.onFallback = (reason) => this.logger?.warn(`destruction: ${reason}; solving strain on the main thread`);
       this.host = host;
     }

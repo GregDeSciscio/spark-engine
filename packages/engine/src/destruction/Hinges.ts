@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import type { BodyHandle, JointHandle, QuatLike, Vec3Like } from '../physics/types';
+import { SharedBudget, type BudgetMember } from './Budget';
 import { GROUND, type Connection } from './core/connections';
 import type { Piece } from './core/pieces';
 import { STANDING, type Debris } from './Debris';
@@ -110,8 +111,10 @@ function poseToWorld(pose: { t: Vec3Like; r: QuatLike }, local: THREE.Vector3, o
   return out.copy(local).applyQuaternion(_q.set(r.x, r.y, r.z, r.w)).add(_w.set(t.x, t.y, t.z));
 }
 
-export class Hinges {
+export class Hinges implements BudgetMember {
   readonly options: HingeSettings;
+  /** The link budget, shared with every structure in the physics world (`budgetsOf`), or its own. */
+  private readonly budget: SharedBudget;
   private readonly debris: Debris;
   private readonly connections: readonly Connection[];
   private readonly pieces: readonly Piece[];
@@ -140,10 +143,12 @@ export class Hinges {
   /** The hardest-worked link to fixed structure this step: its load over its strength (0: nothing hangs), and where. */
   readonly strain = { ratio: 0, at: new THREE.Vector3() };
 
-  constructor(debris: Debris, connections: readonly Connection[], pieces: readonly Piece[], options: HingeOptions = {}) {
+  constructor(debris: Debris, connections: readonly Connection[], pieces: readonly Piece[], options: HingeOptions = {}, budget: SharedBudget = new SharedBudget()) {
     const o = { ...DEFAULT_HINGES };
     for (const k of Object.keys(o) as Array<keyof HingeSettings>) o[k] = options[k] ?? o[k];
     this.options = o;
+    this.budget = budget;
+    budget.join(this);
     this.debris = debris;
     this.connections = connections;
     this.pieces = pieces;
@@ -151,6 +156,16 @@ export class Hinges {
 
   get linkCount(): number {
     return this.links.size;
+  }
+
+  /** @internal `BudgetMember`: links held, and the most wanted alone. */
+  get budgetCount(): number {
+    return this.links.size;
+  }
+
+  /** @internal */
+  get budgetWanted(): number {
+    return this.options.maxLinks;
   }
 
   get liveHinges(): number {
@@ -413,8 +428,8 @@ export class Hinges {
       this.dropLink(old);
       this.links.delete(key);
     }
-    if (this.links.size >= this.options.maxLinks) {
-      // Over budget: these just let go.
+    if (this.budget.full()) {
+      // Over budget (shared with the world's other structures): these just let go.
       for (const h of hs) {
         h.alive = false;
         this.unkey(h, null);
@@ -580,6 +595,7 @@ export class Hinges {
   }
 
   dispose(): void {
+    this.budget.leave(this);
     for (const link of this.links.values()) this.dropLink(link);
     this.links.clear();
   }

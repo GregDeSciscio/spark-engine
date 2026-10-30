@@ -29,6 +29,16 @@ export type StrainRequest =
 
 export type StrainReply = { type: 'init'; info: StrainInit } | { type: 'step'; step: StrainStep };
 
+/**
+ * One worker carries every structure of a physics world (`StrainWorkerPool`): a request names the
+ * structure's solver by `id`, and `drop` frees it. Answers come back with the same `id`, in order.
+ */
+export type StrainEnvelope = { id: number; msg: StrainRequest } | { id: number; drop: true };
+export interface StrainAnswer {
+  id: number;
+  reply: StrainReply;
+}
+
 export class StrainRunner {
   private solver: StrainSolver | null = null;
 

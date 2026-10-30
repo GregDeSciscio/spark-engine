@@ -3,6 +3,7 @@ import { Random } from '../core/Random';
 import type { Entity } from '../ecs/EntityWorld';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
 import type { BodyHandle, ColliderHandle, QuatLike, Vec3Like } from '../physics/types';
+import { SharedBudget, type BudgetMember } from './Budget';
 import type { Piece } from './core/pieces';
 
 /**
@@ -233,8 +234,10 @@ const _av: Vec3Like = { x: 0, y: 0, z: 0 };
 const _where = new THREE.Matrix4();
 const _at = new THREE.Vector3();
 
-export class Debris {
+export class Debris implements BudgetMember {
   readonly options: DebrisSettings;
+  /** The body budget, shared with every structure in the physics world (`budgetsOf`), or its own. */
+  private readonly budget: SharedBudget;
   readonly physics: PhysicsWorld;
   /** The structure's entity: owner of every collider here. */
   readonly owner: Entity;
@@ -313,10 +316,12 @@ export class Debris {
   /** Chunks per authored element: how much of a wall a body still holds (`upright`). */
   private readonly elementSize = new Map<number, number>();
 
-  constructor(physics: PhysicsWorld, owner: Entity, pieces: readonly Piece[], options: DebrisOptions = {}, random: Random = new Random(1)) {
+  constructor(physics: PhysicsWorld, owner: Entity, pieces: readonly Piece[], options: DebrisOptions = {}, random: Random = new Random(1), budget: SharedBudget = new SharedBudget()) {
     const o = { ...DEFAULT_DEBRIS };
     for (const k of Object.keys(o) as Array<keyof DebrisSettings>) o[k] = options[k] ?? o[k];
     this.options = o;
+    this.budget = budget;
+    budget.join(this);
     this.physics = physics;
     this.owner = owner;
     this.pieces = pieces;
@@ -374,6 +379,16 @@ export class Debris {
 
   get bodyCount(): number {
     return this.bodies.size;
+  }
+
+  /** @internal `BudgetMember`: bodies held, and the most wanted alone. */
+  get budgetCount(): number {
+    return this.bodies.size;
+  }
+
+  /** @internal */
+  get budgetWanted(): number {
+    return this.options.maxBodies;
   }
 
   get sleepingCount(): number {
@@ -977,12 +992,13 @@ export class Debris {
     this.checkWatched();
     this.dropUnheld();
     this.recheckRubble();
-    if (this.bodies.size > this.options.maxBodies) {
-      // Over budget: settle the stillest, oldest bodies where they are (rubble stays; nothing vanishes), if
+    const budget = this.budget;
+    if (budget.excess(this) > 0) {
+      // Over budget (this structure's share of it, when several share it): settle the stillest, oldest bodies where they are (rubble stays; nothing vanishes), if
       // they lie on something. Settled wherever they were, bodies still falling froze in mid-air. On other
       // debris is fine: when that goes, the loss of support is seen and they fall again.
       const order = [...this.bodies.values()].filter((b) => this.canPile(b.id)).sort((a, b) => a.motion - b.motion || a.born - b.born);
-      let excess = this.bodies.size - this.options.maxBodies;
+      let excess = budget.excess(this);
       let queries = BUDGET_QUERIES;
       for (const b of order) {
         if (excess <= 0 || queries <= 0) break;
@@ -1001,7 +1017,7 @@ export class Debris {
       }
       // A quarter over: hinges let go of what they have held longest, a few a step; it falls, lands and
       // can settle. Clearing the oldest there took a hundred bodies away at once, mid-fall.
-      if (this.bodies.size > this.options.maxBodies * 1.25) {
+      if (budget.excess(this, 1.25) > 0) {
         let n = LET_GO;
         for (const b of [...this.bodies.values()].sort((a, c) => a.born - c.born)) {
           if (n <= 0) break;
@@ -1011,10 +1027,10 @@ export class Debris {
         }
       }
       // Far over (a whole street coming down at once): the oldest go.
-      const cap = Math.floor(this.options.maxBodies * HARD_CAP);
-      if (this.bodies.size > cap) {
+      const cut = budget.excess(this, HARD_CAP);
+      if (cut > 0) {
         const byAge = [...this.bodies.values()].sort((a, b) => a.born - b.born);
-        for (const b of byAge.slice(0, this.bodies.size - cap)) this.clear(b);
+        for (const b of byAge.slice(0, cut)) this.clear(b);
       }
     }
   }
@@ -1369,6 +1385,7 @@ export class Debris {
 
   /** Every body this layer made goes, with its colliders and joints. */
   dispose(): void {
+    this.budget.leave(this);
     for (const b of [...this.bodies.values()]) this.removeBody(b);
     this.physics.bodies.destroy(this.building);
     this.physics.bodies.destroy(this.rubble);
