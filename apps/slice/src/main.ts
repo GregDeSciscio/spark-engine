@@ -1,5 +1,5 @@
 import { Engine, configFromSearch, exposeForCapture } from '@spark/engine';
-import { sliceScene } from './scene';
+import { sliceScene, type SliceDemo } from './scene';
 
 /**
  * Boot Spark into the destruction slice. Spark's shared URL options apply
@@ -15,7 +15,9 @@ async function main(): Promise<void> {
   try {
     await engine.initialize();
     api.backend = engine.renderer.capabilities.backend;
-    await engine.loadScene(sliceScene((game) => (api.game = game)));
+    // `?scene=slice-collapse` puts the perf barrage on the clock (pnpm perf); anything else is the yard.
+    const demo: SliceDemo = new URLSearchParams(location.search).get('scene') === 'slice-collapse' ? 'collapse' : 'yard';
+    await engine.loadScene(sliceScene((game) => (api.game = game), demo));
     engine.start();
     api.ready = true;
   } catch (error) {

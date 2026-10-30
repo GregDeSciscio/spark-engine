@@ -108,7 +108,42 @@ export interface SliceApi {
   drop(structure: string, aboveY: number): { drop: number; inPlace: number; count: number };
 }
 
-export function sliceScene(onApi: (api: SliceApi) => void): SceneDefinition {
+/**
+ * What `pnpm perf` runs (`?scene=slice-yard` or `slice-collapse`): `yard`, the yard standing with the bots on patrol; `collapse`, the
+ * same with the probe's barrage on the clock (the tower's ground storey at 2 s, four rockets into the
+ * depot at 3 s, three into the shed at 4 s), so the perf window holds three buildings coming down.
+ */
+export type SliceDemo = 'yard' | 'collapse';
+
+/** The perf barrage, as (sim seconds, what) pairs. */
+const COLLAPSE: ReadonlyArray<readonly [number, (api: SliceApi) => void]> = [
+  [2, (g) => g.removeBox('tower', [8.5, 0, 5.5], [17.5, 2.8, 14.5])],
+  [
+    3,
+    (g) => {
+      for (const [x, y, z] of [
+        [-17, 1.4, 2.2],
+        [-11, 1.4, 2.2],
+        [-14, 4.6, 2.2],
+        [-19.8, 1.4, 6],
+      ] as const)
+        g.explode(x, y, z, 1.8);
+    },
+  ],
+  [
+    4,
+    (g) => {
+      for (const [x, z] of [
+        [0, -18.4],
+        [2.5, -18],
+        [4, -17],
+      ] as const)
+        g.explode(x, 1.4, z, 2.4);
+    },
+  ],
+];
+
+export function sliceScene(onApi: (api: SliceApi) => void, demo: SliceDemo = 'yard'): SceneDefinition {
   return {
     name: 'slice',
     async create(ctx): Promise<SceneInstance> {
@@ -368,7 +403,7 @@ export function sliceScene(onApi: (api: SliceApi) => void): SceneDefinition {
         };
       };
       const corners: Array<{ x: number; y: number; z: number }> = [];
-      onApi({
+      const api: SliceApi = {
         stats,
         explode: (x, y, z, radius) => explodeAt(new THREE.Vector3(x, y, z), null, radius ?? ROCKET_RADIUS),
         removeBox: (name, min, max) => {
@@ -434,7 +469,9 @@ export function sliceScene(onApi: (api: SliceApi) => void): SceneDefinition {
           }
           return { drop: count > 0 ? sum / count : 0, inPlace, count };
         },
-      });
+      };
+      onApi(api);
+      let barrage = demo === 'collapse' ? 0 : COLLAPSE.length;
 
       logger.info(`slice: ${structures.size} structures (${[...structures.keys()].join(', ')}), ${bots.length} bots, ${patrol.length} patrol points`);
       const move = { x: 0, y: 0, z: 0 };
@@ -471,6 +508,7 @@ export function sliceScene(onApi: (api: SliceApi) => void): SceneDefinition {
 
         fixedUpdate(dt): void {
           clock += dt;
+          while (barrage < COLLAPSE.length && clock >= COLLAPSE[barrage]![0]) COLLAPSE[barrage++]![1](api);
           cam.groundForward(fwd);
           cam.groundRight(right);
           const strafe = input.axis('KeyA', 'KeyD');

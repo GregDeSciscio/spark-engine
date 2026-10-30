@@ -49,6 +49,18 @@
       "scene": "mission",
       "backend": "webgpu",
       "preset": "high"
+    },
+    {
+      "app": "slice",
+      "scene": "slice-yard",
+      "backend": "webgpu",
+      "preset": "high"
+    },
+    {
+      "app": "slice",
+      "scene": "slice-collapse",
+      "backend": "webgpu",
+      "preset": "high"
     }
   ]
 }
