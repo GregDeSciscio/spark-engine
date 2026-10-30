@@ -25,6 +25,7 @@ pnpm check:sounds # each sound take against the acoustic signature it should hav
 pnpm clip         # a 20 s MP4 of the bridge, the smoke and a collapse, with the game's sound mixed in on the same clock → captures/clip.mp4 + clip.wav + clip-sounds.json (what played when; needs ffmpeg)
 pnpm collapse     # a collapse frame by frame on a fixed clock: frame and Rapier time, the worst frames, the sandbox's stats at checkpoints (--scenario, --frames, --lead)
 pnpm tower        # the eight-storey tower brought down: stills on a fixed clock (captures/tower-*.png), the loose debris census, and real-time frame pacing with the solve in the worker
+pnpm blur         # motion blur on against off at preset=ultra, camera still (a falling tower, settled rubble, smoke): fails if blur ghosts anything, i.e. a material placing its own vertices with no previous position for the velocity pass
 ```
 
 The commands without a "(root)" run in `apps/destruction`.

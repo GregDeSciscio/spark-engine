@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
-import { attribute, bumpMap, float, Fn, int, ivec2, mat4, mix, mx_fractal_noise_float, mx_noise_float, mx_worley_noise_float, normalLocal, normalView, positionGeometry, smoothstep, textureLoad, varying, vec3, vec4 } from 'three/tsl';
+import { attribute, bumpMap, float, Fn, int, ivec2, mat4, mix, mx_fractal_noise_float, mx_noise_float, mx_worley_noise_float, normalLocal, normalView, positionGeometry, positionPrevious, smoothstep, textureLoad, varying, vec3, vec4 } from 'three/tsl';
+import { writesVelocity } from '../rendering/Velocity';
 import { rng } from './core/math';
 import type { Piece, Surface } from './core/pieces';
 
@@ -48,6 +49,11 @@ interface ChunkPool {
   readonly matrices: THREE.DataTexture;
   readonly matrixData: Float32Array;
   readonly matrixWidth: number;
+  /** Last frame's matrices, laid out as `matrices`: where each chunk was, for the velocity pass (motion blur, TAA). */
+  readonly previous: THREE.DataTexture;
+  readonly previousData: Float32Array;
+  /** Set when a pass that reads velocity builds the material: only then is `previous` kept up. */
+  velocity: boolean;
   readonly tints: THREE.DataTexture;
   readonly tintData: Float32Array;
   readonly tintWidth: number;
@@ -77,12 +83,18 @@ function floatTexture(texels: number, multiple: number): { texture: THREE.DataTe
  * Each vertex carries its chunk's id: the vertex stage reads the chunk's
  * matrix and tint from `pool`. The shadow passes take the material's
  * `positionNode` too, so shadows move with the chunks.
+ *
+ * A pass that writes velocity (motion blur, TAA) also gets where the vertex
+ * was last frame, from `pool.previous`, as three's instancing does
+ * (`rendering/Velocity.ts`). Left alone, the previous position is the raw
+ * `position` (the rest pose), and every chunk that has moved blurs back
+ * toward where it stood.
  */
 function concreteMaterial(pool: ChunkPool): THREE.MeshStandardNodeMaterial {
   const m = new THREE.MeshStandardNodeMaterial({ vertexColors: true, metalness: 0 });
   const chunk = int(attribute('chunk', 'float') as unknown as ReturnType<typeof float>);
   const mw = int(pool.matrixWidth);
-  m.positionNode = Fn(() => {
+  m.positionNode = Fn((builder) => {
     const j = chunk.mul(4).toConst();
     const x = j.mod(mw).toConst();
     const y = j.div(mw).toConst();
@@ -90,6 +102,14 @@ function concreteMaterial(pool: ChunkPool): THREE.MeshStandardNodeMaterial {
     const c1 = textureLoad(pool.matrices, ivec2(x.add(1), y)).toConst();
     const c2 = textureLoad(pool.matrices, ivec2(x.add(2), y)).toConst();
     const c3 = textureLoad(pool.matrices, ivec2(x.add(3), y)).toConst();
+    if (writesVelocity(builder)) {
+      pool.velocity = true;
+      const p0 = textureLoad(pool.previous, ivec2(x, y));
+      const p1 = textureLoad(pool.previous, ivec2(x.add(1), y));
+      const p2 = textureLoad(pool.previous, ivec2(x.add(2), y));
+      const p3 = textureLoad(pool.previous, ivec2(x.add(3), y));
+      positionPrevious.assign(mat4(p0, p1, p2, p3).mul(vec4(positionPrevious, 1)).xyz);
+    }
     // Normals by the inverse transpose of a rotation and scale: each axis (column) over its squared length.
     const n = normalLocal;
     normalLocal.assign(
@@ -142,6 +162,8 @@ export class ChunkMesh {
   /** Per chunk: where it is (rest → world, 16 floats) whether shown or not, and whether it is shown. */
   private readonly poses: Float32Array;
   private readonly shown: Uint8Array;
+  /** A drawn matrix changed since `previous` last caught up. */
+  private moved = false;
   /** Per chunk: scale about its centroid to the size of its (shrunk) loose collision hull. */
   private readonly shrink: THREE.Matrix4[];
   private readonly tmpM = new THREE.Matrix4();
@@ -182,8 +204,19 @@ export class ChunkMesh {
     geometry.setAttribute('chunk', new THREE.BufferAttribute(chunk, 1));
 
     const matrices = floatTexture(n * 4, 4);
+    const previous = floatTexture(n * 4, 4);
     const tints = floatTexture(n, 1);
-    this.pool = { matrices: matrices.texture, matrixData: matrices.data, matrixWidth: matrices.width, tints: tints.texture, tintData: tints.data, tintWidth: tints.width };
+    this.pool = {
+      matrices: matrices.texture,
+      matrixData: matrices.data,
+      matrixWidth: matrices.width,
+      previous: previous.texture,
+      previousData: previous.data,
+      velocity: false,
+      tints: tints.texture,
+      tintData: tints.data,
+      tintWidth: tints.width,
+    };
     this.poses = new Float32Array(n * 16);
     this.shown = new Uint8Array(n).fill(1);
     const identity = new THREE.Matrix4();
@@ -191,6 +224,7 @@ export class ChunkMesh {
       identity.toArray(this.poses, i * 16);
       identity.toArray(this.pool.matrixData, i * 16);
     }
+    this.pool.previousData.set(this.pool.matrixData);
     this.pool.tintData.fill(1);
     this.mesh = new THREE.Mesh(geometry, concreteMaterial(this.pool));
     this.mesh.castShadow = true;
@@ -209,6 +243,19 @@ export class ChunkMesh {
     matrix.toArray(this.poses, piece * 16);
     if (this.shown[piece]) matrix.toArray(this.pool.matrixData, piece * 16);
     this.pool.matrices.needsUpdate = true;
+    this.moved = true;
+  }
+
+  /**
+   * Once a rendered frame, before that frame's chunk matrices are written: what was drawn last
+   * frame becomes the previous pose the velocity pass (motion blur, TAA) measures motion from.
+   * Costs nothing unless a pass reads velocity, and nothing in a frame where no chunk moved.
+   */
+  beginFrame(): void {
+    if (!this.pool.velocity || !this.moved) return;
+    this.pool.previousData.set(this.pool.matrixData);
+    this.pool.previous.needsUpdate = true;
+    this.moved = false;
   }
 
   /** Move a chunk that is still standing (a dent): full size, no hull scaling. */
@@ -230,9 +277,15 @@ export class ChunkMesh {
   setVisible(piece: number, visible: boolean): void {
     this.shown[piece] = visible ? 1 : 0;
     const o = piece * 16;
-    if (visible) this.pool.matrixData.set(this.poses.subarray(o, o + 16), o);
-    else this.pool.matrixData.fill(0, o, o + 16);
+    if (visible) {
+      const pose = this.poses.subarray(o, o + 16);
+      this.pool.matrixData.set(pose, o);
+      // Its previous matrix is the hidden one, all zeros (w = 0, no velocity to speak of): start it still.
+      this.pool.previousData.set(pose, o);
+      this.pool.previous.needsUpdate = true;
+    } else this.pool.matrixData.fill(0, o, o + 16);
     this.pool.matrices.needsUpdate = true;
+    this.moved = true;
     if (!visible) this.onMove?.(piece, null);
   }
 
@@ -268,6 +321,7 @@ export class ChunkMesh {
     this.mesh.geometry.dispose();
     this.mesh.material.dispose();
     this.pool.matrices.dispose();
+    this.pool.previous.dispose();
     this.pool.tints.dispose();
   }
 }

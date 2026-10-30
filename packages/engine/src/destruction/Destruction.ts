@@ -1027,6 +1027,7 @@ export class Destruction implements Disposable {
     if (this.tick % 30 === 0 && debris.bodyCount - debris.sleepingCount > 0) this.smokes.markDirty();
     this.smokes.update(dt);
     debris.guard();
+    chunks.beginFrame(); // last frame's poses become the velocity pass's previous ones
     debris.writeMatrices((p, m, alone) => chunks.setMatrix(p, m, alone));
 
     // The ropes.

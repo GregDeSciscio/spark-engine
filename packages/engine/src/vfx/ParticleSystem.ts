@@ -51,6 +51,7 @@ import type { Entity, EntityWorld } from '../ecs/EntityWorld';
 import { SideTable } from '../ecs/SideTable';
 import type { System } from '../ecs/System';
 import type { SparkRenderer } from '../rendering/Renderer';
+import { withoutOwnMotion } from '../rendering/Velocity';
 import {
   CURVE_SAMPLES,
   HASH_GENERATION_MUL,
@@ -705,7 +706,7 @@ export class ParticleSystem implements System {
       ownedMaterial = sprite;
       material = sprite;
       sourceGeometry = new ParticleQuadGeometry();
-      sprite.positionNode = center;
+      sprite.positionNode = withoutOwnMotion(center);
       const corner = positionGeometry.xy;
       const mvCenter = modelViewMatrix.mul(vec4(center, 1)).xyz;
       let offset: V2;
@@ -769,7 +770,7 @@ export class ParticleSystem implements System {
         local = basis.mul(local);
         normal = basis.mul(normal);
       }
-      material.positionNode = center.add(local);
+      material.positionNode = withoutOwnMotion(center.add(local));
       material.normalNode = transformNormalToView(normal);
       const baseColor = (material.colorNode as unknown as V4 | null) ?? null;
       material.colorNode = baseColor ? vec4(baseColor).mul(lifeColor) : lifeColor;
@@ -826,7 +827,9 @@ class ParticleQuadGeometry extends THREE.PlaneGeometry {
  * Unlit sprite material whose view-space position is assembled per instance
  * from the particle buffers (camera-facing quad, optional velocity stretch).
  * `positionNode` carries the particle centre so `positionWorld`, fog and the
- * velocity MRT all see the particle rather than the quad's local corner.
+ * velocity MRT all see the particle rather than the quad's local corner (its
+ * previous position too: `withoutOwnMotion`, so particles blur only with the
+ * camera; streaks already stretch along their velocity).
  */
 class ParticleSpriteMaterial extends THREE.MeshBasicNodeMaterial {
   viewPositionNode: THREE.Node | null = null;

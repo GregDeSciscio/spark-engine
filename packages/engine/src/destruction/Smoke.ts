@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { cos, float, instancedBufferAttribute, instancedDynamicBufferAttribute, sin, smoothstep, time, uniform, uv, vec3 } from 'three/tsl';
+import { withoutOwnMotion } from '../rendering/Velocity';
 import type { Piece } from './core/pieces';
 import { GONE, STANDING, type Debris } from './Debris';
 
@@ -284,7 +285,8 @@ export class SmokeSystem {
       const material = new THREE.SpriteNodeMaterial({ transparent: true, depthWrite: false });
       const drift = vec3(sin(time.mul(0.55).add(phase)), sin(time.mul(0.4).add(phase.mul(1.7))).mul(0.6), cos(time.mul(0.5).add(phase.mul(2.3)))).mul(0.16);
       const at = instancedDynamicBufferAttribute(pos) as unknown as Vec3Node;
-      material.positionNode = at.add(drift);
+      // No motion of its own for motion blur: the drift is slow, and without it every sprite smears from the origin.
+      material.positionNode = withoutOwnMotion(at.add(drift));
       material.scaleNode = float(1.15).add(sin(time.mul(0.3).add(phase)).mul(0.15));
       const soft = smoothstep(float(0.5), float(0.05), uv().sub(0.5).length());
       // Shade so it reads as a volume, not a flat fill: darker low down and in the folds

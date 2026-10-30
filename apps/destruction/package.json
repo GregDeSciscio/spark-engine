@@ -18,7 +18,8 @@
     "check:sounds": "python -I tools/sound_signatures.py public/sfx",
     "sfx": "python -I tools/prepare_sfx.py",
     "clip": "node tools/clip.mjs",
-    "tower": "node tools/tower.mjs"
+    "tower": "node tools/tower.mjs",
+    "blur": "node tools/blur.mjs"
   },
   "dependencies": {
     "@spark/engine": "workspace:*",
