@@ -1,9 +1,11 @@
+import * as THREE from 'three/webgpu';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { Random } from '../src/core/Random';
 import { Transform } from '../src/ecs/components/Transform';
 import { EntityWorld } from '../src/ecs/EntityWorld';
 import { authoredStructure, fractureBoxes, type PieceBox } from '../src/destruction/core/authored';
 import { GROUND } from '../src/destruction/core/connections';
+import { GONE } from '../src/destruction/Debris';
 import { Destruction } from '../src/destruction/Destruction';
 import { PhysicsWorld, initRapier } from '../src/physics/PhysicsWorld';
 import { createPhysicsSystems } from '../src/physics/systems';
@@ -148,7 +150,12 @@ describe('an authored building', () => {
       const s = r.d.stats();
       expect(s.standing).toBeLessThan(r.d.pieces.length / 10);
       expect(s.sanity.nonFinite).toBe(0);
-      expect(s.sanity.minY).toBeGreaterThan(groundY - 0.5);
+      // Nothing through the ground it stood on, loose or settled.
+      const m = new THREE.Matrix4();
+      for (const p of r.d.pieces) {
+        if (r.d.debris.state[p.id] === GONE) continue;
+        expect(new THREE.Vector3(...p.centroid).applyMatrix4(r.d.debris.restToWorld(p.id, m)).y).toBeGreaterThan(groundY - 0.5);
+      }
       r.dispose();
     }
   }, 60_000);

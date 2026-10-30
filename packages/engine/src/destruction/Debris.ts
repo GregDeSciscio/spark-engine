@@ -96,6 +96,8 @@ const HARD_CAP = 1.5;
 const BREAK_COLLIDERS_PER_STEP = 64;
 /** A body falling at least this fast (m/s) that one step slows by at least as much has landed on something. */
 const LANDING = 2.5;
+/** The most a body coming down fast may leave an impact upward (m/s), or a tenth of its fall speed if more. */
+const BOUNCE = 1;
 const FRICTION = 0.8;
 const RESTITUTION = 0.05;
 /** Contact force (N) on a standing chunk worth reporting (`PhysicsWorld.contactForces`): about a tonne. */
@@ -282,7 +284,7 @@ export class Debris implements BudgetMember {
   private tick = 0;
   private nextBodyId = 0;
   /** Bodies created, split, settled and cleared, for the HUD; `dropped`: rubble chunks that lost their last path to the ground and fell. */
-  readonly counters = { created: 0, shattered: 0, piled: 0, cleared: 0, crushed: 0, flung: 0, sunk: 0, dropped: 0 };
+  readonly counters = { created: 0, shattered: 0, piled: 0, cleared: 0, crushed: 0, flung: 0, sunk: 0, dropped: 0, bounced: 0 };
   /** The latest flings, for the soak and probes. */
   readonly flings: Fling[] = [];
   /** Bodies seen going through the floor, for the soak: how they came loose, how old, how fast. */
@@ -964,6 +966,17 @@ export class Debris implements BudgetMember {
         landedMass += mass;
         const hit = mass * (v.y - b.lastVel.y);
         if (hit > landedHit) [landed, landedHit, landedSpeed] = [b, hit, -b.lastVel.y];
+      }
+      // Concrete doesn't bounce. A storey coming down onto the slab that had just stopped under it was
+      // pushed back out of it at nearly the speed it fell, every wall at once, and the top rose a metre
+      // or two before it fell again (apps/slice's probe timed it). Coming down fast, a body leaves the
+      // impact upward at no more than a tenth of its fall speed, or a metre a second. The impact above
+      // (jolt, landing, shatter) was read from the speed it really had.
+      const rebound = Math.max(BOUNCE, -b.lastVel.y * 0.1);
+      if (b.lastVel.y < -LANDING && v.y > rebound) {
+        v.y = rebound;
+        bodies.setVelocity(b.body, v);
+        this.counters.bounced++;
       }
       b.lastVel.copy(v);
       b.motion = v.length() + spin * 0.5;

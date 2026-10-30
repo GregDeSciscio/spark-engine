@@ -217,6 +217,38 @@ describe('Destruction', () => {
     r.dispose();
   }, 60_000);
 
+  it('a top that lands on the storey under it does not bounce back up', async () => {
+    // The slice's probe saw a two-storey building's top come down a storey, then rise 2.9 m, all but
+    // back where it was built, before it fell again: its walls were pushed out of the slab that had
+    // just stopped under them at nearly the speed they fell. Concrete doesn't bounce.
+    const r = await rig();
+    const d = new Destruction({ entities: r.entities, physics: r.physics, random: new Random(7) }, { pieces: buildBuilding({ floors: 2, columnSpacing: 4 }).pieces });
+    for (const s of d.systems()) r.entities.addSystem(s);
+    r.frames(5);
+    d.remove(d.pieces.filter((p) => p.max[1] < 3.0 && p.kind !== 'slab').map((p) => p.id));
+    const top = d.pieces.filter((p) => p.min[1] > 3.1);
+    const m = new THREE.Matrix4();
+    let lowest = Infinity;
+    let rise = 0;
+    for (let f = 0; f < 240; f++) {
+      r.frames(1);
+      let sum = 0;
+      let n = 0;
+      for (const p of top) {
+        if (d.debris.state[p.id] === GONE) continue;
+        sum += new THREE.Vector3(...p.centroid).applyMatrix4(d.debris.restToWorld(p.id, m)).y - p.centroid[1];
+        n++;
+      }
+      const y = sum / n;
+      lowest = Math.min(lowest, y);
+      rise = Math.max(rise, y - lowest);
+    }
+    expect(d.stats().debris.bounced).toBeGreaterThan(0);
+    expect(lowest).toBeLessThan(-3);
+    expect(rise).toBeLessThan(0.5);
+    r.dispose();
+  }, 60_000);
+
   it('runs the same whatever the listener does: the camera never reaches the simulation', async () => {
     // A showcase film's fixed-clock replay with a different camera path came out different. The
     // camera's one way in is the listener (blast shake, sound); the same blasts with the listener
