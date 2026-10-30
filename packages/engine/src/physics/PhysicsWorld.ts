@@ -4,7 +4,7 @@ import { EventEmitter } from '../core/Events';
 import { Transform } from '../ecs/components/Transform';
 import type { Entity, EntityWorld } from '../ecs/EntityWorld';
 import { SideTable } from '../ecs/SideTable';
-import { Bodies, queryShapeFor, type BodyRecord } from './Bodies';
+import { Bodies, queryShapeFor, type BodyRecord, type ColliderRecord } from './Bodies';
 import { BODY_TYPE, RigidBody, type BodyType } from './components';
 import { Joints } from './Joints';
 import { Layers, type LayerSpec } from './Layers';
@@ -636,6 +636,11 @@ export class PhysicsWorld implements Disposable {
    * handle to test its own shape somewhere else (e.g. a little lower, to ask
    * whether something holds it up); pass it as `excludeCollider` too so it
    * does not find itself. Returns how many colliders were visited.
+   *
+   * `visit` runs after Rapier's query has finished, so it may change the world
+   * (destroy what it found, kill a character it hit). Changed inside Rapier's
+   * own callback, a body's collider stayed in Rapier's set after the JS side
+   * had forgotten it: an invisible collider things still hit.
    */
   overlapShape(shape: ShapeDesc | ColliderHandle, pose: Pose, visit: OverlapVisitor, options: OverlapOptions = {}): number {
     this.assertLive();
@@ -648,16 +653,15 @@ export class PhysicsWorld implements Disposable {
       query = queryShapeFor(shape);
     }
     const filter = this.prepareFilter(options.excludeEid, options.excludeBody, options.excludeCollider);
-    let visited = 0;
+    const found: ColliderRecord[] = [];
     this.raw.intersectionsWithShape(
       pose.position,
       pose.rotation ?? _identity,
       query,
       (collider) => {
         const rec = this.bodies.ofRapier(collider.handle);
-        if (!rec?.alive) return true;
-        visited += 1;
-        return visit(rec.id, rec.owner, rec.part) !== false;
+        if (rec?.alive) found.push(rec);
+        return true;
       },
       options.includeSensors ? undefined : RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
       this.layers.queryGroups(options.layers ?? 'all'),
@@ -665,6 +669,13 @@ export class PhysicsWorld implements Disposable {
       filter.body,
       filter.predicate,
     );
+    let visited = 0;
+    for (const rec of found) {
+      // An earlier visit may have removed it.
+      if (!rec.alive) continue;
+      visited += 1;
+      if (visit(rec.id, rec.owner, rec.part) === false) break;
+    }
     return visited;
   }
 
@@ -673,7 +684,7 @@ export class PhysicsWorld implements Disposable {
    * collider made with `forceEvents` pushed harder than its threshold: one
    * `visit` per pair. Read them between steps; the next step drops what was
    * not read. A sleeping body's contacts are not solved, so they report
-   * nothing.
+   * nothing. `visit` runs after Rapier's queue is drained, so it may change the world.
    */
   contactForces(visit: ContactForceVisitor): void {
     this.assertLive();
@@ -682,16 +693,21 @@ export class PhysicsWorld implements Disposable {
     // (n + 1) / n times its weight (2x at one iteration, 1.25x at four). Scaled back to the weight.
     const n = this.solverIterations;
     const scale = n / (n + 1);
+    const pairs: Array<{ a: ColliderRecord; b: ColliderRecord; x: number; y: number; z: number }> = [];
     this.eventQueue.drainContactForceEvents((e) => {
       const r1 = this.bodies.ofRapier(e.collider1());
       const r2 = this.bodies.ofRapier(e.collider2());
       if (!r1?.alive || !r2?.alive) return;
       e.totalForce(_force);
-      _force.x *= scale;
-      _force.y *= scale;
-      _force.z *= scale;
-      visit(r1.id, r2.id, _force);
+      pairs.push({ a: r1, b: r2, x: _force.x * scale, y: _force.y * scale, z: _force.z * scale });
     });
+    for (const p of pairs) {
+      if (!p.a.alive || !p.b.alive) continue;
+      _force.x = p.x;
+      _force.y = p.y;
+      _force.z = p.z;
+      visit(p.a.id, p.b.id, _force);
+    }
   }
 
   /**
