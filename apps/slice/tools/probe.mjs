@@ -40,6 +40,8 @@ const report = {};
 
 /** `--throttle=4` slows the page's CPU fourfold (Chromium's own emulation): a stand-in for a slower machine's CPU, not its GPU. */
 const throttle = Number(process.argv.find((a) => a.startsWith('--throttle='))?.split('=')[1] ?? 1);
+/** `--query=maxBodies=180&navTiles=0`: extra page options for the real-time run (the slice's tuning knobs). */
+const extra = process.argv.find((a) => a.startsWith('--query='))?.slice('--query='.length) ?? '';
 
 async function boot(query) {
   const page = await (await browser.newContext({ viewport: { width: 1280, height: 720 } })).newPage();
@@ -156,7 +158,7 @@ try {
 
   // ---- real time ------------------------------------------------------------------------------
   if (!only('fixed-only')) {
-    const { page, errors, game } = await boot('');
+    const { page, errors, game } = await boot(extra ? `&${extra}` : '');
     await page.waitForFunction(() => window.__spark.game.stats().structures.every((s) => s.strainMode === 'worker'), null, { timeout: 60_000 });
     // Past the renderer's warm-up, then the bots patrol a while.
     await page.waitForTimeout(7000);

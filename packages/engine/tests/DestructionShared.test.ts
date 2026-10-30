@@ -59,6 +59,21 @@ describe('two structures in one physics world', () => {
     await initRapier();
   });
 
+  it("scale their default budgets by the quality preset's debrisBudget, but not budgets a game sets", async () => {
+    const entities = new EntityWorld({ capacity: 4096 });
+    const physics = await PhysicsWorld.create({ entities, fixedStepHz: 60 });
+    const pieces = buildBuilding().pieces;
+    const low = new Destruction({ entities, physics, random: new Random(7), quality: { debrisBudget: 0.5 } }, { pieces });
+    expect(low.debris.options.maxBodies).toBe(180);
+    expect(low.hinges.options.maxLinks).toBe(130);
+    expect(budgetsOf(physics).bodies.limit).toBe(180);
+    const set = new Destruction({ entities, physics, random: new Random(7), quality: { debrisBudget: 0.5 } }, { pieces: buildBuilding({ x: 30 }).pieces }, { debris: { maxBodies: 300 } });
+    expect(set.debris.options.maxBodies).toBe(300);
+    expect(new Destruction({ entities, physics, random: new Random(7) }, { pieces: buildBuilding({ x: -30 }).pieces }).debris.options.maxBodies).toBe(360);
+    entities.dispose();
+    physics.dispose();
+  });
+
   it('draw on one body and link budget, and leave it when they go', async () => {
     const entities = new EntityWorld({ capacity: 4096 });
     const physics = await PhysicsWorld.create({ entities, fixedStepHz: 60 });

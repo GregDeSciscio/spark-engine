@@ -43,6 +43,12 @@ export interface QualitySettings {
   readonly dynamicResolution: boolean;
   readonly dynamicResolutionFloor: number;
   readonly particleDensity: number;
+  /**
+   * Scales destruction's shared budgets (loose debris bodies, hinge links): the main-thread cost of a
+   * collapse is mostly Rapier stepping its debris. With the CPU throttled to half speed, halving the
+   * body budget took a three-building collapse from a 48 ms median frame to 36 (apps/slice's probe).
+   */
+  readonly debrisBudget: number;
   readonly lodBias: number;
   readonly drawDistance: number;
   readonly maxDynamicLights: number;
@@ -91,6 +97,7 @@ const base: Omit<QualitySettings, 'preset'> = {
   dynamicResolution: true,
   dynamicResolutionFloor: 0.6,
   particleDensity: 1,
+  debrisBudget: 1,
   lodBias: 1,
   drawDistance: 1,
   maxDynamicLights: 64,
@@ -121,6 +128,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     fxaa: true,
     upscaler: 'bilinear',
     particleDensity: 0.4,
+    debrisBudget: 0.5,
     lodBias: 0.6,
     drawDistance: 0.6,
     maxDynamicLights: 8,
@@ -138,6 +146,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     screenSpaceReflections: false,
     fxaa: true,
     particleDensity: 0.7,
+    debrisBudget: 0.75,
     lodBias: 0.8,
     drawDistance: 0.8,
     maxDynamicLights: 16,

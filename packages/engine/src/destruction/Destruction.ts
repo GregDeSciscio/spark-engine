@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import type { AudioSystem } from '../audio/AudioSystem';
 import type { EngineConfig } from '../core/Config';
+import type { QualitySettings } from '../rendering/QualityPresets';
 import type { Disposable } from '../core/Disposable';
 import { EventEmitter } from '../core/Events';
 import type { Logger } from '../core/Logger';
@@ -18,10 +19,10 @@ import { findConnections, type Connection } from './core/connections';
 import type { Piece } from './core/pieces';
 import type { NodeLoad } from './core/strain';
 import { buildStructure } from './core/structure';
-import { Debris, GONE, RUBBLE, STANDING, type Census, type DebrisOptions, type DebrisSave, type Fling, type Sink } from './Debris';
+import { DEFAULT_DEBRIS, Debris, GONE, RUBBLE, STANDING, type Census, type DebrisOptions, type DebrisSave, type Fling, type Sink } from './Debris';
 import { DestructionFx, type Heard } from './DestructionFx';
 import { GravelField } from './Gravel';
-import { Hinges, type HingeOptions } from './Hinges';
+import { DEFAULT_HINGES, Hinges, type HingeOptions } from './Hinges';
 import { Rebar } from './Rebar';
 import { SmokeSystem, type SmokeKind } from './Smoke';
 import type { DestructionSounds } from './sounds';
@@ -49,6 +50,8 @@ export interface DestructionDeps {
   readonly logger?: Logger | undefined;
   /** `fixedFrameDelta` (`?fixedclock`) puts the strain solve inline, so a fixed-clock run is deterministic. */
   readonly config?: Pick<EngineConfig, 'fixedFrameDelta'> | undefined;
+  /** `debrisBudget` scales the default body and link budgets (a slower machine's preset carries fewer bodies). */
+  readonly quality?: Pick<QualitySettings, 'debrisBudget'> | undefined;
 }
 
 /** The structure: pre-fractured pieces (ids 0..n−1) and, optionally, their glued contacts. */
@@ -485,9 +488,13 @@ export class Destruction implements Disposable {
     this.object.add(this.rebar.stubs, this.rebar.spans);
     this.chunks.onMove = (p, m) => this.rebar.follow(p, m);
     // Every structure in the physics world draws on the same budgets: a level's buildings share what Rapier can afford.
+    // A preset's `debrisBudget` scales the defaults; budgets a game sets itself stand as they are.
     const budgets = budgetsOf(this.physics);
-    this.debris = new Debris(this.physics, this.entity, pieces, options.debris, this.random.fork(), budgets.bodies);
-    this.hinges = new Hinges(this.debris, connections, pieces, options.hinges, budgets.links);
+    const scale = deps.quality?.debrisBudget ?? 1;
+    const debrisOptions = { ...options.debris, maxBodies: options.debris?.maxBodies ?? Math.round(DEFAULT_DEBRIS.maxBodies * scale) };
+    const hingeOptions = { ...options.hinges, maxLinks: options.hinges?.maxLinks ?? Math.round(DEFAULT_HINGES.maxLinks * scale) };
+    this.debris = new Debris(this.physics, this.entity, pieces, debrisOptions, this.random.fork(), budgets.bodies);
+    this.hinges = new Hinges(this.debris, connections, pieces, hingeOptions, budgets.links);
     this.smokes = new SmokeSystem(this.debris, pieces);
     this.object.add(this.smokes.object);
     this.gravel = new GravelField(this.physics, this.random.fork());

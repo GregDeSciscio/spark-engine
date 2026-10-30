@@ -143,7 +143,15 @@ const COLLAPSE: ReadonlyArray<readonly [number, (api: SliceApi) => void]> = [
   ],
 ];
 
-export function sliceScene(onApi: (api: SliceApi) => void, demo: SliceDemo = 'yard'): SceneDefinition {
+/** Knobs for measuring what a slower machine needs (`?maxBodies=`, `?navTiles=`). */
+export interface SliceTuning {
+  /** The structures' shared debris body budget. Default: the engine's. */
+  maxBodies?: number | undefined;
+  /** Navmesh tiles rebuilt per frame. Default 1. */
+  navTiles?: number | undefined;
+}
+
+export function sliceScene(onApi: (api: SliceApi) => void, demo: SliceDemo = 'yard', tuning: SliceTuning = {}): SceneDefinition {
   return {
     name: 'slice',
     async create(ctx): Promise<SceneInstance> {
@@ -201,7 +209,7 @@ export function sliceScene(onApi: (api: SliceApi) => void, demo: SliceDemo = 'ya
       // One Destruction per authored building: they share the world's budgets and its strain worker.
       const owned = new Map<string, () => void>();
       const build = (name: string, boxes: readonly PieceBox[]): Destruction => {
-        const d = new Destruction(ctx, authoredStructure(boxes, { seed: SEEDS[name] ?? 1 }));
+        const d = new Destruction(ctx, authoredStructure(boxes, { seed: SEEDS[name] ?? 1 }), tuning.maxBodies === undefined ? {} : { debris: { maxBodies: tuning.maxBodies } });
         scene.add(d.object);
         const off = d.systems().map((s) => entities.addSystem(s));
         d.events.on('hit', (h) => hurt(h.eid, h.momentum * DEBRIS_DAMAGE));
@@ -484,12 +492,13 @@ export function sliceScene(onApi: (api: SliceApi) => void, demo: SliceDemo = 'ya
       const shake = new THREE.Vector3();
       let clock = 0;
       let hudTimer = 0;
+      let slowFrames = 0;
 
       return {
         scene,
         camera: cam.camera,
 
-        update(): void {
+        update(dt): void {
           // Input once per rendered frame: presses last one frame.
           if (input.wasButtonPressed(0)) {
             if (input.isPointerLocked || input.pointerLockUnavailable) fire();
@@ -502,8 +511,9 @@ export function sliceScene(onApi: (api: SliceApi) => void, demo: SliceDemo = 'ya
           if (input.wasPressed('F5')) save();
           if (input.wasPressed('F9')) load();
           if (input.wasPressed('Space')) controller.jump(player, 7);
-          // A tile of navmesh a frame, where the buildings changed.
-          nav?.update(1);
+          // A tile of navmesh a frame where the buildings changed, or every other frame while frames run long
+          // (a tile is a few milliseconds of Recast; on a fixed clock every frame is short, so it stays deterministic).
+          if (dt < 1 / 40 || ++slowFrames % 2 === 0) nav?.update(tuning.navTiles ?? 1);
         },
 
         fixedUpdate(dt): void {
