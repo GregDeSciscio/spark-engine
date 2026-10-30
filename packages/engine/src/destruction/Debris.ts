@@ -67,6 +67,12 @@ const RUBBLE_CELL = 2;
 const MOVED_OFF = 0.1;
 /** A support that is not a chunk of this structure: the ground, or anything else's collider. */
 const FOREIGN = -1;
+/** A body turned less than 15° from as built (the `w` of its rotation, cos 7.5°) is upright (`upright`). */
+const UPRIGHT = Math.cos((7.5 * Math.PI) / 180);
+/** How much of its recent peak falling speed a body keeps from one step to the next (`Body.fall`). */
+const FALL_FADE = 0.85;
+/** A body holding at least this share of its element's chunks is still that wall or column, a member (`upright`). */
+const MEMBER_SHARE = 0.6;
 /** Support queries the budget may spend a step finding bodies that rest on something, and steps before it asks one that rested on nothing again. */
 const BUDGET_QUERIES = 24;
 const BUDGET_RETRY = 15;
@@ -115,6 +121,8 @@ interface Body {
   sunk: boolean;
   /** Velocity change over the last step (impacts, joints catching). */
   jolt: number;
+  /** How fast it has been falling of late (m/s down, the peak, fading): a landing on loose debris takes a few steps. */
+  fall: number;
   /** Speed plus half the spin, last step: how far from still it is. */
   motion: number;
   asleepTicks: number;
@@ -269,6 +277,8 @@ export class Debris {
   onGone: ((pieces: readonly number[]) => void) | null = null;
   /** A multi-chunk body just broke up on impact (its glue can become a net of hinges). */
   onShatter: ((pieces: readonly number[]) => void) | null = null;
+  /** A wall or column still upright as built landed hard (`fixedUpdate`), and `body` is about to be crushed: where, its mass, its chunks. */
+  onBuckle: ((at: THREE.Vector3, mass: number, pieces: readonly number[], body: BodyHandle) => void) | null = null;
   /** Landings this step that did not shatter anything: where the hardest was, the mass of all that landed, and how fast the hardest came down. */
   onLand: ((at: THREE.Vector3, mass: number, speed: number) => void) | null = null;
   /** Chunks that just settled into rubble (their final matrix must be written once); `alone` if they were a single-chunk body. */
@@ -300,6 +310,8 @@ export class Debris {
   private readonly watchAt: Float32Array;
   /** Rubble that lost a support since the last `dropUnheld`. */
   private readonly unsure = new Set<number>();
+  /** Chunks per authored element: how much of a wall a body still holds (`upright`). */
+  private readonly elementSize = new Map<number, number>();
 
   constructor(physics: PhysicsWorld, owner: Entity, pieces: readonly Piece[], options: DebrisOptions = {}, random: Random = new Random(1)) {
     const o = { ...DEFAULT_DEBRIS };
@@ -326,6 +338,7 @@ export class Debris {
     this.carries = pieces.map(() => null);
     this.pileOf = new Int32Array(pieces.length);
     this.watchAt = new Float32Array(pieces.length * 3);
+    for (const p of pieces) this.elementSize.set(p.element, (this.elementSize.get(p.element) ?? 0) + 1);
   }
 
   /**
@@ -880,6 +893,7 @@ export class Debris {
     const bodies = this.physics.bodies;
     const v = new THREE.Vector3();
     const toSplit: Body[] = [];
+    const toBuckle: Body[] = [];
     const toPile: Body[] = [];
     const { shatterDeltaV } = this.options;
     let landed: Body | null = null;
@@ -903,7 +917,12 @@ export class Debris {
       const spin = Math.hypot(_av.x, _av.y, _av.z);
       if (spin > MAX_SPIN) bodies.setVelocity(b.body, null, { x: (_av.x * MAX_SPIN) / spin, y: (_av.y * MAX_SPIN) / spin, z: (_av.z * MAX_SPIN) / spin });
       b.jolt = v.distanceTo(b.lastVel);
-      if (b.pieces.length > 1 && this.tick - b.born > 6 && b.jolt > shatterDeltaV) toSplit.push(b);
+      b.fall = Math.max(b.fall * FALL_FADE, -b.lastVel.y);
+      // Landed: stopped hard in one step, or (an upright member coming down on loose debris) over a few.
+      const hard = b.jolt > shatterDeltaV;
+      const stopped = hard || b.fall - Math.max(0, -v.y) > shatterDeltaV;
+      if (b.pieces.length > 1 && this.tick - b.born > 6 && stopped && this.upright(b)) toBuckle.push(b);
+      else if (b.pieces.length > 1 && this.tick - b.born > 6 && hard) toSplit.push(b);
       else if (-b.lastVel.y > LANDING && v.y - b.lastVel.y > LANDING) {
         const mass = bodies.mass(b.body);
         landedMass += mass;
@@ -933,6 +952,19 @@ export class Debris {
       this.shatter(b);
       this.counters.shattered++;
       this.onShatter?.(b.pieces);
+    }
+    // A wall or column that lands hard still standing as built took the blow as a member, what was
+    // above it coming down on it: it is crushed. Shattered into blocks, a falling tower's walls stood
+    // on the ground as a stack and held the storeys above up for a second or more. Crushing only the
+    // foot and breaking the rest into chunks left those stacked where the wall stood, still holding
+    // the slab; the single-chunk bodies it made (bowed out or not) pushed the budget into clearing
+    // more of an eight-storey building than crushing whole walls does (18-37% against 18%).
+    for (const b of toBuckle) {
+      if (!this.bodies.has(b.id)) continue;
+      bodies.centerOfMass(b.body, _t);
+      // First, so whatever ties it to its neighbours lets go of it.
+      this.onBuckle?.(new THREE.Vector3(_t.x, _t.y, _t.z), bodies.mass(b.body), [...b.pieces], b.body);
+      this.clear(b, true);
     }
     // After the shatters: their sound comes first.
     if (landed && this.bodies.has(landed.id)) {
@@ -1065,6 +1097,23 @@ export class Debris {
     return at;
   }
 
+  /** A wall or column body still turned as it was built (within `UPRIGHT`) and most of its element: a member, not a block lying about. */
+  private upright(b: Body): boolean {
+    const first = this.pieces[b.pieces[0]!]!;
+    if (first.kind === 'slab' || b.pieces.some((p) => this.pieces[p]!.element !== first.element)) return false;
+    // Most of its element still in one piece: a fragment of a shattered wall under a slab in a heap is
+    // pressed as hard, and crushing those too ground away a third to two thirds of a building.
+    if (b.pieces.length < MEMBER_SHARE * this.elementSize.get(first.element)!) return false;
+    this.physics.bodies.pose(b.body, _t, _r);
+    return Math.abs(_r.w) > UPRIGHT;
+  }
+
+  /** Is this a loose wall or column of more than one chunk, still standing as it was built? */
+  isUprightMember(body: BodyHandle): boolean {
+    const b = this.byHandle.get(body);
+    return b !== undefined && b.pieces.length > 1 && this.upright(b);
+  }
+
   /** Does a loose body rest on something settled (the ground, standing structure, rubble), not just on other loose bodies? */
   restsOnSettled(body: BodyHandle): boolean {
     const b = this.byHandle.get(body);
@@ -1083,9 +1132,9 @@ export class Debris {
     return Math.hypot(_at.x - x, _at.y - y, _at.z - z) < within;
   }
 
-  private addBody(init: Omit<Body, 'lastPos' | 'lastRot' | 'streak' | 'flungAt' | 'sunk' | 'budgetMiss'>): void {
+  private addBody(init: Omit<Body, 'lastPos' | 'lastRot' | 'streak' | 'flungAt' | 'sunk' | 'budgetMiss' | 'fall'>): void {
     this.physics.bodies.pose(init.body, _t, _r);
-    const b: Body = { ...init, lastPos: new THREE.Vector3(_t.x, _t.y, _t.z), lastRot: new THREE.Quaternion(_r.x, _r.y, _r.z, _r.w), streak: 0, flungAt: -99, sunk: false, budgetMiss: -BUDGET_RETRY };
+    const b: Body = { ...init, lastPos: new THREE.Vector3(_t.x, _t.y, _t.z), lastRot: new THREE.Quaternion(_r.x, _r.y, _r.z, _r.w), streak: 0, flungAt: -99, sunk: false, budgetMiss: -BUDGET_RETRY, fall: Math.max(0, -init.lastVel.y) };
     this.version++;
     this.bodies.set(b.id, b);
     this.byHandle.set(b.body, b);

@@ -96,7 +96,9 @@ export interface DestructionOptions {
   /**
    * A standing chunk Strain breaks while loose weight rests on it of more than this many times its
    * own is crushed: it goes to grit and dust instead of becoming a block that, stacked where it
-   * stood, would hold the same weight up forever. Default 10.
+   * stood, would hold the same weight up forever. So is a chunk a big island stood on when Strain cut
+   * it loose, if its share of the island's weight is over this many times its own (`failSupports`).
+   * Default 10.
    */
   crushRatio?: number | undefined;
   /**
@@ -142,6 +144,10 @@ export interface DestructionEvents extends Record<string, unknown> {
   step: StrainStep;
   /** An explosion went off; `chunks` it took out of the structure. */
   blast: { point: THREE.Vector3; radius: number; normal: THREE.Vector3 | null; chunks: number };
+  /** What a big island (`under` chunks) stood on failed when Strain cut it loose: those chunks were crushed. */
+  fail: { pieces: readonly number[]; under: number };
+  /** A loose wall or column still upright as built landed hard under what was above it, and was crushed. */
+  buckle: { at: THREE.Vector3; mass: number; pieces: readonly number[] };
 }
 
 export interface DestructionStats {
@@ -216,6 +222,8 @@ const _r = { x: 0, y: 0, z: 0, w: 1 };
 const _v: Vec3Like = { x: 0, y: 0, z: 0 };
 /** Below this speed (m/s) a squeezed loose body counts as at rest (`squeezeRatio`). */
 const RESTING_SPEED = 0.5;
+/** A contact this close to level (the vertical part of its normal) is one a chunk rests on (`failSupports`). */
+const BEARING = 0.7;
 
 /**
  * A destructible structure, THE FINALS style (ADR-011): pre-fractured chunks
@@ -257,6 +265,8 @@ export class Destruction implements Disposable {
   /** Contact bookkeeping on this side: which glue Strain broke, and every contact per chunk. */
   private readonly broken: Uint8Array;
   private readonly contactsOf: number[][];
+  /** Each authored element's chunks (a storey's wall panel, a slab, a column). */
+  private readonly elementChunks = new Map<number, number[]>();
   /** Hits taken per chunk (`damage`). */
   private readonly hits: Uint8Array;
   private readonly restM = new THREE.Matrix4();
@@ -372,6 +382,11 @@ export class Destruction implements Disposable {
       this.contactsOf[c.a]!.push(c.id);
       if (c.b >= 0) this.contactsOf[c.b]!.push(c.id);
     }
+    for (const p of pieces) {
+      const list = this.elementChunks.get(p.element);
+      if (list) list.push(p.id);
+      else this.elementChunks.set(p.element, [p.id]);
+    }
     this.wire();
     this.logger?.info(`destruction: ${pieces.length} chunks, ${connections.length} contacts, built in ${(performance.now() - t0).toFixed(0)} ms`);
 
@@ -414,6 +429,12 @@ export class Destruction implements Disposable {
     hinges.onTear = (at, load) => {
       fx.snap(at, load);
       this.events.emit('tear', { at, load });
+    };
+    debris.onBuckle = (at, mass, crushed, body) => {
+      hinges.release(body);
+      this.crumble(at, mass);
+      this.smokes.blast(at, 2);
+      this.events.emit('buckle', { at, mass, pieces: crushed });
     };
     debris.onShatter = (shards) => {
       const first = shards[0];
@@ -487,7 +508,8 @@ export class Destruction implements Disposable {
     // What Strain broke becomes hinges; they wake when the two sides end up on different bodies.
     hinges.add(step.broken);
     for (const cut of step.detached) {
-      const island = this.crush(cut);
+      const crushed = this.crush(cut);
+      const island = crushed.length > this.o.netIsland ? this.failSupports(crushed) : crushed;
       if (island.length === 0) continue;
       const set = new Set(island);
       if (island.length <= this.o.netIsland) {
@@ -506,7 +528,10 @@ export class Destruction implements Disposable {
             0.7,
           );
         }
-        for (const cluster of this.elementClusters(island)) this.detachQueue.push(cluster);
+        // Top first: what has come loose rests on what hasn't yet, so it all drops together. Bottom
+        // first, the lower storeys fell away while the top was still fixed in the air.
+        const clusters = this.elementClusters(island).map((g) => ({ g, top: Math.max(...g.map((p) => pieces[p]!.centroid[1])) }));
+        for (const { g } of clusters.sort((a, b) => b.top - a.top)) this.detachQueue.push(g);
       }
     }
     // Whatever a recent blast cut loose leaves with it (once it has all come loose).
@@ -540,6 +565,93 @@ export class Destruction implements Disposable {
     this.smokes.markDirty();
     const gone = new Set(crushed);
     return island.filter((p) => !gone.has(p));
+  }
+
+  /**
+   * What a big island stood on when Strain cut it loose has failed under it, and is crushed now.
+   * Strain broke those contacts because the chunks under them could not carry the island; but left
+   * standing, or loose and upright where they stood, they are rigid blocks to the physics and held
+   * it up anyway. An eight-storey tower cut loose over its blown-out ground storey stood there a
+   * second or two, then ground down over five: every rule that crushed debris later (resting weight
+   * read twice, squeezed panels in place) caught up with Strain's verdict a little at a time.
+   *
+   * At each broken bearing contact under the island (its chunk on top, the ground or a chunk that is
+   * still there below), the share of the island's weight it carried, by contact area, is set against
+   * the wall or column at that joint: the one below, or failing that the island's own (a wall whose
+   * foot broke came away with the island and still reached the floor; standing on it, the island
+   * stood). Over `crushRatio` times its weight, that member goes to grit: the chunk at the joint
+   * and the rest of its element, below it outside the island or all of it inside. Slabs are what
+   * members hold up, never the member that failed. The island drops and breaks up where it lands; a
+   * slab that comes off a sound wall leaves it (its share is small), and small islands keep hanging
+   * by their hinges. Returns the island without its own crushed chunks.
+   */
+  private failSupports(island: readonly number[]): readonly number[] {
+    const { debris, chunks, pieces, connections } = this;
+    const inIsland = new Set(island);
+    const joints: Array<{ top: number; under: number; area: number }> = [];
+    let area = 0;
+    for (const p of island) {
+      for (const c of this.contactsOf[p]!) {
+        const k = connections[c]!;
+        const under = k.a === p ? k.b : k.a;
+        if (!this.broken[c] || inIsland.has(under) || (under >= 0 && debris.state[under] === GONE)) continue;
+        // The normal points from a to b: the island's chunk is on top when it points down out of it.
+        if ((k.a === p ? -k.normal[1] : k.normal[1]) < BEARING) continue;
+        joints.push({ top: p, under, area: k.area });
+        area += k.area;
+      }
+    }
+    if (area === 0) return island;
+    let mass = 0;
+    for (const p of island) mass += pieces[p]!.mass;
+    const failed = new Set<number>();
+    const member = (p: number, below: number | null): void => {
+      for (const q of this.elementChunks.get(pieces[p]!.element) ?? [p]) {
+        if (failed.has(q) || inIsland.has(q) !== (below === null) || (below !== null && pieces[q]!.centroid[1] > below + 0.01)) continue;
+        const st = debris.state[q]!;
+        if (st === GONE || (st !== STANDING && !debris.inPlace(q))) continue;
+        failed.add(q);
+      }
+    };
+    for (const j of joints) {
+      const share = (mass * j.area) / area;
+      if (j.under >= 0 && pieces[j.under]!.kind !== 'slab') {
+        if (share > this.o.crushRatio * pieces[j.under]!.mass) member(j.under, pieces[j.under]!.centroid[1]);
+      } else if (pieces[j.top]!.kind !== 'slab' && share > this.o.crushRatio * pieces[j.top]!.mass) member(j.top, null);
+    }
+    if (failed.size === 0) return island;
+    const standing: number[] = [];
+    const bodies = new Set<BodyHandle>();
+    let gone = 0;
+    const at = new THREE.Vector3();
+    for (const q of failed) {
+      const { centroid: c, mass: m } = pieces[q]!;
+      const st = debris.state[q]!;
+      if (st === STANDING) {
+        debris.remove(q);
+        chunks.setVisible(q, false);
+        debris.counters.crushed++;
+        // The island's own chunks have already left Strain's structure.
+        if (!inIsland.has(q)) standing.push(q);
+      } else if (st === RUBBLE) debris.crushRubble(q);
+      else {
+        const body = debris.bodyOf(q);
+        if (body === null || bodies.has(body)) continue;
+        bodies.add(body);
+        debris.crush(body);
+      }
+      this.restOn.delete(q);
+      this.gravel.spawn(new THREE.Vector3(c[0], c[1], c[2]), 6, 3);
+      at.x += c[0] * m;
+      at.y += c[1] * m;
+      at.z += c[2] * m;
+      gone += m;
+    }
+    this.fx.shatter(at.divideScalar(gone), gone);
+    this.smokes.markDirty();
+    this.events.emit('fail', { pieces: [...failed], under: island.length });
+    this.strainRemove(standing);
+    return island.filter((p) => !failed.has(p));
   }
 
   /** Chunks leave the structure: tell Strain, and queue a cascade (its first step on the next tick). */
@@ -627,11 +739,24 @@ export class Destruction implements Disposable {
    * that too ground away a third of a building); that they never moved can.
    */
   private squeeze(pressed: ReadonlyMap<BodyHandle, number>, pressedRubble: ReadonlyMap<number, number>): void {
-    const { debris, pieces } = this;
+    const { debris, hinges, pieces } = this;
     const bodies = this.physics.bodies;
     const { squeezeForce, squeezeRatio, gravity } = this.o;
     const over = new Set<BodyHandle>();
     for (const [body, f] of pressed) {
+      // A loose wall or column still standing as built, under more than `crushRatio` times its weight,
+      // is a member carrying what came down on it (a tower's top, dropped a storey onto the heap of the
+      // one that failed, stood again on its own walls): it buckles, wherever it is, on one read.
+      if (f >= squeezeForce && f > this.o.crushRatio * bodies.mass(body) * gravity && debris.isUprightMember(body)) {
+        const pieces = [...debris.piecesOf(body)];
+        hinges.release(body);
+        const gone = debris.crush(body);
+        if (gone) {
+          this.crumble(gone.at, gone.mass);
+          this.events.emit('buckle', { at: gone.at, mass: gone.mass, pieces });
+        }
+        continue;
+      }
       if (f < squeezeForce || f < squeezeRatio * bodies.mass(body) * gravity) continue;
       const first = debris.piecesOf(body)[0];
       if (first === undefined || !debris.inPlace(first)) continue;

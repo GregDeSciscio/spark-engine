@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { findConnections } from '../src/destruction/core/connections';
 import type { P2, V3 } from '../src/destruction/core/math';
 import { prism, type Piece } from '../src/destruction/core/pieces';
-import { Debris, RUBBLE, STANDING, type DebrisOptions } from '../src/destruction/Debris';
+import { Debris, GONE, RUBBLE, STANDING, type DebrisOptions } from '../src/destruction/Debris';
 import { Hinges } from '../src/destruction/Hinges';
 import { Transform } from '../src/ecs/components/Transform';
 import { EntityWorld } from '../src/ecs/EntityWorld';
@@ -16,8 +16,8 @@ import { PhysicsWorld, initRapier } from '../src/physics/PhysicsWorld';
  * into clusters, taking one chunk out of a body, and the link budget.
  */
 
-/** An axis-aligned box as a piece. */
-function box(id: number, min: V3, max: V3): Piece {
+/** An axis-aligned box as a piece (a slab, its own element, unless said otherwise). */
+function box(id: number, min: V3, max: V3, kind: Piece['kind'] = 'slab', element = id): Piece {
   const w = max[0] - min[0];
   const h = max[1] - min[1];
   const poly: P2[] = [
@@ -26,7 +26,7 @@ function box(id: number, min: V3, max: V3): Piece {
     [w, h],
     [0, h],
   ];
-  return prism({ id, element: id, kind: 'slab', poly, frame: { origin: min, u: [1, 0, 0], v: [0, 1, 0] }, thickness: max[2] - min[2], width: w, height: h, minus: 'outer', plus: 'inner', density: 2400 });
+  return prism({ id, element, kind, poly, frame: { origin: min, u: [1, 0, 0], v: [0, 1, 0] }, thickness: max[2] - min[2], width: w, height: h, minus: 'outer', plus: 'inner', density: 2400 });
 }
 
 interface World {
@@ -281,6 +281,32 @@ describe('gradual destruction (hinges)', () => {
     expect(w.debris.state[2]).toBe(w.debris.state[1]);
     // Where it lay: one body, its chunks where they were, not thrown.
     expect(pieceCenter(w, 1).y).toBeGreaterThan(2.1);
+    w.dispose();
+  });
+
+  it('a wall that lands hard still standing as built is crushed; a slab that lands hard shatters', async () => {
+    // A storey-high wall of four chunks (two rows of two) and a slab of two, side by side, three metres up.
+    const w = await world([
+      box(0, [0, 3, 0], [1, 4.5, 0.2], 'wall', 10),
+      box(1, [1, 3, 0], [2, 4.5, 0.2], 'wall', 10),
+      box(2, [0, 4.5, 0], [1, 6, 0.2], 'wall', 10),
+      box(3, [1, 4.5, 0], [2, 6, 0.2], 'wall', 10),
+      box(4, [5, 3, 0], [6, 3.3, 1], 'slab', 11),
+      box(5, [6, 3, 0], [7, 3.3, 1], 'slab', 11),
+    ]);
+    const buckled: number[][] = [];
+    w.debris.onBuckle = (_at, _mass, pieces) => buckled.push([...pieces]);
+    w.debris.detach([0, 1, 2, 3]);
+    w.debris.detach([4, 5]);
+    steps(w, 90);
+    // The wall took the landing on its feet, as a member under a falling storey would: grit, not a
+    // block standing on to hold the next storey up.
+    expect(buckled).toEqual([[0, 1, 2, 3]]);
+    for (const p of [0, 1, 2, 3]) expect(w.debris.state[p]).toBe(GONE);
+    // The slab broke apart where it landed, as before.
+    expect(w.debris.counters.shattered).toBe(1);
+    expect(w.debris.state[4]).not.toBe(GONE);
+    expect(w.debris.state[5]).not.toBe(GONE);
     w.dispose();
   });
 

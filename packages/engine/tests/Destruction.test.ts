@@ -182,6 +182,41 @@ describe('Destruction', () => {
     expect(on.up).toBeLessThan(on.top / 10);
   }, 60_000);
 
+  it('a top cut loose over its blown-out ground storey comes straight down instead of standing on what failed', async () => {
+    // Greg's report: blow out a tower's ground storey and the top stood there, then ground down in
+    // slow motion. Strain had cut it loose, but it stood on the walls that failed under it and, when
+    // it dropped, on its own loose walls as a stack of blocks. Five storeys; the front and sides of
+    // the ground storey blown out, the back wall and the columns left.
+    const r = await rig();
+    const d = new Destruction({ entities: r.entities, physics: r.physics, random: new Random(7) }, { pieces: buildBuilding({ floors: 5, columnSpacing: 3 }).pieces });
+    for (const s of d.systems()) r.entities.addSystem(s);
+    const zBack = Math.max(...d.pieces.map((p) => p.max[2]));
+    d.remove(d.pieces.filter((p) => p.max[1] < 3.0 && p.kind === 'wall' && p.min[2] < zBack - 0.6).map((p) => p.id));
+    const failed: number[] = [];
+    d.events.on('fail', (e) => failed.push(e.pieces.length));
+    // How far the storeys above the second have come down, on average.
+    const top = d.pieces.filter((p) => p.min[1] > 6);
+    const m = new THREE.Matrix4();
+    const drop = (): number => {
+      let sum = 0;
+      let n = 0;
+      for (const p of top) {
+        if (d.debris.state[p.id] === GONE) continue;
+        sum += p.centroid[1] - new THREE.Vector3(...p.centroid).applyMatrix4(d.debris.restToWorld(p.id, m)).y;
+        n++;
+      }
+      return sum / n;
+    };
+    // Standing on its failed storey and on its own walls, it had come down half a metre by 1.5 s and
+    // four and a half by 3 s; it comes down two and a half, then the storeys' worth.
+    r.frames(90);
+    expect(failed.length).toBeGreaterThan(0);
+    expect(drop()).toBeGreaterThan(1.5);
+    r.frames(90);
+    expect(drop()).toBeGreaterThan(6);
+    r.dispose();
+  }, 60_000);
+
   it('leaves no body, collider or joint behind when disposed, ropes and hinges included', async () => {
     const r = await rig();
     const before = { bodies: r.physics.bodyCount, colliders: r.physics.bodies.colliderCount, joints: r.physics.joints.count, entities: r.entities.count };
