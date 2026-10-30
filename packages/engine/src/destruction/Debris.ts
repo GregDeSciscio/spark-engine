@@ -12,7 +12,8 @@ import type { Piece } from './core/pieces';
  * A chunk is in one of four places: standing (a collider on the fixed
  * building body), loose (a dynamic body, alone or with the rest of its
  * island), rubble (settled: a collider on a fixed rubble body, so piles cost
- * nothing to simulate and stay where they fell), or gone.
+ * nothing to simulate and stay where they fell, for as long as a path of
+ * supports leads down from them to the ground), or gone.
  *
  * Every collider is owned by the structure's entity with the chunk's id as
  * its part (ADR-010), so a game's raycast names the building and the chunk.
@@ -62,6 +63,10 @@ const LOSS_TICKS = 240;
 const LOSS_REGATHER = 60;
 /** Grid cell (m, across) of the rubble index. */
 const RUBBLE_CELL = 2;
+/** Loose debris that rubble rests on holds it until it has moved this far (m) from where it was. */
+const MOVED_OFF = 0.1;
+/** A support that is not a chunk of this structure: the ground, or anything else's collider. */
+const FOREIGN = -1;
 /** Support queries the budget may spend a step finding bodies that rest on something, and steps before it asks one that rested on nothing again. */
 const BUDGET_QUERIES = 24;
 const BUDGET_RETRY = 15;
@@ -254,8 +259,8 @@ export class Debris {
   readonly state: Float64Array;
   private tick = 0;
   private nextBodyId = 0;
-  /** Bodies created, split, settled and cleared, for the HUD. */
-  readonly counters = { created: 0, shattered: 0, piled: 0, cleared: 0, crushed: 0, flung: 0, sunk: 0 };
+  /** Bodies created, split, settled and cleared, for the HUD; `dropped`: rubble chunks that lost their last path to the ground and fell. */
+  readonly counters = { created: 0, shattered: 0, piled: 0, cleared: 0, crushed: 0, flung: 0, sunk: 0, dropped: 0 };
   /** The latest flings, for the soak and probes. */
   readonly flings: Fling[] = [];
   /** Bodies seen going through the floor, for the soak: how they came loose, how old, how fast. */
@@ -278,6 +283,23 @@ export class Debris {
   private readonly recheck = new Set<number>();
   /** Where the sweep through all the rubble has got to. */
   private sweep: Iterator<number> | null = null;
+  /**
+   * The support graph. Per chunk of rubble, what it rests on (chunks, or `FOREIGN`), found as it
+   * settles; per chunk in any state, the rubble resting on it. Rubble stays only while a path of
+   * these links leads down to the ground or the standing structure: when a link goes, everything
+   * above it with no other path falls in the same step (`dropUnheld`).
+   */
+  private readonly supports: Array<number[] | null>;
+  private readonly carries: Array<Set<number> | null>;
+  /** Which settling each rubble chunk came to rest in, and each settling's chunks still in the rubble: they share a pose, and hold or fall as one. */
+  private readonly pileOf: Int32Array;
+  private readonly pileChunks = new Map<number, Set<number>>();
+  private nextPile = 0;
+  /** Chunks no longer settled that rubble still rests on, and where each was then: they hold it until they move off. */
+  private readonly watched = new Set<number>();
+  private readonly watchAt: Float32Array;
+  /** Rubble that lost a support since the last `dropUnheld`. */
+  private readonly unsure = new Set<number>();
 
   constructor(physics: PhysicsWorld, owner: Entity, pieces: readonly Piece[], options: DebrisOptions = {}, random: Random = new Random(1)) {
     const o = { ...DEFAULT_DEBRIS };
@@ -300,6 +322,10 @@ export class Debris {
     this.rubblePose = pieces.map(() => null);
     this.rubbleAt = new Float32Array(pieces.length * 3);
     this.state = new Float64Array(pieces.length).fill(STANDING);
+    this.supports = pieces.map(() => null);
+    this.carries = pieces.map(() => null);
+    this.pileOf = new Int32Array(pieces.length);
+    this.watchAt = new Float32Array(pieces.length * 3);
   }
 
   /**
@@ -582,10 +608,161 @@ export class Debris {
     }
   }
 
+  /**
+   * What a chunk of rubble rests on: chunks of this structure, or `FOREIGN` (the ground, anything
+   * else's collider). Its hull moved down a few centimetres meets them. Standing structure holds
+   * what rests on or against it; anything else only if it is lower; never what hinges hold, which
+   * hangs from what it would be holding up.
+   */
+  private findSupports(piece: number): number[] {
+    const out: number[] = [];
+    const c = this.colliderOf(piece);
+    const bodies = this.physics.bodies;
+    const t = { x: 0, y: 0, z: 0 };
+    const r = { x: 0, y: 0, z: 0, w: 1 };
+    if (c === null || !bodies.colliderPose(c, t, r)) return out;
+    this.physics.overlapShape(
+      c,
+      { position: { x: t.x, y: t.y - 0.06, z: t.z }, rotation: r },
+      (other) => {
+        const info = bodies.info(other);
+        if (!info) return true;
+        if (info.body !== this.building && !(bodies.colliderPose(other, _t2) && _t2.y < t.y - 0.05)) return true;
+        if (info.owner !== this.owner || info.part < 0) {
+          if (!out.includes(FOREIGN)) out.push(FOREIGN);
+          return true;
+        }
+        const q = info.part;
+        const s = this.state[q]!;
+        if (q !== piece && !(s >= 0 && !this.canPile(s)) && !out.includes(q)) out.push(q);
+        return true;
+      },
+      { excludeCollider: c },
+    );
+    return out;
+  }
+
+  /** A chunk of rubble rests on `on`: the links both ways. Loose debris among them holds it while it stays put. */
+  private link(piece: number, on: number[]): void {
+    this.supports[piece] = on;
+    for (const q of on) {
+      if (q === FOREIGN) continue;
+      (this.carries[q] ??= new Set()).add(piece);
+      if (this.state[q]! >= 0 && !this.watched.has(q)) this.watchFrom(q);
+    }
+  }
+
+  /** Rubble leaves the rubble: what it rested on no longer carries it. */
+  private unlink(piece: number): void {
+    for (const q of this.supports[piece] ?? []) if (q !== FOREIGN) this.carries[q]?.delete(piece);
+    this.supports[piece] = null;
+  }
+
+  /** A chunk that is no longer settled holds what rests on it until it moves off: from where it is now. */
+  private watchFrom(piece: number): void {
+    const [x, y, z] = this.pieces[piece]!.centroid;
+    _at.set(x, y, z).applyMatrix4(this.restToWorld(piece, _where));
+    this.watchAt.set([_at.x, _at.y, _at.z], piece * 3);
+    this.watched.add(piece);
+  }
+
+  /** A chunk holds nothing up any more (it is gone, or moved off): what rested on it has to find its way down again. */
+  private unhold(piece: number): void {
+    this.watched.delete(piece);
+    const carried = this.carries[piece];
+    if (!carried) return;
+    for (const d of carried) {
+      const on = this.supports[d];
+      const i = on ? on.indexOf(piece) : -1;
+      if (i >= 0) on!.splice(i, 1);
+      this.unsure.add(d);
+    }
+    this.carries[piece] = null;
+  }
+
+  /** Loose chunks that rubble rests on: one that has moved off holds it no longer. */
+  private checkWatched(): void {
+    for (const p of this.watched) {
+      const s = this.state[p]!;
+      if (s === GONE) this.unhold(p);
+      else if (s === STANDING || s === RUBBLE || !this.carries[p]?.size) this.watched.delete(p);
+      else {
+        const [x, y, z] = this.pieces[p]!.centroid;
+        _at.set(x, y, z).applyMatrix4(this.restToWorld(p, _where));
+        const i = p * 3;
+        if (Math.hypot(_at.x - this.watchAt[i]!, _at.y - this.watchAt[i + 1]!, _at.z - this.watchAt[i + 2]!) > MOVED_OFF) this.unhold(p);
+      }
+    }
+  }
+
+  /**
+   * Rubble that lost a support stays only if a path of supports still leads down from it to the
+   * ground, the structure or loose debris still in place; so does everything resting on it. What has
+   * no path falls now, all of it, as the bodies it settled as. Decided chunk by chunk ("is something
+   * lower touching me?"), rubble was held up by the rubble under it whether that was held up or not:
+   * a tower's top, settled on its last corner, peeled away from below for seconds after the corner went.
+   *
+   * The chunks of one settling were one rigid body: it holds if any of them does, and falls whole.
+   * A settled floor's chunks lie side by side, and only those over a wall rest on anything lower.
+   */
+  private dropUnheld(): void {
+    if (this.unsure.size === 0) return;
+    // Everything that may have lost its path: the rubble that lost a support, the rest of its
+    // settling, and all that any of it carries.
+    const zone = new Set<number>();
+    const stack: number[] = [];
+    const enter = (p: number): void => {
+      if (this.state[p] !== RUBBLE || zone.has(p)) return;
+      zone.add(p);
+      stack.push(p);
+    };
+    for (const p of this.unsure) enter(p);
+    this.unsure.clear();
+    while (stack.length > 0) {
+      const p = stack.pop()!;
+      for (const q of this.pileChunks.get(this.pileOf[p]!) ?? []) enter(q);
+      for (const d of this.carries[p] ?? []) enter(d);
+    }
+    // Held: a support outside the zone; then the rest of that settling, and up through what it carries.
+    const held = new Set<number>();
+    const hold = (p: number): void => {
+      if (!zone.has(p) || held.has(p)) return;
+      held.add(p);
+      stack.push(p);
+    };
+    for (const p of zone) if (this.supports[p]?.some((q) => q === FOREIGN || (!zone.has(q) && this.state[q] !== GONE))) hold(p);
+    while (stack.length > 0) {
+      const p = stack.pop()!;
+      for (const q of this.pileChunks.get(this.pileOf[p]!) ?? []) hold(q);
+      for (const d of this.carries[p] ?? []) hold(d);
+    }
+    // The rest falls, a body for each settling it came to rest in.
+    const falls = new Map<number, number[]>();
+    for (const p of zone) {
+      if (held.has(p)) continue;
+      const k = this.pileOf[p]!;
+      const g = falls.get(k);
+      if (g) g.push(p);
+      else falls.set(k, [p]);
+    }
+    for (const g of falls.values()) {
+      this.counters.dropped += g.length;
+      this.wakeTogether(g);
+    }
+  }
+
   /** The chunk leaves the building or the rubble: its fixed collider goes. */
   private dropFixed(piece: number): void {
     this.version++;
     const s = this.state[piece];
+    // Whatever rests on it, it holds until it moves off; from the rubble, it no longer rests on anything.
+    if (this.carries[piece]?.size && (s === STANDING || s === RUBBLE)) this.watchFrom(piece);
+    if (s === RUBBLE) {
+      this.unlink(piece);
+      const mates = this.pileChunks.get(this.pileOf[piece]!);
+      mates?.delete(piece);
+      if (mates?.size === 0) this.pileChunks.delete(this.pileOf[piece]!);
+    }
     const c = this.collider[piece]!;
     if (c > 0 && (s === STANDING || s === RUBBLE)) {
       this.lostSupport(piece);
@@ -609,6 +786,7 @@ export class Debris {
     }
     this.dropFixed(piece);
     this.setState(piece, GONE);
+    this.unhold(piece);
   }
 
   /**
@@ -762,6 +940,10 @@ export class Debris {
       this.onLand?.(new THREE.Vector3(_t.x, _t.y, _t.z), landedMass, landedSpeed);
     }
     for (const b of toPile) if (this.bodies.has(b.id)) this.pile(b);
+    // What lost its path to the ground falls now; the shape-query recheck stays as a net for what the
+    // links can't see (loose debris that rolled out from under rubble before the rubble settled on it).
+    this.checkWatched();
+    this.dropUnheld();
     this.recheckRubble();
     if (this.bodies.size > this.options.maxBodies) {
       // Over budget: settle the stillest, oldest bodies where they are (rubble stays; nothing vanishes), if
@@ -849,6 +1031,7 @@ export class Debris {
     for (const p of b.pieces) {
       this.setState(p, GONE);
       this.collider[p] = 0;
+      this.unhold(p);
     }
     this.removeBody(b);
     if (crushed) this.counters.crushed++;
@@ -920,6 +1103,8 @@ export class Debris {
   private pile(b: Body): void {
     const settled = [...b.pieces];
     const poses = settled.map((p) => this.restToWorld(p, new THREE.Matrix4()));
+    const pile = this.nextPile++;
+    this.pileChunks.set(pile, new Set(settled));
     this.removeBody(b);
     settled.forEach((p, i) => {
       const pose = poses[i]!;
@@ -929,6 +1114,7 @@ export class Debris {
       this.collider[p] = this.addChunkCollider(this.rubble, p, true, center, { x: _q.x, y: _q.y, z: _q.z, w: _q.w });
       this.rubblePose[p] = pose;
       this.setState(p, RUBBLE);
+      this.pileOf[p] = pile;
       this.rubbleSet.add(p);
       this.rubbleAt.set([center.x, center.y, center.z], p * 3);
       const key = this.rubbleCell(p);
@@ -936,8 +1122,39 @@ export class Debris {
       if (!cell) this.rubbleCells.set(key, (cell = new Set()));
       cell.add(p);
     });
+    // What each rests on, once all of them are in: the chunks of one settling can rest on each other.
+    for (const p of settled) this.link(p, this.findSupports(p));
     this.counters.piled++;
     this.onSettle?.(settled, settled.length === 1);
+  }
+
+  /** Rubble that settled together (one pose) back to one loose body where it lies; a single chunk as `wake` does it. */
+  private wakeTogether(group: readonly number[]): void {
+    if (group.length === 1) {
+      this.wake(group[0]!);
+      return;
+    }
+    const pose = this.rubblePose[group[0]!]!.clone();
+    pose.decompose(_p, _q, _s);
+    const rotation = _q.clone();
+    let mass = 0;
+    const com = new THREE.Vector3();
+    for (const p of group) {
+      const piece = this.pieces[p]!;
+      mass += piece.mass;
+      com.x += piece.centroid[0] * piece.mass;
+      com.y += piece.centroid[1] * piece.mass;
+      com.z += piece.centroid[2] * piece.mass;
+    }
+    com.divideScalar(mass);
+    const body = this.physics.bodies.create({ type: 'dynamic', position: com.clone().applyMatrix4(pose), rotation });
+    const id = this.nextBodyId++;
+    for (const p of group) {
+      this.dropFixed(p);
+      this.collider[p] = this.addChunkCollider(body, p, true, this.offset(p, com), undefined, this.options.density);
+      this.setState(p, id);
+    }
+    this.addBody({ id, body, pieces: [...group], origin: com, born: this.tick, from: 'wake', lastVel: new THREE.Vector3(), jolt: 0, motion: 1, asleepTicks: 0 });
   }
 
   /**

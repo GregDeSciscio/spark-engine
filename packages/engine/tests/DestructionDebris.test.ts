@@ -226,6 +226,64 @@ describe('gradual destruction (hinges)', () => {
     w.dispose();
   });
 
+  it('a stack of rubble falls at once when what it rests on goes, not peeled away from below', async () => {
+    // A standing table 12 m long, 2 m up, and three layers of 24 blocks settled on it, each layer on the
+    // one below: wider than a loss gathers rubble from, and more than a step's support queries.
+    const pieces: Piece[] = [box(0, [0, 2, 0], [12, 2.5, 2])];
+    for (let layer = 0; layer < 3; layer++)
+      for (let i = 0; i < 12; i++) for (let k = 0; k < 2; k++) pieces.push(box(pieces.length, [i, 2.5 + layer * 0.5, k], [i + 1, 3 + layer * 0.5, k + 1]));
+    const w = await world(pieces);
+    const blocks = pieces.slice(1).map((p) => p.id);
+    for (const p of blocks) w.debris.detach([p]);
+    steps(w, 240);
+    for (const p of blocks) expect(w.debris.state[p]).toBe(RUBBLE);
+    w.debris.remove(0);
+    // Judged chunk by chunk, each layer was held up by the one under it until that one fell: the
+    // stack hung in the air and came away from the bottom up, over many steps.
+    steps(w, 2);
+    for (const p of blocks) expect(w.debris.state[p]).not.toBe(RUBBLE);
+    expect(w.debris.counters.dropped).toBe(blocks.length);
+    steps(w, 180);
+    for (const p of blocks) expect(pieceCenter(w, p).y).toBeLessThan(1.8);
+    w.dispose();
+  });
+
+  it('rubble on a support that came loose but stayed put stays, and falls once that moves off', async () => {
+    const w = await world([box(0, [0, 0, 0], [1, 2, 1]), box(1, [0, 2, 0], [1, 2.5, 1])]);
+    w.debris.detach([1]);
+    steps(w, 60);
+    expect(w.debris.state[1]).toBe(RUBBLE);
+    // The post fails but stands where it stood: the block on it stays settled.
+    w.debris.detach([0]);
+    steps(w, 30);
+    expect(w.debris.state[1]).toBe(RUBBLE);
+    // Knocked aside, it holds nothing up within a few steps of moving off.
+    w.physics.bodies.setVelocity(w.debris.bodyOf(0)!, { x: 3, y: 0, z: 0 });
+    let fell = -1;
+    for (let i = 0; i < 20 && fell < 0; i++) {
+      steps(w, 1);
+      if (w.debris.state[1] !== RUBBLE) fell = i;
+    }
+    expect(fell).toBeGreaterThanOrEqual(0);
+    expect(fell).toBeLessThan(6);
+    w.dispose();
+  });
+
+  it('rubble that settled as one body falls again as one body', async () => {
+    const w = await world([box(0, [0, 0, 0], [2, 2, 1]), box(1, [0, 2, 0], [1, 2.5, 1]), box(2, [1, 2, 0], [2, 2.5, 1])]);
+    w.debris.detach([1, 2]);
+    steps(w, 60);
+    expect(w.debris.state[1]).toBe(RUBBLE);
+    expect(w.debris.state[2]).toBe(RUBBLE);
+    w.debris.remove(0);
+    steps(w, 1);
+    expect(w.debris.state[1]).toBeGreaterThanOrEqual(0);
+    expect(w.debris.state[2]).toBe(w.debris.state[1]);
+    // Where it lay: one body, its chunks where they were, not thrown.
+    expect(pieceCenter(w, 1).y).toBeGreaterThan(2.1);
+    w.dispose();
+  });
+
   it('a chunk asleep on something wakes and falls when that is destroyed', async () => {
     const w = await world([box(0, [0, 0, 0], [1, 2, 1]), box(1, [0, 2, 0], [1, 2.5, 1])]);
     w.debris.canPile = () => false; // held, as if a hinge had it: Rapier sleeps it as a body instead of it turning to rubble
