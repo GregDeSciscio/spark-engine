@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu';
 import type { AssetManager } from '../assets/AssetManager';
 import { COLLISION_PREFIX, type ModelAsset } from '../assets/ModelAsset';
 import type { Disposable } from '../core/Disposable';
+import type { PieceBox } from '../destruction/core/authored';
 import { Logger } from '../core/Logger';
 import { Renderable, Transform } from '../ecs/components/Transform';
 import type { Entity, EntityWorld } from '../ecs/EntityWorld';
@@ -69,6 +70,14 @@ export type LevelEntityDescriptor =
       readonly layer: string;
       /** World-space half extents for `box`. */
       readonly halfExtents: readonly [number, number, number];
+    }
+  | {
+      readonly kind: 'destructible';
+      readonly node: LevelNode;
+      /** `spark.structure`: the boxes of one name make one destructible structure. Default `default`. */
+      readonly structure: string;
+      /** The box as `fractureBoxes` takes it: `spark.piece` (wall, slab, column), `spark.cell`, `spark.density`. */
+      readonly box: PieceBox;
     }
   | { readonly kind: 'unknown'; readonly node: LevelNode; readonly type: string };
 
@@ -148,6 +157,23 @@ export function parseLevelNodes(nodes: readonly LevelNode[]): LevelEntityDescrip
             ? [he[0] * node.scale[0], he[1] * node.scale[1], he[2] * node.scale[2]]
             : [node.scale[0] / 2, node.scale[1] / 2, node.scale[2] / 2];
         out.push({ kind: 'trigger', node, id: triggerId++, halfExtents, event: asString(s.event) });
+        break;
+      }
+      case 'destructible': {
+        const he = node.halfExtents ?? [0.5, 0.5, 0.5];
+        const halfExtents: [number, number, number] = [he[0] * node.scale[0], he[1] * node.scale[1], he[2] * node.scale[2]];
+        // Unnamed, a box's kind is told by its shape: a flat one is a slab, a long thin one a column, the rest walls.
+        const named = asString(s.piece);
+        const [a, b, c] = [...halfExtents].sort((x, y) => x - y) as [number, number, number];
+        const kind = named === 'wall' || named === 'slab' || named === 'column' ? named : b < 2 * a && c > 3 * b ? 'column' : halfExtents[1] === a ? 'slab' : 'wall';
+        const cell = typeof s.cell === 'number' && s.cell > 0 ? s.cell : undefined;
+        const density = typeof s.density === 'number' && s.density > 0 ? s.density : undefined;
+        out.push({
+          kind: 'destructible',
+          node,
+          structure: asString(s.structure) ?? 'default',
+          box: { center: [...node.position], quaternion: [...node.quaternion], halfExtents, kind, cell, density },
+        });
         break;
       }
       case 'light':
@@ -340,6 +366,12 @@ export interface LoadedLevel extends Disposable {
   readonly triggers: readonly Entity[];
   readonly lights: readonly Entity[];
   readonly colliders: readonly Entity[];
+  /**
+   * The level's destructible structures (`spark.type = destructible`), their boxes by `spark.structure`
+   * name, for `authoredStructure` and a `Destruction` each. Their meshes are hidden and get no collider:
+   * the structure draws and collides its own chunks.
+   */
+  readonly destructibles: ReadonlyMap<string, readonly PieceBox[]>;
   readonly teams: readonly string[];
   /** World position of the first spawn point for a team (any team when omitted), or null. */
   spawn(team?: string): { x: number; y: number; z: number } | null;
@@ -410,6 +442,7 @@ export class LevelLoader {
     const triggers: Entity[] = [];
     const lights: Entity[] = [];
     const colliders: Entity[] = [];
+    const destructibles = new Map<string, PieceBox[]>();
     const twins = new Map<Entity, THREE.Mesh>();
     const teamOf = new Map<Entity, string>();
 
@@ -560,6 +593,13 @@ export class LevelLoader {
           colliders.push(eid);
           break;
         }
+        case 'destructible': {
+          let list = destructibles.get(descriptor.structure);
+          if (!list) destructibles.set(descriptor.structure, (list = []));
+          list.push(descriptor.box);
+          if (object) object.visible = false;
+          break;
+        }
         case 'unknown':
           this.log.debug(`unknown spark.type "${descriptor.type}" on ${descriptor.node.path}; ignored`);
           break;
@@ -632,7 +672,7 @@ export class LevelLoader {
     }
 
     this.log.info(
-      `level ${url ?? '(asset)'}: ${descriptors.length} descriptors → spawns=${spawnPoints.length} props=${props.length} triggers=${triggers.length} lights=${lights.length} colliders=${colliders.length}`,
+      `level ${url ?? '(asset)'}: ${descriptors.length} descriptors → spawns=${spawnPoints.length} props=${props.length} triggers=${triggers.length} lights=${lights.length} colliders=${colliders.length} destructibles=${destructibles.size}`,
     );
 
     const teams = this.teams;
@@ -649,6 +689,7 @@ export class LevelLoader {
       triggers,
       lights,
       colliders,
+      destructibles,
       teams,
       renderTwin(collider: Entity) {
         return twins.get(collider) ?? null;

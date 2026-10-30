@@ -65,3 +65,4 @@ export {
 export { fractureRect } from './core/fracture';
 export { rng, type P2, type V3 } from './core/math';
 export { buildBuilding, DEFAULT_BUILDING, type Building, type BuildingParams } from './core/building';
+export { authoredStructure, fractureBoxes, type AuthoredOptions, type PieceBox } from './core/authored';
