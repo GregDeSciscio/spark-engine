@@ -377,6 +377,16 @@ export class Debris implements BudgetMember {
     return 0;
   }
 
+  /**
+   * A loose body's mass and the velocity it had going into the last physics step (before whatever
+   * it hit there stopped it), or null if `body` is not one of this layer's.
+   */
+  incoming(body: BodyHandle): { mass: number; velocity: THREE.Vector3 } | null {
+    const b = this.byHandle.get(body);
+    if (!b) return null;
+    return { mass: this.physics.bodies.mass(body), velocity: b.lastVel };
+  }
+
   get bodyCount(): number {
     return this.bodies.size;
   }

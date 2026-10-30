@@ -9,7 +9,7 @@ import type { Entity, EntityWorld } from '../ecs/EntityWorld';
 import { SideTable } from '../ecs/SideTable';
 import type { System } from '../ecs/System';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
-import type { BodyHandle, JointHandle, Vec3Like } from '../physics/types';
+import type { BodyHandle, JointHandle, QuatLike, ShapeDesc, Vec3Like } from '../physics/types';
 import type { ParticleSystem } from '../vfx/ParticleSystem';
 import { budgetsOf } from './Budget';
 import { ChunkMesh } from './ChunkMesh';
@@ -120,6 +120,13 @@ export interface DestructionOptions {
   squeezeForce?: number | undefined;
   /** Velocity change (m/s in one step) of a hung body that clangs: it hit something, or a rope snapped taut. Default 0.9. */
   clangDeltaV?: number | undefined;
+  /**
+   * Debris that reaches a watched entity (`Destruction.watchHits`) faster than this (m/s, as it
+   * came in) is a `hit`. Default 2.
+   */
+  hitSpeed?: number | undefined;
+  /** ...and with at least this much momentum (kg·m/s): a pebble rolling into an ankle is not news. Default 100. */
+  hitMomentum?: number | undefined;
   /** Gravity (m/s²) for hanging loads. Default: the physics world's. */
   gravity?: number | undefined;
   /**
@@ -149,6 +156,12 @@ export interface DestructionEvents extends Record<string, unknown> {
   fail: { pieces: readonly number[]; under: number };
   /** A loose wall or column still upright as built landed hard under what was above it, and was crushed. */
   buckle: { at: THREE.Vector3; mass: number; pieces: readonly number[] };
+  /**
+   * Debris struck a watched entity (`Destruction.watchHits`: a character, a bot): which, the chunk
+   * (`part`) of the body that hit it, where that body's centre of mass was, its mass (kg), the speed
+   * it came in at (m/s) and its momentum (kg·m/s). Once per body per contact; the game decides the damage.
+   */
+  hit: { eid: Entity; part: number; at: THREE.Vector3; mass: number; speed: number; momentum: number };
 }
 
 export interface DestructionStats {
@@ -203,11 +216,17 @@ interface Resolved {
   squeezeRatio: number;
   squeezeForce: number;
   clangDeltaV: number;
+  hitSpeed: number;
+  hitMomentum: number;
   gravity: number;
   solverIterations: number;
 }
 
 const tables = new WeakMap<EntityWorld, SideTable<Destruction>>();
+/** Per physics world: the entities debris hits are reported for, each with the shape to test (null: its own colliders). */
+const watchers = new WeakMap<object, Map<Entity, ShapeDesc | null>>();
+/** Fixed steps a body and a watched entity must be apart before the body's next contact is a new hit. */
+const HIT_GAP = 12;
 
 function tableOf(entities: EntityWorld): SideTable<Destruction> {
   let table = tables.get(entities);
@@ -221,6 +240,8 @@ function tableOf(entities: EntityWorld): SideTable<Destruction> {
 const _t: Vec3Like = { x: 0, y: 0, z: 0 };
 const _r = { x: 0, y: 0, z: 0, w: 1 };
 const _v: Vec3Like = { x: 0, y: 0, z: 0 };
+const _hp: Vec3Like = { x: 0, y: 0, z: 0 };
+const _hq: QuatLike = { x: 0, y: 0, z: 0, w: 1 };
 /** Below this speed (m/s) a squeezed loose body counts as at rest (`squeezeRatio`). */
 const RESTING_SPEED = 0.5;
 /** A contact this close to level (the vertical part of its normal) is one a chunk rests on (`failSupports`). */
@@ -248,6 +269,8 @@ export class Destruction implements Disposable {
   readonly listener = new THREE.Vector3();
   readonly pieces: readonly Piece[];
   readonly connections: readonly Connection[];
+  /** Where the structure stands: every chunk's rest pose inside it. */
+  readonly bounds = new THREE.Box3();
   /** The layers, for tools and tests. */
   readonly debris: Debris;
   readonly hinges: Hinges;
@@ -315,6 +338,8 @@ export class Destruction implements Disposable {
   /** Loose bodies and rubble chunks squeezed past `squeezeRatio` at the last read: a second read in a row crushes them. */
   private squeezed = new Set<BodyHandle>();
   private squeezedRubble = new Set<number>();
+  /** Debris body and watched entity pairs touching, by `eid:body`, and the tick each was last seen (`detectHits`). */
+  private readonly touching = new Map<string, number>();
   /** Dents per standing chunk: how far it has been shoved, and which way (accumulates, capped). */
   private readonly dents = new Map<number, THREE.Vector3>();
   private disposed = false;
@@ -322,6 +347,50 @@ export class Destruction implements Disposable {
   /** The runtime of a structure's entity (a raycast's `eid`), if it is one. */
   static of(entities: EntityWorld, eid: Entity): Destruction | undefined {
     return tables.get(entities)?.get(eid);
+  }
+
+  /** Every structure in `entities`. */
+  static all(entities: EntityWorld): Destruction[] {
+    const table = tables.get(entities);
+    return table ? [...table.entries()].map(([, d]) => d) : [];
+  }
+
+  /**
+   * The structure standing nearest `point` (inside its bounds counts as nearest). A grenade
+   * thrown into a street of several buildings belongs to the one it landed by: its smoke takes
+   * the shape of that structure's rooms.
+   */
+  static nearest(entities: EntityWorld, point: Vec3Like): Destruction | undefined {
+    const p = new THREE.Vector3(point.x, point.y, point.z);
+    let best: Destruction | undefined;
+    let bestD = Infinity;
+    for (const d of Destruction.all(entities)) {
+      const dist = d.bounds.distanceToPoint(p);
+      if (dist < bestD) [best, bestD] = [d, dist];
+    }
+    return best;
+  }
+
+  /** How thick smoke or gas is at `point` (0-1), over every structure's clouds: gas at a character's head is what it breathes. */
+  static densityAt(entities: EntityWorld, kind: SmokeKind, point: Vec3Like): number {
+    let best = 0;
+    for (const d of Destruction.all(entities)) best = Math.max(best, d.densityAt(kind, point));
+    return best;
+  }
+
+  /**
+   * Report debris that strikes `eid` (a character, a bot) as `hit` events, from every structure in
+   * `physics`. Its own colliders are tested unless `shape` is given (placed at its first collider):
+   * a character's capsule grown a few centimetres catches what its controller's skin keeps off.
+   * Returns the call that stops it; it also stops when the entity goes.
+   */
+  static watchHits(physics: PhysicsWorld, eid: Entity, shape?: ShapeDesc): () => void {
+    let map = watchers.get(physics);
+    if (!map) watchers.set(physics, (map = new Map()));
+    map.set(eid, shape ?? null);
+    return () => {
+      watchers.get(physics)?.delete(eid);
+    };
   }
 
   constructor(deps: DestructionDeps, structure: DestructionStructure, options: DestructionOptions = {}) {
@@ -343,6 +412,8 @@ export class Destruction implements Disposable {
       squeezeRatio: options.squeezeRatio ?? 20,
       squeezeForce: options.squeezeForce ?? 100_000,
       clangDeltaV: options.clangDeltaV ?? 0.9,
+      hitSpeed: options.hitSpeed ?? 2,
+      hitMomentum: options.hitMomentum ?? 100,
       gravity: options.gravity ?? Math.abs(deps.physics.gravity.y),
       solverIterations: options.solverIterations ?? 6,
     };
@@ -353,6 +424,10 @@ export class Destruction implements Disposable {
     const connections = structure.connections ?? findConnections(pieces);
     this.pieces = pieces;
     this.connections = connections;
+    for (const p of pieces) {
+      this.bounds.expandByPoint(new THREE.Vector3(p.min[0], p.min[1], p.min[2]));
+      this.bounds.expandByPoint(new THREE.Vector3(p.max[0], p.max[1], p.max[2]));
+    }
     const data = buildStructure(pieces, connections);
 
     this.entity = this.entities.create([Destructible, { chunks: pieces.length, standing: pieces.length, loose: 0 }]);
@@ -984,6 +1059,12 @@ export class Destruction implements Disposable {
     this.smokes.spawn(kind, new THREE.Vector3(point.x, point.y, point.z));
   }
 
+  /** How thick this structure's smoke or gas is at `point` (0-1). `Destruction.densityAt` asks every structure. */
+  densityAt(kind: SmokeKind, point: Vec3Like): number {
+    if (this.disposed) return 0;
+    return this.smokes.densityAt(kind, new THREE.Vector3(point.x, point.y, point.z));
+  }
+
   /** The stress view: white at baseline, yellow a quarter of the way to breaking, red at the break. */
   heatView(on: boolean): void {
     this.heatOn = on;
@@ -1085,8 +1166,10 @@ export class Destruction implements Disposable {
     const { debris, hinges, fx } = this;
     this.tick++;
     const loadTick = this.tick % this.o.loadTicks === 0;
-    // First, while the last step's colliders are all still where it left them.
+    // First, while the last step's colliders are all still where it left them, and before the debris
+    // layer records this step's velocities (a hit is told by the speed a body came in at).
     if (loadTick) this.readResting();
+    this.detectHits();
 
     // Bring loose what Strain cut free, a budget per step (always at least one group).
     for (let budget = this.o.detachPerTick; this.detachQueue.length > 0 && budget > 0; ) {
@@ -1143,6 +1226,51 @@ export class Destruction implements Disposable {
     const store = this.entities.store(Destructible);
     store.standing[this.entity] = this.last?.liveNodes ?? this.pieces.length;
     store.loose[this.entity] = debris.bodyCount;
+  }
+
+  /**
+   * Debris touching a watched entity (`watchHits`) after the last physics step: a new contact
+   * that came in fast and heavy enough is a `hit`. The velocity is the one it had going into the
+   * step, before the entity stopped it.
+   */
+  private detectHits(): void {
+    const watched = watchers.get(this.physics);
+    if (!watched || watched.size === 0) {
+      this.touching.clear();
+      return;
+    }
+    const { debris } = this;
+    const bodies = this.physics.bodies;
+    for (const [eid, shape] of watched) {
+      if (!this.entities.exists(eid)) {
+        watched.delete(eid);
+        continue;
+      }
+      const body = this.physics.bodyOf(eid);
+      if (body === undefined) continue;
+      const colliders = bodies.colliders(body);
+      for (const c of shape ? colliders.slice(0, 1) : colliders) {
+        if (!bodies.colliderPose(c, _hp, _hq)) continue;
+        this.physics.overlapShape(shape ?? c, { position: _hp, rotation: _hq }, (hitC, owner, part) => {
+          if (owner !== this.entity) return true;
+          const info = bodies.info(hitC);
+          if (!info || info.body === debris.building || info.body === debris.rubble) return true;
+          const key = `${eid}:${info.body}`;
+          const last = this.touching.get(key);
+          this.touching.set(key, this.tick);
+          if (last !== undefined && this.tick - last <= HIT_GAP) return true;
+          const came = debris.incoming(info.body);
+          if (!came) return true;
+          const speed = came.velocity.length();
+          const momentum = came.mass * speed;
+          if (speed < this.o.hitSpeed || momentum < this.o.hitMomentum) return true;
+          bodies.centerOfMass(info.body, _t);
+          this.events.emit('hit', { eid, part, at: new THREE.Vector3(_t.x, _t.y, _t.z), mass: came.mass, speed, momentum });
+          return true;
+        });
+      }
+    }
+    for (const [key, tick] of this.touching) if (this.tick - tick > HIT_GAP) this.touching.delete(key);
   }
 
   /** One rendered frame, after the scene's own late update. `systems()` runs it. */

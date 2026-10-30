@@ -314,6 +314,23 @@ export class SmokeSystem {
     return this.clouds.length;
   }
 
+  /**
+   * How thick `kind` is at `p` (0-1): the densest cloud of that kind whose voxel there it has
+   * reached, thinning over its last three seconds as drawn. Gas at a character's head is what it
+   * breathes.
+   */
+  densityAt(kind: SmokeKind, p: THREE.Vector3): number {
+    let best = 0;
+    for (const cloud of this.clouds) {
+      if (cloud.kind !== kind) continue;
+      const c = cloud.cellOf(p);
+      if (c < 0 || !cloud.filled[c]) continue;
+      const life = Math.min(1, (KINDS[kind].seconds - cloud.age) / 3);
+      best = Math.max(best, cloud.density[c]! * Math.max(0, life));
+    }
+    return best;
+  }
+
   get voxels(): number {
     return this.clouds.reduce((s, c) => s + c.count, 0);
   }
