@@ -91,7 +91,7 @@ Reinforcements are built dormant at load and deployed with a pose, never instant
    }
    ```
 
-   Every structure in a physics world shares one strain worker and one debris budget, so ten buildings cost what the debris costs, not ten times it.
+   Every structure in a physics world shares one strain worker and one debris budget, and the structures of an entity world share one set of effects, so ten buildings cost what the debris costs, not ten times it. The budget follows the quality preset (`debrisBudget`). The shake offset is shared: add one structure's to the camera, not every structure's.
 2. **Explosions that cross buildings.** `Destruction.of(entities, hit.eid)` names the building a ray hit. For a blast, call `explode` on every structure whose `bounds` is within a few radii of the point. A grenade belongs to `Destruction.nearest(entities, point)`.
 3. **Damage.** `Destruction.watchHits(physics, eid, capsuleGrownBySomeCm)` for the player and each bot, then turn every structure's `hit` event (`eid`, `momentum`) into damage. Gas is `Destruction.densityAt(entities, 'gas', head)`. A character controller is kinematic, so a floor that lands on one rests on its head until the game takes it away: treat a heavy hit as lethal, or move the character out.
 4. **Bots.** Build the navmesh tiled, from your static geometry and every structure as it stands, and let structures tell it where they changed:
@@ -105,7 +105,7 @@ Reinforcements are built dormant at load and deployed with a pose, never instant
    // each frame:
    nav.update(1); // a tile costs a few ms; agents repath on their own cadence
    ```
-5. **Checkpoints.** `d.save()` is plain data. To load, dispose the structures, build them afresh from the same pieces, and `restore()` each; rebuild the navmesh after.
+5. **Checkpoints.** `d.save()` is plain data. To load, build each structure afresh from the same pieces and `restore()` it, then dispose the old ones. That order keeps what they share, and rebuilding the effects took 3 s. Keep the navmesh and `invalidate` each structure's bounds; rebuilding it whole took 0.3 s.
 
 Read `docs/decisions/ADR-011-destruction-subsystem.md` for the worker (bundling, CSP, the fallback), `docs/architecture/lessons-from-destruction.md` for what the sandbox and the slice taught, and `docs/design/destruction-game-readiness.md` for what is still open.
 
