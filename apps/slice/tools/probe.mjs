@@ -16,7 +16,7 @@
  * storey, a rocket barrage on the depot and the shed while the bots patrol and the navmesh rebuilds:
  * frame pacing, the debris peak against the shared budget, tiles rebuilt, console errors.
  *
- *   node tools/probe.mjs [--realtime-only] [--fixed-only] [--json]
+ *   node tools/probe.mjs [--realtime-only] [--fixed-only] [--throttle=4] [--json]
  * Exits 1 if a check fails.
  */
 /* global requestAnimationFrame -- in page.evaluate, which runs in the browser */
@@ -38,8 +38,12 @@ const check = (name, ok, detail, open = false) => {
 };
 const report = {};
 
+/** `--throttle=4` slows the page's CPU fourfold (Chromium's own emulation): a stand-in for a slower machine's CPU, not its GPU. */
+const throttle = Number(process.argv.find((a) => a.startsWith('--throttle='))?.split('=')[1] ?? 1);
+
 async function boot(query) {
   const page = await (await browser.newContext({ viewport: { width: 1280, height: 720 } })).newPage();
+  if (throttle > 1) await (await page.context().newCDPSession(page)).send('Emulation.setCPUThrottlingRate', { rate: throttle });
   const errors = [];
   page.on('console', (m) => {
     if (m.type() === 'error' || (m.type() === 'warning' && !m.text().includes('[vite]'))) errors.push(m.text());
@@ -161,15 +165,18 @@ try {
     const pacing = await page.evaluate(async () => {
       const g = window.__spark.game;
       const frames = [];
+      const standing = [];
       let peak = 0;
       let last = performance.now();
       const start = last;
       let phase = 0;
       await new Promise((resolve) => {
         const tick = (now) => {
-          frames.push(now - last);
-          last = now;
           const t = (now - start) / 1000;
+          // Before the barrage: the yard standing, for comparison.
+          if (phase === 0) standing.push(now - last);
+          else frames.push(now - last);
+          last = now;
           peak = Math.max(peak, g.stats().budgets.bodies);
           if (phase === 0 && t > 1) {
             phase = 1;
@@ -202,7 +209,8 @@ try {
       const sorted = [...frames].sort((a, b) => a - b);
       const q = (p) => +sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))].toFixed(1);
       const s = g.stats();
-      return { frames: frames.length, median: q(0.5), p95: q(0.95), p99: q(0.99), longest: +sorted[sorted.length - 1].toFixed(1), over33: frames.filter((f) => f > 33.4).length, peakBodies: peak, limit: s.budgets.bodyLimit, rebuilt: s.nav.rebuilt, pending: s.nav.pendingTiles, standing: Object.fromEntries(s.structures.map((x) => [x.name, `${x.standing}/${x.chunks}`])), botsAlive: s.bots.filter((b) => b.alive).length };
+      const still = [...standing].sort((a, b) => a - b);
+      return { standingMedian: +(still[Math.floor(still.length / 2)] ?? 0).toFixed(1), frames: frames.length, median: q(0.5), p95: q(0.95), p99: q(0.99), longest: +sorted[sorted.length - 1].toFixed(1), over33: frames.filter((f) => f > 33.4).length, peakBodies: peak, limit: s.budgets.bodyLimit, rebuilt: s.nav.rebuilt, pending: s.nav.pendingTiles, standing: Object.fromEntries(s.structures.map((x) => [x.name, `${x.standing}/${x.chunks}`])), botsAlive: s.bots.filter((b) => b.alive).length };
     });
     report.realtime = pacing;
     console.log(`real time: ${JSON.stringify(pacing)}`);
