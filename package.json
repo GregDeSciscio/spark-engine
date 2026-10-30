@@ -28,6 +28,8 @@
     "probe": "node tools/probes/probe.mjs",
     "assets": "node tools/asset-pipeline/pipeline.mjs",
     "level:street": "node tools/level-authoring/build.mjs",
+    "level:yard": "node tools/level-authoring/build.mjs --level=yard",
+    "dev:slice": "pnpm --filter @spark/slice dev",
     "props:fetch": "node tools/asset-pipeline/fetch-polyhaven.mjs --kit=street",
     "audio:generate": "node tools/audio/generate.mjs --manifest=apps/showcase/audio/manifest.mjs",
     "audio:build": "node tools/audio/build.mjs --manifest=apps/showcase/audio/manifest.mjs",

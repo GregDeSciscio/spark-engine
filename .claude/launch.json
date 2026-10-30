@@ -67,6 +67,17 @@
       ],
       "port": 5173,
       "autoPort": true
+    },
+    {
+      "name": "slice",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "@spark/slice",
+        "dev"
+      ],
+      "port": 5187,
+      "autoPort": true
     }
   ]
 }
