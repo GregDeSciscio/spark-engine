@@ -19,7 +19,8 @@
     "sfx": "python -I tools/prepare_sfx.py",
     "clip": "node tools/clip.mjs",
     "tower": "node tools/tower.mjs",
-    "blur": "node tools/blur.mjs"
+    "blur": "node tools/blur.mjs",
+    "determinism": "node tools/determinism.mjs"
   },
   "dependencies": {
     "@spark/engine": "workspace:*",

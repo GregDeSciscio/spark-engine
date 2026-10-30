@@ -217,6 +217,35 @@ describe('Destruction', () => {
     r.dispose();
   }, 60_000);
 
+  it('runs the same whatever the listener does: the camera never reaches the simulation', async () => {
+    // A showcase film's fixed-clock replay with a different camera path came out different. The
+    // camera's one way in is the listener (blast shake, sound); the same blasts with the listener
+    // still or flying past them must leave every body in the same place, to the bit.
+    const poses = async (fly: boolean): Promise<string> => {
+      const r = await rig();
+      const d = make(r);
+      r.frames(2);
+      for (let f = 0; f < 150; f++) {
+        if (fly) d.listener.set(-20 + f * 0.3, 1 + Math.sin(f * 0.2) * 3, -10);
+        if (f === 5) d.explode({ x: -4.5, y: 0.5, z: -3.8 }, 1.6, { x: 0, y: 0, z: -1 });
+        if (f === 20) d.explode({ x: 3, y: 4, z: -3.8 }, 2.4, { x: 0, y: 0, z: -1 });
+        r.frames(1);
+      }
+      const rows: number[][] = [];
+      r.physics.raw.bodies.forEach((b) => {
+        const t = b.translation();
+        const q = b.rotation();
+        rows.push([b.handle, t.x, t.y, t.z, q.x, q.y, q.z, q.w]);
+      });
+      const out = JSON.stringify(rows.sort((a, b) => a[0]! - b[0]!)) + JSON.stringify(d.stats().debris);
+      r.dispose();
+      return out;
+    };
+    const still = await poses(false);
+    expect(still).toContain('['); // some bodies
+    expect(await poses(true)).toBe(still);
+  }, 60_000);
+
   it('leaves no body, collider or joint behind when disposed, ropes and hinges included', async () => {
     const r = await rig();
     const before = { bodies: r.physics.bodyCount, colliders: r.physics.bodies.colliderCount, joints: r.physics.joints.count, entities: r.entities.count };
