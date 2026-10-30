@@ -28,6 +28,7 @@ import { SOUNDS } from './sounds';
  * look with a crosshair.
  *   LMB fire (at the cursor, or the crosshair in mouse look) · 1 rocket · 2 rifle
  *   3 breach charge · 4 smoke · 5 gas · H stress heat view · R rebuild
+ *   ` the engine's stats panel, and the solver and debris counters with it
  */
 
 export type Weapon = 'rocket' | 'rifle' | 'charge' | 'smoke' | 'gas';
@@ -44,6 +45,8 @@ export interface SandboxOptions {
   strain: 'worker' | 'inline';
   /** Add the eight-storey tower (`?tower=1`). */
   tower?: boolean | undefined;
+  /** Is the engine's stats panel showing? The HUD shows its counters with it. Default: always. */
+  statsShown?: (() => boolean) | undefined;
 }
 
 export interface SandboxStats extends DestructionStats {
@@ -316,7 +319,7 @@ export function sandboxScene(options: SandboxOptions, onApi: (api: SandboxApi) =
           hudTimer += dt;
           if (hudTimer > 0.2) {
             hudTimer = 0;
-            hud.render(stats(), WEAPONS[weapon].label, input.isPointerLocked);
+            hud.render(stats(), WEAPONS[weapon].label, input.isPointerLocked, options.statsShown?.() ?? true);
           }
         },
 

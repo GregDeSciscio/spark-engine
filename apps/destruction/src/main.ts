@@ -19,7 +19,8 @@ async function main(): Promise<void> {
     await engine.initialize();
     api.backend = engine.renderer.capabilities.backend;
     const strain = params.get('strain') === 'inline' ? 'inline' : 'worker';
-    await engine.loadScene(sandboxScene({ strain, tower: params.get('tower') === '1' }, (game) => (api.game = game)));
+    const statsShown = (): boolean => engine.stats?.isVisible ?? false;
+    await engine.loadScene(sandboxScene({ strain, tower: params.get('tower') === '1', statsShown }, (game) => (api.game = game)));
     engine.start();
     api.ready = true;
   } catch (error) {

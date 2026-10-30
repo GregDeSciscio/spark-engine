@@ -19,11 +19,18 @@ export class Hud {
     parent.append(this.root, this.cross);
   }
 
-  render(s: SandboxStats, weapon: string, locked: boolean): void {
+  /** The controls line always; the solver and debris counters with the engine's stats panel (the backquote key). */
+  render(s: SandboxStats, weapon: string, locked: boolean, counters: boolean): void {
     const ms = (v: number | undefined): string => (v === undefined ? '–' : `${v.toFixed(1)} ms`);
     const t = s.last?.timing;
+    const controls = `${weapon}    ${locked ? 'mouse look (F to leave)' : 'click fires at the cursor · right-drag looks · F mouse look'}    heat ${s.heat ? 'ON' : 'off'} (H)    \` stats`;
+    if (!counters) {
+      this.text.textContent = controls;
+      this.cross.style.display = locked ? 'block' : 'none';
+      return;
+    }
     this.text.textContent = [
-      `${weapon}    ${locked ? 'mouse look (F to leave)' : 'click fires at the cursor · right-drag looks · F mouse look'}    heat ${s.heat ? 'ON' : 'off'} (H)`,
+      controls,
       `chunks ${s.standing}/${s.chunks} standing · ${s.contacts} contacts · ${s.dof} DOF · strain in ${s.strainMode}`,
       `first solve ${ms(s.init?.timing.totalMs)} (order ${ms(s.init?.timing.orderMs)}, factor ${ms(s.init?.timing.factorMs)})`,
       `last step  ${ms(t?.totalMs)} ${s.last?.mode ?? ''} ${s.last?.region ?? 0} chunks (factor ${ms(t?.factorMs)}) · broke ${s.last?.broken.length ?? 0} · worst ${(s.last?.worst ?? 0).toFixed(2)}`,
