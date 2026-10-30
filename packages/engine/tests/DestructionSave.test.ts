@@ -102,6 +102,8 @@ describe('saving and restoring a destroyed structure', () => {
     const b = await world();
     b.d.restore(save);
     const after = classes(b.d);
+    // Its counts are right at once, before Strain has answered a step (they read every chunk standing).
+    expect(b.d.stats().standing).toBe(before.standing.length);
     expect(after.gone).toEqual(before.gone);
     expect(after.rubble).toEqual(before.rubble);
     expect(after.loose).toEqual(before.loose);
@@ -124,6 +126,32 @@ describe('saving and restoring a destroyed structure', () => {
     let stayed = 0;
     for (const [p, v] of rubbleAt) if (b.d.debris.state[p] === RUBBLE && at(b.d, p).distanceTo(v) < 0.05) stayed++;
     expect(stayed).toBeGreaterThan(rubbleAt.size * 0.8);
+    b.dispose();
+  }, 60_000);
+
+  it('keeps what Strain had cut loose but not yet let go, and lets it go after the restore', async () => {
+    // The slice's real-input session saved mid-collapse: three chunks Strain had cut loose were still
+    // waiting to become bodies, so the save called them standing and the load stood them back up.
+    const a = await world();
+    a.frames(2);
+    a.d.remove(a.d.pieces.filter((p) => p.max[1] < 3 && p.kind !== 'slab').map((p) => p.id));
+    let save = a.d.save();
+    for (let i = 0; i < 60 && (save.pending ?? []).length === 0; i++) {
+      a.frames(1);
+      save = a.d.save();
+    }
+    const waiting = (save.pending ?? []).flat();
+    expect(waiting.length).toBeGreaterThan(0);
+    const standing = a.d.stats().standing;
+    a.dispose();
+
+    const b = await world();
+    b.d.restore(JSON.parse(JSON.stringify(save)));
+    // Counted as gone from the structure at once, as they were...
+    expect(b.d.stats().standing).toBe(standing);
+    // ...and loose a few steps later.
+    b.frames(10);
+    expect(waiting.every((p) => b.d.debris.state[p] !== STANDING)).toBe(true);
     b.dispose();
   }, 60_000);
 

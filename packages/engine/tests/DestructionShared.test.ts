@@ -59,6 +59,50 @@ describe('two structures in one physics world', () => {
     await initRapier();
   });
 
+  it('share one set of effects and sounds: defined once, kept while any structure lives, hosted by one', async () => {
+    // One set per structure made 22 particle emitters each and defined the same sounds again, so a
+    // checkpoint that rebuilt a level's buildings regenerated every emitter, and disposing one building
+    // undefined the sounds of the rest.
+    const entities = new EntityWorld({ capacity: 4096 });
+    const physics = await PhysicsWorld.create({ entities, fixedStepHz: 60 });
+    const defined = new Map<string, number>();
+    const audio = {
+      defineSound: (d: { name: string }) => defined.set(d.name, (defined.get(d.name) ?? 0) + 1),
+      undefineSound: (name: string) => defined.delete(name),
+      playAt: () => {},
+      ambience: { play: () => {}, stop: () => {} },
+    } as unknown as NonNullable<ConstructorParameters<typeof Destruction>[0]['audio']>;
+    const sounds = { takes: { boom: ['b.mp3'], thud: ['t.mp3'] }, air: { url: 'air.wav', volume: 0.1 } };
+    const make = (x: number): Destruction => new Destruction({ entities, physics, audio, random: new Random(7) }, { pieces: buildBuilding({ x }).pieces }, { sounds });
+    const a = make(-30);
+    const b = make(0);
+    const c = make(30);
+    // Defined once, not three times.
+    expect([...defined.values()].every((n) => n === 1)).toBe(true);
+    expect(defined.has('destruction-boom')).toBe(true);
+    // One structure hosts the effects (their flash light); the others carry none of them.
+    const hosted = (d: Destruction): number => {
+      let n = 0;
+      d.object.traverse((o) => {
+        if ((o as { isPointLight?: boolean }).isPointLight) n++;
+      });
+      return n;
+    };
+    expect([hosted(a), hosted(b), hosted(c)]).toEqual([1, 0, 0]);
+    // The host goes: the next one takes them, and the sounds stay for the rest.
+    a.dispose();
+    expect(hosted(b)).toBe(1);
+    expect(defined.has('destruction-boom')).toBe(true);
+    b.dispose();
+    expect(hosted(c)).toBe(1);
+    // A blast still works on the last one, and it takes the effects and sounds with it.
+    expect(c.explode({ x: 31, y: 1, z: -3.8 }, 1.6)).toBeGreaterThan(0);
+    c.dispose();
+    expect(defined.size).toBe(0);
+    entities.dispose();
+    physics.dispose();
+  });
+
   it("scale their default budgets by the quality preset's debrisBudget, but not budgets a game sets", async () => {
     const entities = new EntityWorld({ capacity: 4096 });
     const physics = await PhysicsWorld.create({ entities, fixedStepHz: 60 });

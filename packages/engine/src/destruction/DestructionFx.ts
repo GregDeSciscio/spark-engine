@@ -373,6 +373,9 @@ export class DestructionFx {
 
   /** Start (or stop) logging every sound played, stamped in seconds from now: films mix them offline. */
   listen(on: boolean): void {
+    // Already listening: keep the log and its clock. The structures of a world share these effects, and
+    // each one told to listen (a level rebuilt by a checkpoint) wiped what the others had heard.
+    if (on && this.heard) return;
     this.heard = on ? [] : null;
     this.clock = 0;
   }

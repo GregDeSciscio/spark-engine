@@ -190,6 +190,11 @@ export interface DestructionSave {
   readonly hits: Array<[number, number]>;
   /** [chunk, soot 0-1] for chunks that have any. */
   readonly soot: Array<[number, number]>;
+  /**
+   * What Strain had cut loose that had not yet become bodies (a few groups a step come loose while a
+   * collapse is under way): they come loose after a restore too. Missing from a save made before it was kept.
+   */
+  readonly pending?: number[][] | undefined;
 }
 
 /** Where `navGeometry` puts triangles: a `TriangleSoup` fits. */
@@ -256,6 +261,14 @@ interface Resolved {
 }
 
 const tables = new WeakMap<EntityWorld, SideTable<Destruction>>();
+/**
+ * Per entity world: the effects every structure in it shares (the emitters, the flash, the sounds) and
+ * the structures holding them, the first of which hosts their object and updates them. One set per
+ * structure made 22 particle emitters each (66 kernels and materials for a level of three buildings,
+ * compiled again on every checkpoint load), and every structure defined the same sound names, so
+ * disposing one undefined them for the rest.
+ */
+const sharedFx = new WeakMap<EntityWorld, { fx: DestructionFx; holders: Destruction[]; sounds: boolean }>();
 /** Per physics world: the entities debris hits are reported for, each with the shape to test (null: its own colliders). */
 const watchers = new WeakMap<object, Map<Entity, ShapeDesc | null>>();
 /** Fixed steps a body and a watched entity must be apart before the body's next contact is a new hit. */
@@ -341,6 +354,8 @@ export class Destruction implements Disposable {
   private ropeSegs: number[] = [];
   private init: StrainInit | null = null;
   private last: StrainStep | null = null;
+  /** Chunks standing before Strain has answered a step: all of them, or what a restore left. */
+  private standingAtStart: number;
   private pending = false;
   private inFlight = true; // until init answers
   /** Something changed (chunks gone, loads) after the step in flight was asked for: its "stable" doesn't count. */
@@ -467,6 +482,7 @@ export class Destruction implements Disposable {
     const connections = structure.connections ?? findConnections(pieces);
     this.pieces = pieces;
     this.connections = connections;
+    this.standingAtStart = pieces.length;
     for (const p of pieces) {
       this.bounds.expandByPoint(new THREE.Vector3(p.min[0], p.min[1], p.min[2]));
       this.bounds.expandByPoint(new THREE.Vector3(p.max[0], p.max[1], p.max[2]));
@@ -478,9 +494,21 @@ export class Destruction implements Disposable {
     this.previousIterations = this.physics.solverIterations;
     if (this.previousIterations < this.o.solverIterations) this.physics.solverIterations = this.o.solverIterations;
 
-    this.fx = new DestructionFx({ entities: this.entities, vfx: deps.vfx, audio: deps.audio, random: this.random.fork() });
-    this.object.add(this.fx.object);
-    this.fx.loadSounds(options.sounds);
+    // The effects are the entity world's, shared by its structures (`sharedFx`); the fork is taken either
+    // way, so every structure's later streams stay what they were.
+    const fxRandom = this.random.fork();
+    let fx = sharedFx.get(this.entities);
+    if (!fx) {
+      fx = { fx: new DestructionFx({ entities: this.entities, vfx: deps.vfx, audio: deps.audio, random: fxRandom }), holders: [], sounds: false };
+      sharedFx.set(this.entities, fx);
+      this.object.add(fx.fx.object);
+    }
+    fx.holders.push(this);
+    if (!fx.sounds && options.sounds) {
+      fx.fx.loadSounds(options.sounds);
+      fx.sounds = true;
+    }
+    this.fx = fx.fx;
     this.chunks = new ChunkMesh(pieces);
     this.object.add(this.chunks.mesh);
     // Steel out of broken concrete, riding on the chunks, and the bars hanging pieces hang by.
@@ -1196,7 +1224,7 @@ export class Destruction implements Disposable {
       const s = this.chunks.sootOf(p);
       if (s > 0) soot.push([p, s]);
     }
-    return { version: 1, chunks: this.pieces.length, debris: this.debris.save(), broken, hits, soot };
+    return { version: 1, chunks: this.pieces.length, debris: this.debris.save(), broken, hits, soot, pending: this.detachQueue.map((g) => [...g]) };
   }
 
   /**
@@ -1215,6 +1243,14 @@ export class Destruction implements Disposable {
       if (this.debris.state[p] === GONE) this.chunks.setVisible(p, false);
       if (this.debris.state[p] !== STANDING) gone.push(p);
     }
+    // What Strain had cut loose and not yet let go: it leaves Strain now and comes loose over the next steps.
+    for (const group of save.pending ?? []) {
+      const still = group.filter((p) => p >= 0 && p < this.pieces.length && this.debris.state[p] === STANDING);
+      if (still.length === 0) continue;
+      this.detachQueue.push(still);
+      gone.push(...still);
+    }
+    this.standingAtStart = this.pieces.length - gone.length;
     for (const c of save.broken) if (c >= 0 && c < this.broken.length) this.broken[c] = 1;
     this.rebar.broke(save.broken.filter((c) => c >= 0 && c < this.broken.length));
     for (const [p, n] of save.hits) if (this.debris.state[p] === STANDING) this.hits[p] = Math.min(255, n);
@@ -1389,7 +1425,7 @@ export class Destruction implements Disposable {
     }
 
     const store = this.entities.store(Destructible);
-    store.standing[this.entity] = this.last?.liveNodes ?? this.pieces.length;
+    store.standing[this.entity] = this.last?.liveNodes ?? this.standingAtStart;
     store.loose[this.entity] = debris.bodyCount;
   }
 
@@ -1442,7 +1478,8 @@ export class Destruction implements Disposable {
   lateStep(dt: number): void {
     if (this.disposed) return;
     const { debris, chunks } = this;
-    this.fx.update(dt, this.listener);
+    // The shared effects, once a frame: by the structure hosting them.
+    if (sharedFx.get(this.entities)?.holders[0] === this) this.fx.update(dt, this.listener);
     this.clock += dt;
     this.gravel.update(dt, this.clock);
     // Loose debris moves through clouds: let them re-check their space every so often.
@@ -1476,7 +1513,7 @@ export class Destruction implements Disposable {
     this.rebar.setSpans(this.hinges.spans(this.spanPoints));
   }
 
-  /** The camera shake to add this frame (from blasts near the listener). */
+  /** The camera shake to add this frame (from blasts near the listener). Every structure of a world shares it: add it once. */
   get shakeOffset(): THREE.Vector3 {
     return this.fx.shakeOffset;
   }
@@ -1495,7 +1532,7 @@ export class Destruction implements Disposable {
     const { debris, hinges } = this;
     return {
       chunks: this.pieces.length,
-      standing: this.last?.liveNodes ?? this.pieces.length,
+      standing: this.last?.liveNodes ?? this.standingAtStart,
       contacts: this.connections.length,
       dof: this.init?.dof ?? 0,
       init: this.init,
@@ -1527,7 +1564,10 @@ export class Destruction implements Disposable {
     return this.debris.sanity();
   }
 
-  /** Start (or stop) logging every sound played, stamped in seconds from now: films mix them offline. */
+  /**
+   * Start (or stop) logging every sound played, stamped in seconds from when it started: films mix them
+   * offline. The structures of a world share one log; starting it again leaves it running.
+   */
   listen(on: boolean): void {
     this.fx.listen(on);
   }
@@ -1555,7 +1595,15 @@ export class Destruction implements Disposable {
     this.hungLastV.clear();
     this.hinges.dispose();
     this.debris.dispose();
-    this.fx.dispose();
+    // The shared effects go with the last structure; till then the next one hosts them.
+    const fx = sharedFx.get(this.entities);
+    if (fx) {
+      fx.holders = fx.holders.filter((d) => d !== this);
+      if (fx.holders.length === 0) {
+        fx.fx.dispose();
+        sharedFx.delete(this.entities);
+      } else if (fx.fx.object.parent === this.object) fx.holders[0]!.object.add(fx.fx.object);
+    }
     this.chunks.dispose();
     this.rebar.dispose();
     this.smokes.dispose();

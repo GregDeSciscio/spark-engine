@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { attribute, bumpMap, float, Fn, int, ivec2, mat4, mix, mx_fractal_noise_float, mx_noise_float, mx_worley_noise_float, normalLocal, normalView, positionGeometry, positionPrevious, smoothstep, textureLoad, varying, vec3, vec4 } from 'three/tsl';
+import { attribute, bumpMap, float, Fn, int, ivec2, mat4, mix, mx_fractal_noise_float, mx_noise_float, mx_worley_noise_float, normalLocal, normalView, positionGeometry, positionPrevious, smoothstep, textureLoad, uniform, varying, vec3, vec4 } from 'three/tsl';
 import { writesVelocity } from '../rendering/Velocity';
 import { rng } from './core/math';
 import type { Piece, Surface } from './core/pieces';
@@ -93,7 +93,9 @@ function floatTexture(texels: number, multiple: number): { texture: THREE.DataTe
 function concreteMaterial(pool: ChunkPool): THREE.MeshStandardNodeMaterial {
   const m = new THREE.MeshStandardNodeMaterial({ vertexColors: true, metalness: 0 });
   const chunk = int(attribute('chunk', 'float') as unknown as ReturnType<typeof float>);
-  const mw = int(pool.matrixWidth);
+  // The pool's widths are uniforms, not constants: as constants every structure (each its own size) compiled
+  // shaders of its own, and a level of three buildings, or a checkpoint that rebuilt them, paid for each.
+  const mw = uniform(pool.matrixWidth, 'int');
   m.positionNode = Fn((builder) => {
     const j = chunk.mul(4).toConst();
     const x = j.mod(mw).toConst();
@@ -120,7 +122,7 @@ function concreteMaterial(pool: ChunkPool): THREE.MeshStandardNodeMaterial {
     );
     return mat4(c0, c1, c2, c3).mul(vec4(positionGeometry, 1)).xyz;
   })();
-  const tw = int(pool.tintWidth);
+  const tw = uniform(pool.tintWidth, 'int');
   const tint = varying(textureLoad(pool.tints, ivec2(chunk.mod(tw), chunk.div(tw))).rgb);
   const rest = attribute('position', 'vec3') as unknown as ReturnType<typeof vec3>;
   // 1 on break faces: broken concrete is pitted and uneven, paint is not.
