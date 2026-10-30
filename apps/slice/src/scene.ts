@@ -76,7 +76,7 @@ export interface SliceStats {
   worker: { structures: number; running: boolean };
   budgets: { bodies: number; bodyLimit: number; links: number; linkLimit: number };
   nav: { pendingTiles: number; rebuilt: number };
-  player: { x: number; y: number; z: number; health: number; deaths: number };
+  player: { x: number; y: number; z: number; health: number; deaths: number; yaw: number; locked: boolean };
   bots: Array<{ x: number; y: number; z: number; health: number; alive: boolean; chasing: boolean; pathComplete: boolean }>;
   hits: number;
   checkpoint: boolean;
@@ -213,12 +213,15 @@ export function sliceScene(onApi: (api: SliceApi) => void, demo: SliceDemo = 'ya
 
       // One Destruction per authored building: they share the world's budgets and its strain worker.
       const owned = new Map<string, () => void>();
+      /** Logging sounds (the probe's `listen`): structures built later, by a checkpoint load, log too. */
+      let listening = false;
       const build = (name: string, boxes: readonly PieceBox[]): Destruction => {
         const d = new Destruction(ctx, authoredStructure(boxes, { seed: SEEDS[name] ?? 1 }), { sounds: SOUNDS, ...(tuning.maxBodies === undefined ? {} : { debris: { maxBodies: tuning.maxBodies } }) });
         scene.add(d.object);
         const off = d.systems().map((s) => entities.addSystem(s));
         d.events.on('hit', (h) => hurt(h.eid, h.momentum * DEBRIS_DAMAGE));
         d.events.on('reshape', (r) => nav?.invalidate(r.min, r.max));
+        if (listening) d.listen(true);
         structures.set(name, d);
         owned.set(name, () => {
           for (const o of off) o();
@@ -357,8 +360,9 @@ export function sliceScene(onApi: (api: SliceApi) => void, demo: SliceDemo = 'ya
       const load = (): boolean => {
         if (!checkpoint) return false;
         const cp = checkpoint;
-        // Each structure built afresh from the level's boxes, then put back as it was saved.
-        for (const release of owned.values()) release();
+        // Each structure built afresh from the level's boxes and put back as it was saved; the old ones go
+        // after, so what the structures of a world share (the effects, the worker) is kept, not made again.
+        const old = [...owned.values()];
         owned.clear();
         structures.clear();
         for (const [name, boxes] of level.destructibles) {
@@ -366,8 +370,10 @@ export function sliceScene(onApi: (api: SliceApi) => void, demo: SliceDemo = 'ya
           const s = cp.structures[name];
           if (s) d.restore(s);
         }
-        nav?.dispose();
-        nav = Navigation.tiled(geometry, NAV_BOUNDS);
+        for (const release of old) release();
+        // The navmesh stays; where each building stands is rebuilt a tile a frame (its restored damage
+        // comes through reshape as usual). Rebuilding the whole mesh at once took 0.3 s of the load.
+        for (const d of structures.values()) nav?.invalidate(d.bounds.min, d.bounds.max);
         for (const b of bots) if (b.alive) kill(b);
         bots.length = 0;
         held.clear();
@@ -403,7 +409,7 @@ export function sliceScene(onApi: (api: SliceApi) => void, demo: SliceDemo = 'ya
           worker: { structures: pool.size, running: pool.running },
           budgets: { bodies: b.bodies.total, bodyLimit: b.bodies.limit, links: b.links.total, linkLimit: b.links.limit },
           nav: { pendingTiles: nav?.pendingTiles ?? 0, rebuilt: nav?.rebuilt ?? 0 },
-          player: { x: t.x[player]!, y: t.y[player]!, z: t.z[player]!, health, deaths },
+          player: { x: t.x[player]!, y: t.y[player]!, z: t.z[player]!, health, deaths, yaw: cam.getYaw(), locked: input.isPointerLocked },
           bots: bots.map((bot) => ({
             x: bot.alive ? t.x[bot.eid]! : 0,
             y: bot.alive ? t.y[bot.eid]! : 0,
@@ -486,6 +492,7 @@ export function sliceScene(onApi: (api: SliceApi) => void, demo: SliceDemo = 'ya
           return { drop: count > 0 ? sum / count : 0, inPlace, count };
         },
         listen: (on) => {
+          listening = on;
           for (const d of structures.values()) d.listen(on);
         },
         heard: () => {
@@ -505,7 +512,6 @@ export function sliceScene(onApi: (api: SliceApi) => void, demo: SliceDemo = 'ya
       const right = new THREE.Vector3();
       const head = new THREE.Vector3();
       const toPlayer = new THREE.Vector3();
-      const shake = new THREE.Vector3();
       let clock = 0;
       let hudTimer = 0;
       let slowFrames = 0;
@@ -590,13 +596,10 @@ export function sliceScene(onApi: (api: SliceApi) => void, demo: SliceDemo = 'ya
         lateUpdate(dt): void {
           cam.target.set(t.x[player]!, t.y[player]! - 0.85, t.z[player]!);
           cam.update(dt, occluder);
-          // The blast shake falls off from the camera.
-          shake.set(0, 0, 0);
-          for (const d of structures.values()) {
-            d.listener.copy(cam.camera.position);
-            shake.add(d.shakeOffset);
-          }
-          cam.camera.position.add(shake);
+          // The blast shake falls off from the camera; the structures share it, so it is added once.
+          for (const d of structures.values()) d.listener.copy(cam.camera.position);
+          const first = structures.values().next().value;
+          if (first) cam.camera.position.add(first.shakeOffset);
           hudTimer += dt;
           if (hudTimer > 0.2) {
             hudTimer = 0;
