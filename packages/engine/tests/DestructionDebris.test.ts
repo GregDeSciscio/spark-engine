@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { findConnections } from '../src/destruction/core/connections';
 import type { P2, V3 } from '../src/destruction/core/math';
 import { prism, type Piece } from '../src/destruction/core/pieces';
-import { Debris, RUBBLE, STANDING } from '../src/destruction/Debris';
+import { Debris, RUBBLE, STANDING, type DebrisOptions } from '../src/destruction/Debris';
 import { Hinges } from '../src/destruction/Hinges';
 import { Transform } from '../src/ecs/components/Transform';
 import { EntityWorld } from '../src/ecs/EntityWorld';
@@ -39,13 +39,13 @@ interface World {
 }
 
 /** A physics world at 60 Hz with a 40 m ground slab, and a structure entity owning `pieces`. */
-async function world(pieces: Piece[], solverIterations?: number): Promise<World> {
+async function world(pieces: Piece[], solverIterations?: number, options?: DebrisOptions): Promise<World> {
   const entities = new EntityWorld({ capacity: 1024 });
   const physics = await PhysicsWorld.create({ entities, fixedStepHz: 60, solverIterations });
   const ground = entities.create([Transform, { y: -0.5 }]);
   physics.addBody(ground, { type: 'fixed', shape: { kind: 'box', hx: 20, hy: 0.5, hz: 20 }, events: false });
   const owner = entities.create();
-  const debris = new Debris(physics, owner, pieces);
+  const debris = new Debris(physics, owner, pieces, options);
   return {
     entities,
     physics,
@@ -176,6 +176,53 @@ describe('gradual destruction (hinges)', () => {
     expect(w.debris.state[0]).toBe(RUBBLE);
     steps(w, 30);
     expect(w.debris.state[1]).toBe(RUBBLE);
+    w.dispose();
+  });
+
+  it('rubble is not held up by a chunk hanging under it', async () => {
+    // A block settled on a post and overhanging it; under the overhang, a loose chunk that hinges hold
+    // (it lies on a stub here, but would hang from the block). The post goes: the block comes down.
+    const w = await world([box(0, [0, 0, 0], [1, 2, 1]), box(1, [0, 2, 0], [2, 2.5, 1]), box(2, [1.05, 1.5, 0], [2, 1.97, 1]), box(3, [1.05, 0, 0], [2, 1.5, 1])]);
+    w.debris.canPile = (id) => !w.debris.body(id)!.pieces.includes(2);
+    w.debris.detach([2]);
+    w.debris.detach([1]);
+    steps(w, 60);
+    expect(w.debris.state[1]).toBe(RUBBLE);
+    w.debris.remove(0);
+    steps(w, 120);
+    // It tipped off where the post was; counted as held up by the hanging chunk, it stayed level, 2.25 m up.
+    expect(pieceCenter(w, 1).y).toBeLessThan(2);
+    w.dispose();
+  });
+
+  it('over budget, nothing settles in mid-air: bodies settle once they lie on something', async () => {
+    const w = await world([box(0, [0, 8, 0], [1, 8.5, 1]), box(1, [3, 9, 0], [4, 9.5, 1]), box(2, [6, 10, 0], [7, 10.5, 1])], undefined, { maxBodies: 2 });
+    for (const p of [0, 1, 2]) w.debris.detach([p]);
+    for (let i = 0; i < 40; i++) {
+      steps(w, 1);
+      // Falling, one over budget: none of them is settled where it is.
+      for (const p of [0, 1, 2]) if (pieceCenter(w, p).y > 1) expect(w.debris.state[p]).toBeGreaterThanOrEqual(0);
+    }
+    steps(w, 120);
+    for (const p of [0, 1, 2]) {
+      expect(w.debris.state[p]).toBe(RUBBLE);
+      expect(pieceCenter(w, p).y).toBeLessThan(0.6);
+    }
+    w.dispose();
+  });
+
+  it('rubble on a loose chunk that is crushed falls instead of floating', async () => {
+    const w = await world([box(0, [0, 0, 0], [1, 2, 1]), box(1, [0, 2, 0], [1, 2.5, 1])]);
+    w.debris.detach([1]);
+    steps(w, 60);
+    expect(w.debris.state[1]).toBe(RUBBLE);
+    // The post fails but stays where it stood, holding the rubble up as a loose body; then it is crushed.
+    w.debris.detach([0]);
+    steps(w, 5);
+    expect(w.debris.state[1]).toBe(RUBBLE);
+    expect(w.debris.crush(w.debris.bodyOf(0)!)).not.toBeNull();
+    steps(w, 150);
+    expect(pieceCenter(w, 1).y).toBeLessThan(0.6);
     w.dispose();
   });
 

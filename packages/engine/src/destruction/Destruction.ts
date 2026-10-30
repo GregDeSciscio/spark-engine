@@ -396,6 +396,7 @@ export class Destruction implements Disposable {
   private wire(): void {
     const { debris, hinges, chunks, fx, pieces, connections } = this;
     debris.onTrapped = (body) => hinges.release(body);
+    debris.letGo = (body) => hinges.release(body);
     debris.canPile = (id) => {
       const b = debris.body(id);
       return !b || !hinges.holds(b.body);

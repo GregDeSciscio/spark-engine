@@ -27,7 +27,11 @@ export interface DebrisSettings {
   shatterDeltaV: number;
   /** It breaks into clusters of the chunks that share a cell this size (m) of their rest pose; 0: every chunk alone. */
   shatterCell: number;
-  /** Most dynamic bodies at once; past it the stillest settle where they are. */
+  /**
+   * Dynamic bodies wanted at most. Past it the stillest settle where they are, if they rest on
+   * something; a quarter past it, hinges let go of what they have held longest; half again past
+   * it, the oldest are cleared.
+   */
   maxBodies: number;
   /** Fixed steps a body must be still (or asleep) before it settles into rubble. */
   pileAfterTicks: number;
@@ -46,8 +50,25 @@ export const HULL_SHRINK = 0.97;
 const STILL = 0.12;
 /** Clusters thrown faster than this (m/s) get continuous collision too. */
 const FAST = 8;
-/** Rubble support queries per re-check pass. */
-const RECHECKS = 40;
+/** Rubble support queries per fixed step (each is a shape query in the physics module, about 13 µs). */
+const RECHECKS = 16;
+/** Rubble the sweep through all of it looks at per fixed step (`recheckRubble`). */
+const SWEEP = 6;
+/** Rubble this low (centroid height, m) lies on the ground: the sweep leaves it be. */
+const SWEEP_ABOVE = 0.4;
+/** Rubble this close across (m) to a loss of support re-checks, for this many fixed steps, gathered again this often. */
+const LOSS_REACH = 3.5;
+const LOSS_TICKS = 240;
+const LOSS_REGATHER = 60;
+/** Grid cell (m, across) of the rubble index. */
+const RUBBLE_CELL = 2;
+/** Support queries the budget may spend a step finding bodies that rest on something, and steps before it asks one that rested on nothing again. */
+const BUDGET_QUERIES = 24;
+const BUDGET_RETRY = 15;
+/** A quarter over budget, hinges let go of this many bodies a step. */
+const LET_GO = 4;
+/** Past this many times the budget, the oldest bodies are cleared. */
+const HARD_CAP = 1.5;
 /** Colliders a shatter may move per step; the rest of it breaks out over the next steps. */
 const BREAK_COLLIDERS_PER_STEP = 64;
 /** A body falling at least this fast (m/s) that one step slows by at least as much has landed on something. */
@@ -92,6 +113,8 @@ interface Body {
   /** Speed plus half the spin, last step: how far from still it is. */
   motion: number;
   asleepTicks: number;
+  /** When the budget last found it lying on nothing: not asked again for a while. */
+  budgetMiss: number;
 }
 
 export type BodyOrigin = 'detach' | 'split' | 'rest' | 'wake';
@@ -177,6 +200,11 @@ function chunkShape(piece: Piece): ChunkShape {
   return { full, shrunk, indices: Uint32Array.from(tris), kind: 'mesh' };
 }
 
+/** The rubble index's key for a grid cell. */
+function cellKey(ix: number, iz: number): number {
+  return (ix + 32768) * 65536 + (iz + 32768);
+}
+
 const _m = new THREE.Matrix4();
 const _shift = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
@@ -216,10 +244,12 @@ export class Debris {
   private readonly byHandle = new Map<BodyHandle, Body>();
   /** Bumped whenever a chunk changes body (comes loose, splits, settles, wakes, goes): hinges regroup only then. */
   version = 0;
-  /** Chunks lying in rubble. */
+  /** Chunks lying in rubble; the same by grid cell of where they lie (`RUBBLE_CELL`); and where (world centroids, xyz). */
   private readonly rubbleSet = new Set<number>();
+  private readonly rubbleCells = new Map<number, Set<number>>();
+  private readonly rubbleAt: Float32Array;
   /** Places something just stopped holding things up; rubble near them re-checks its support for a while. */
-  private readonly supportLost: Array<{ x: number; y: number; z: number; until: number }> = [];
+  private readonly losses: Array<{ x: number; y: number; z: number; until: number; next: number }> = [];
   /** Per chunk: STANDING, GONE, RUBBLE, or the id of its loose body. */
   readonly state: Float64Array;
   private tick = 0;
@@ -240,10 +270,14 @@ export class Debris {
   onSettle: ((pieces: readonly number[], alone: boolean) => void) | null = null;
   /** A body kept being thrown: whatever holds it (hinges) should let go. */
   onTrapped: ((body: BodyHandle) => void) | null = null;
+  /** Over budget: whatever holds this body (hinges) should let go, so it can fall and settle. */
+  letGo: ((body: BodyHandle) => void) | null = null;
   /** May this body settle? (False while hinges hold it.) */
   canPile: (bodyId: number) => boolean = () => true;
-  /** Rubble queued for a support check. */
-  private recheckQueue: number[] = [];
+  /** Rubble waiting for a support check. */
+  private readonly recheck = new Set<number>();
+  /** Where the sweep through all the rubble has got to. */
+  private sweep: Iterator<number> | null = null;
 
   constructor(physics: PhysicsWorld, owner: Entity, pieces: readonly Piece[], options: DebrisOptions = {}, random: Random = new Random(1)) {
     const o = { ...DEFAULT_DEBRIS };
@@ -264,6 +298,7 @@ export class Debris {
       this.collider[p.id] = this.addChunkCollider(this.building, p.id, false, _t);
     }
     this.rubblePose = pieces.map(() => null);
+    this.rubbleAt = new Float32Array(pieces.length * 3);
     this.state = new Float64Array(pieces.length).fill(STANDING);
   }
 
@@ -400,27 +435,59 @@ export class Debris {
     return out.multiply(_shift.makeTranslation(-b.origin.x, -b.origin.y, -b.origin.z));
   }
 
-  /** Something at this chunk stopped holding things up (it fell, broke away or was destroyed). */
+  /** Something at this chunk stopped holding things up (it fell, broke away, was crushed or destroyed). */
   private lostSupport(piece: number): void {
+    const s = this.state[piece]!;
     const [x, y, z] = this.pieces[piece]!.centroid;
-    const pose = this.state[piece] === RUBBLE ? this.rubblePose[piece] : null;
-    const at = new THREE.Vector3(x, y, z);
-    if (pose) at.applyMatrix4(pose);
-    for (let i = this.supportLost.length - 1; i >= Math.max(0, this.supportLost.length - 40); i--) {
-      const e = this.supportLost[i]!;
-      if (Math.abs(e.x - at.x) < 1.5 && Math.abs(e.y - at.y) < 1.5 && Math.abs(e.z - at.z) < 1.5) {
-        e.until = this.tick + 240;
+    if (s === RUBBLE) this.lostSupportAt(this.rubbleAt[piece * 3]!, this.rubbleAt[piece * 3 + 1]!, this.rubbleAt[piece * 3 + 2]!);
+    else if (s >= 0) {
+      _at.set(x, y, z).applyMatrix4(this.restToWorld(piece, _where));
+      this.lostSupportAt(_at.x, _at.y, _at.z);
+    } else this.lostSupportAt(x, y, z);
+  }
+
+  /** A loss of support at a world point: rubble round it is checked now and again while it lasts. */
+  private lostSupportAt(x: number, y: number, z: number): void {
+    for (let i = this.losses.length - 1; i >= Math.max(0, this.losses.length - 40); i--) {
+      const e = this.losses[i]!;
+      if (Math.abs(e.x - x) < 1.5 && Math.abs(e.y - y) < 1.5 && Math.abs(e.z - z) < 1.5) {
+        e.y = Math.min(e.y, y);
+        e.until = this.tick + LOSS_TICKS;
+        e.next = this.tick;
         return;
       }
     }
-    this.supportLost.push({ x: at.x, y: at.y, z: at.z, until: this.tick + 240 });
+    this.losses.push({ x, y, z, until: this.tick + LOSS_TICKS, next: this.tick });
+  }
+
+  /** Rubble across from a loss, above it or not far below, waits for a check. */
+  private gather(e: { x: number; y: number; z: number }): void {
+    const at = this.rubbleAt;
+    for (let ix = Math.floor((e.x - LOSS_REACH) / RUBBLE_CELL); ix <= Math.floor((e.x + LOSS_REACH) / RUBBLE_CELL); ix++) {
+      for (let iz = Math.floor((e.z - LOSS_REACH) / RUBBLE_CELL); iz <= Math.floor((e.z + LOSS_REACH) / RUBBLE_CELL); iz++) {
+        const cell = this.rubbleCells.get(cellKey(ix, iz));
+        if (!cell) continue;
+        for (const p of cell) {
+          const i = p * 3;
+          if (Math.abs(at[i]! - e.x) < LOSS_REACH && Math.abs(at[i + 2]! - e.z) < LOSS_REACH && at[i + 1]! > e.y - 1) this.recheck.add(p);
+        }
+      }
+    }
+  }
+
+  private rubbleCell(piece: number): number {
+    return cellKey(Math.floor(this.rubbleAt[piece * 3]! / RUBBLE_CELL), Math.floor(this.rubbleAt[piece * 3 + 2]! / RUBBLE_CELL));
   }
 
   /**
    * Is this chunk resting on something? Its hull, moved down a few
    * centimetres, must meet standing structure, or a collider lower than itself
    * (the ground, rubble beneath it), not just a rubble neighbour beside it.
-   * `settled`: and not a loose body, which can still move away from under it.
+   * Loose debris counts only if it lies on something settled itself, and never
+   * if hinges hold it: a building's top settled into rubble hung its broken
+   * pieces under it, and they held it up in mid-air; so did a chunk asleep,
+   * wedged in the rubble round it. `settled`: no loose body at all, as it can
+   * still move away from under it.
    */
   private supported(piece: number, settled = false): boolean {
     const c = this.colliderOf(piece);
@@ -430,6 +497,7 @@ export class Debris {
     const r = { x: 0, y: 0, z: 0, w: 1 };
     if (!bodies.colliderPose(c, t, r)) return true;
     let held = false;
+    const under: Body[] = [];
     this.physics.overlapShape(
       c,
       { position: { x: t.x, y: t.y - 0.06, z: t.z }, rotation: r },
@@ -439,17 +507,23 @@ export class Debris {
         // Anything else holds it if that chunk is lower: by where the chunk is, not its body's frame,
         // which (for a body that lost chunks) can sit metres away and held rubble up in mid-air.
         const info = bodies.info(other);
-        if (!info || (settled && info.body !== this.building && bodies.type(info.body) === 'dynamic')) return true;
+        if (!info) return true;
+        const dynamic = info.body !== this.building && info.body !== this.rubble && bodies.type(info.body) === 'dynamic';
+        if (dynamic && settled) return true;
         const below = info.body === this.building || (bodies.colliderPose(other, _t2) && _t2.y < t.y - 0.05);
-        if (below) {
-          held = true;
-          return false;
+        if (!below) return true;
+        const loose = dynamic ? this.byHandle.get(info.body) : undefined;
+        if (loose) {
+          if (this.canPile(loose.id) && !under.includes(loose)) under.push(loose);
+          return true;
         }
-        return true;
+        held = true;
+        return false;
       },
       { excludeCollider: c },
     );
-    return held;
+    // Asked after the query, not inside it: one shape query at a time.
+    return held || under.some((b) => b.pieces.some((q) => this.supported(q, true)));
   }
 
   /**
@@ -471,27 +545,41 @@ export class Debris {
   }
 
   /**
-   * Rubble near a recent loss of support that nothing holds up any more falls
-   * again. Candidates are gathered when the losses change; each pass then
-   * shape-queries at most `RECHECKS` of them (a collapse can put hundreds near
-   * a loss, and every query is a call into the physics module).
+   * Rubble that nothing holds up any more falls again. Rubble round a loss of support is gathered
+   * for a check when the loss happens, and again every `LOSS_REGATHER` steps while it lasts (what
+   * held it may go a moment later). With nothing waiting, a sweep goes through all of it a few a
+   * step, for what no loss was seen for (debris it lay on rolled away). Gathering only now and then,
+   * from every chunk, missed rubble: a building's top settled by the budget stayed in mid-air when
+   * what it lay on was crushed. Each check is a shape query: at most `RECHECKS` a step.
    */
   private recheckRubble(): void {
-    for (let i = this.supportLost.length - 1; i >= 0; i--) if (this.supportLost[i]!.until < this.tick) this.supportLost.splice(i, 1);
-    if (this.supportLost.length === 0 || this.rubbleSet.size === 0) {
-      this.recheckQueue.length = 0;
+    for (let i = this.losses.length - 1; i >= 0; i--) if (this.losses[i]!.until < this.tick) this.losses.splice(i, 1);
+    if (this.rubbleSet.size === 0) {
+      this.recheck.clear();
       return;
     }
-    if (this.recheckQueue.length === 0) {
-      const at = new THREE.Vector3();
-      for (const p of this.rubbleSet) {
-        const c = this.pieces[p]!.centroid;
-        at.set(c[0], c[1], c[2]).applyMatrix4(this.rubblePose[p]!);
-        if (this.supportLost.some((e) => Math.abs(e.x - at.x) < 3.5 && Math.abs(e.z - at.z) < 3.5 && at.y > e.y - 1)) this.recheckQueue.push(p);
+    for (const e of this.losses) {
+      if (e.next > this.tick) continue;
+      e.next = this.tick + LOSS_REGATHER;
+      this.gather(e);
+    }
+    if (this.recheck.size === 0) {
+      for (let n = 0; n < SWEEP; n++) {
+        this.sweep ??= this.rubbleSet.values();
+        const next = this.sweep.next();
+        if (next.done) {
+          this.sweep = null;
+          break;
+        }
+        if (this.rubbleAt[next.value * 3 + 1]! > SWEEP_ABOVE) this.recheck.add(next.value);
       }
     }
-    const batch = this.recheckQueue.splice(0, RECHECKS);
-    for (const p of batch) if (this.state[p] === RUBBLE && !this.supported(p)) this.wake(p);
+    let n = 0;
+    for (const p of this.recheck) {
+      if (n++ >= RECHECKS) break;
+      this.recheck.delete(p);
+      if (this.state[p] === RUBBLE && !this.supported(p)) this.wake(p);
+    }
   }
 
   /** The chunk leaves the building or the rubble: its fixed collider goes. */
@@ -504,6 +592,7 @@ export class Debris {
       this.physics.bodies.removeCollider(c as ColliderHandle, false);
       this.collider[piece] = 0;
     }
+    if (s === RUBBLE) this.rubbleCells.get(this.rubbleCell(piece))?.delete(piece);
     this.rubbleSet.delete(piece);
     this.rubblePose[piece] = null;
   }
@@ -580,6 +669,8 @@ export class Debris {
       const dist = d.length();
       if (dist > radius) continue;
       const falloff = 1 - dist / radius;
+      // Blown away from under rubble, it no longer holds it up.
+      this.lostSupportAt(_t.x, _t.y, _t.z);
       const m = bodies.mass(b.body);
       d.normalize().multiplyScalar(speed * falloff * m);
       d.y += 0.35 * speed * falloff * m;
@@ -671,15 +762,45 @@ export class Debris {
       this.onLand?.(new THREE.Vector3(_t.x, _t.y, _t.z), landedMass, landedSpeed);
     }
     for (const b of toPile) if (this.bodies.has(b.id)) this.pile(b);
-    if (this.tick % 8 === 0) this.recheckRubble();
+    this.recheckRubble();
     if (this.bodies.size > this.options.maxBodies) {
-      // Over budget: settle the stillest, oldest bodies where they are (rubble stays; nothing vanishes).
+      // Over budget: settle the stillest, oldest bodies where they are (rubble stays; nothing vanishes), if
+      // they lie on something. Settled wherever they were, bodies still falling froze in mid-air. On other
+      // debris is fine: when that goes, the loss of support is seen and they fall again.
       const order = [...this.bodies.values()].filter((b) => this.canPile(b.id)).sort((a, b) => a.motion - b.motion || a.born - b.born);
-      for (const b of order.slice(0, this.bodies.size - this.options.maxBodies)) if (this.bodies.has(b.id)) this.pile(b);
-      // Still over (everything is hinged): the oldest go.
+      let excess = this.bodies.size - this.options.maxBodies;
+      let queries = BUDGET_QUERIES;
+      for (const b of order) {
+        if (excess <= 0 || queries <= 0) break;
+        if (!this.bodies.has(b.id) || this.tick - b.budgetMiss < BUDGET_RETRY) continue;
+        let piled = false;
+        for (const p of b.pieces) {
+          if (queries-- <= 0) break;
+          if (!this.supported(p)) continue;
+          this.pile(b);
+          excess--;
+          piled = true;
+          break;
+        }
+        // Mid-air (or on debris that is): the same stillest few would be asked again every step.
+        if (!piled) b.budgetMiss = this.tick;
+      }
+      // A quarter over: hinges let go of what they have held longest, a few a step; it falls, lands and
+      // can settle. Clearing the oldest there took a hundred bodies away at once, mid-fall.
       if (this.bodies.size > this.options.maxBodies * 1.25) {
+        let n = LET_GO;
+        for (const b of [...this.bodies.values()].sort((a, c) => a.born - c.born)) {
+          if (n <= 0) break;
+          if (this.canPile(b.id)) continue;
+          this.letGo?.(b.body);
+          n--;
+        }
+      }
+      // Far over (a whole street coming down at once): the oldest go.
+      const cap = Math.floor(this.options.maxBodies * HARD_CAP);
+      if (this.bodies.size > cap) {
         const byAge = [...this.bodies.values()].sort((a, b) => a.born - b.born);
-        for (const b of byAge.slice(0, this.bodies.size - this.options.maxBodies)) this.clear(b);
+        for (const b of byAge.slice(0, this.bodies.size - cap)) this.clear(b);
       }
     }
   }
@@ -723,6 +844,8 @@ export class Debris {
   }
 
   private clear(b: Body, crushed = false): void {
+    // What lay on it may lie on nothing now (a top settled on panels that were then crushed).
+    for (const p of b.pieces) this.lostSupport(p);
     for (const p of b.pieces) {
       this.setState(p, GONE);
       this.collider[p] = 0;
@@ -777,9 +900,9 @@ export class Debris {
     return Math.hypot(_at.x - x, _at.y - y, _at.z - z) < within;
   }
 
-  private addBody(init: Omit<Body, 'lastPos' | 'lastRot' | 'streak' | 'flungAt' | 'sunk'>): void {
+  private addBody(init: Omit<Body, 'lastPos' | 'lastRot' | 'streak' | 'flungAt' | 'sunk' | 'budgetMiss'>): void {
     this.physics.bodies.pose(init.body, _t, _r);
-    const b: Body = { ...init, lastPos: new THREE.Vector3(_t.x, _t.y, _t.z), lastRot: new THREE.Quaternion(_r.x, _r.y, _r.z, _r.w), streak: 0, flungAt: -99, sunk: false };
+    const b: Body = { ...init, lastPos: new THREE.Vector3(_t.x, _t.y, _t.z), lastRot: new THREE.Quaternion(_r.x, _r.y, _r.z, _r.w), streak: 0, flungAt: -99, sunk: false, budgetMiss: -BUDGET_RETRY };
     this.version++;
     this.bodies.set(b.id, b);
     this.byHandle.set(b.body, b);
@@ -807,6 +930,11 @@ export class Debris {
       this.rubblePose[p] = pose;
       this.setState(p, RUBBLE);
       this.rubbleSet.add(p);
+      this.rubbleAt.set([center.x, center.y, center.z], p * 3);
+      const key = this.rubbleCell(p);
+      let cell = this.rubbleCells.get(key);
+      if (!cell) this.rubbleCells.set(key, (cell = new Set()));
+      cell.add(p);
     });
     this.counters.piled++;
     this.onSettle?.(settled, settled.length === 1);
