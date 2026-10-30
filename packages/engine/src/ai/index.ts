@@ -5,6 +5,8 @@ export {
   initNavigation,
   navMeshConfig,
   type NavAgentParams,
+  type NavBounds,
+  type NavGeometry,
   type NavLink,
   type NavPathHit,
   type NavigationStats,

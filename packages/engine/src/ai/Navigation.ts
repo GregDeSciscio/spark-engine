@@ -1,15 +1,24 @@
 import {
-  type NavMesh,
+  Detour,
+  NavMesh,
+  NavMeshParams,
   NavMeshQuery,
+  Raw,
+  RecastBuildContext,
+  RecastChunkyTriMesh,
+  TrianglesArray,
+  VerticesArray,
   exportNavMesh,
   importNavMesh,
   init as initRecastRaw,
   setRandomSeed,
+  statusFailed,
   type OffMeshConnectionParams,
 } from '@recast-navigation/core';
-import { generateSoloNavMesh, type SoloNavMeshGeneratorConfig } from '@recast-navigation/generators';
+import { buildTiledNavMeshRcConfig, generateSoloNavMesh, generateTileNavMeshData, tiledNavMeshGeneratorConfigDefaults, type SoloNavMeshGeneratorConfig } from '@recast-navigation/generators';
 import type { Disposable } from '../core/Disposable';
 import type { Random } from '../core/Random';
+import { TriangleSoup } from './TriangleSoup';
 
 /**
  * Navigation (ADR-009): a Recast/Detour navmesh behind a small engine API.
@@ -116,6 +125,37 @@ export function bakeNavMesh(positions: ArrayLike<number>, indices: ArrayLike<num
   return bytes;
 }
 
+/**
+ * The walkable world's triangles, asked for one tile at a time (`Navigation.tiled`): add to `soup`
+ * whatever reaches into the box `min`..`max` (more is harmless, only slower). A level's static
+ * geometry, and each destructible structure's standing chunks and rubble as they are now.
+ */
+export type NavGeometry = (soup: TriangleSoup, min: Vec3Like, max: Vec3Like) => void;
+
+export interface NavBounds {
+  readonly min: Vec3Like;
+  readonly max: Vec3Like;
+}
+
+/** A tiled mesh's layout and its source, for rebuilding tiles. */
+interface Tiling {
+  readonly rc: ReturnType<typeof buildTiledNavMeshRcConfig>['config'];
+  readonly min: [number, number, number];
+  readonly max: [number, number, number];
+  /** Tile edge (m). */
+  readonly size: number;
+  readonly across: number;
+  readonly down: number;
+  /** How far past its edge a tile's build reads geometry (m): its border. */
+  readonly border: number;
+  readonly geometry: NavGeometry;
+  readonly offMeshConnections: OffMeshConnectionParams[];
+  readonly context: RecastBuildContext;
+  /** Tiles waiting to be rebuilt, oldest first, as y * across + x. */
+  readonly queue: number[];
+  readonly queued: Set<number>;
+}
+
 export interface NavigationStats {
   readonly tiles: number;
   readonly polys: number;
@@ -126,7 +166,10 @@ export class Navigation implements Disposable {
   private readonly navMesh: NavMesh;
   private readonly query: NavMeshQuery;
   private readonly halfExtents = { x: 1, y: 2, z: 1 };
+  private tiling: Tiling | null = null;
   private disposed = false;
+  /** Tiles rebuilt since the mesh was made (`update`). */
+  rebuilt = 0;
 
   private constructor(navMesh: NavMesh) {
     this.navMesh = navMesh;
@@ -144,6 +187,115 @@ export class Navigation implements Disposable {
     const result = generateSoloNavMesh(positions, indices, navMeshConfig(agent, links));
     if (!result.success) throw new Error(`Navigation.bake: ${result.error}`);
     return new Navigation(result.navMesh);
+  }
+
+  /**
+   * A tiled mesh over `bounds` whose tiles can be rebuilt where the world changes (`invalidate`,
+   * `update`): a building blown open, a floor gone, a heap of rubble where there was street.
+   * `geometry` is asked for each tile's triangles as the world is when the tile is built. Tiles
+   * are `tileSize` cells across (cells of `agent.cellSize`; 32 is 6.4 m, which rebuilt in 5-7 ms
+   * beside a five-storey building in Node, nearly all of it Recast). Call `initNavigation()` first.
+   */
+  static tiled(geometry: NavGeometry, bounds: NavBounds, agent: NavAgentParams = DEFAULT_NAV_AGENT, links: readonly NavLink[] = [], tileSize = 32): Navigation {
+    const config = { ...tiledNavMeshGeneratorConfigDefaults, ...navMeshConfig(agent, links), tileSize };
+    const min: [number, number, number] = [bounds.min.x, bounds.min.y, bounds.min.z];
+    const max: [number, number, number] = [bounds.max.x, bounds.max.y, bounds.max.z];
+    const layout = buildTiledNavMeshRcConfig({ recastConfig: config, navMeshBounds: [min, max] });
+    const navMesh = new NavMesh();
+    const params = NavMeshParams.create({ orig: layout.orig, tileWidth: layout.tcs, tileHeight: layout.tcs, maxTiles: layout.maxTiles, maxPolys: layout.maxPolysPerTile });
+    if (!navMesh.initTiled(params)) throw new Error('Navigation.tiled: could not init a tiled nav mesh');
+    const nav = new Navigation(navMesh);
+    nav.tiling = {
+      rc: layout.config,
+      min,
+      max,
+      size: layout.tcs,
+      across: layout.tileWidth,
+      down: layout.tileHeight,
+      border: layout.config.borderSize * layout.config.cs,
+      geometry,
+      offMeshConnections: config.offMeshConnections ?? [],
+      context: new RecastBuildContext(),
+      queue: [],
+      queued: new Set(),
+    };
+    for (let y = 0; y < layout.tileHeight; y++) for (let x = 0; x < layout.tileWidth; x++) nav.buildTile(x, y);
+    nav.rebuilt = 0;
+    return nav;
+  }
+
+  /**
+   * The world changed inside `min`..`max`: the tiles it reaches (and those whose border it
+   * reaches) are queued for rebuilding. Only a tiled mesh can (`Navigation.tiled`); others ignore it.
+   */
+  invalidate(min: Vec3Like, max: Vec3Like): void {
+    this.assertLive();
+    const t = this.tiling;
+    if (!t) return;
+    const x0 = Math.max(0, Math.floor((min.x - t.border - t.min[0]) / t.size));
+    const x1 = Math.min(t.across - 1, Math.floor((max.x + t.border - t.min[0]) / t.size));
+    const y0 = Math.max(0, Math.floor((min.z - t.border - t.min[2]) / t.size));
+    const y1 = Math.min(t.down - 1, Math.floor((max.z + t.border - t.min[2]) / t.size));
+    for (let y = y0; y <= y1; y++)
+      for (let x = x0; x <= x1; x++) {
+        const key = y * t.across + x;
+        if (t.queued.has(key)) continue;
+        t.queued.add(key);
+        t.queue.push(key);
+      }
+  }
+
+  /** Tiles waiting to be rebuilt. */
+  get pendingTiles(): number {
+    return this.tiling?.queue.length ?? 0;
+  }
+
+  /**
+   * Rebuild up to `maxTiles` queued tiles, oldest first, from the world as it is now; returns how
+   * many. A tile costs a few milliseconds, so a game spends one or two a frame: paths stay valid
+   * meanwhile (agents repath on their cadence), they just don't know the change yet.
+   */
+  update(maxTiles = 1): number {
+    this.assertLive();
+    const t = this.tiling;
+    if (!t) return 0;
+    let n = 0;
+    while (n < maxTiles && t.queue.length > 0) {
+      const key = t.queue.shift()!;
+      t.queued.delete(key);
+      this.buildTile(key % t.across, Math.floor(key / t.across));
+      n++;
+    }
+    return n;
+  }
+
+  /** Build (or rebuild) one tile from its geometry as it is now. */
+  private buildTile(x: number, y: number): void {
+    const t = this.tiling!;
+    const bmin: [number, number, number] = [t.min[0] + x * t.size, t.min[1], t.min[2] + y * t.size];
+    const bmax: [number, number, number] = [t.min[0] + (x + 1) * t.size, t.max[1], t.min[2] + (y + 1) * t.size];
+    const soup = new TriangleSoup();
+    t.geometry(soup, { x: bmin[0] - t.border, y: bmin[1], z: bmin[2] - t.border }, { x: bmax[0] + t.border, y: bmax[1], z: bmax[2] + t.border });
+    this.navMesh.removeTile(this.navMesh.getTileRefAt(x, y, 0));
+    this.rebuilt++;
+    if (soup.triangleCount === 0) return;
+    const verts = new VerticesArray();
+    verts.copy(soup.positions);
+    const tris = new TrianglesArray();
+    tris.copy(soup.indices);
+    const chunky = new RecastChunkyTriMesh();
+    try {
+      if (!chunky.init(verts, tris, soup.triangleCount, 256)) throw new Error('Navigation: could not index a tile\'s triangles');
+      const result = generateTileNavMeshData(verts, tris, t.rc, chunky, { x, y, bmin, bmax }, { offMeshConnections: t.offMeshConnections, buildBvTree: true }, false, t.context);
+      if (result.success && result.data) {
+        const added = this.navMesh.addTile(result.data, Detour.DT_TILE_FREE_DATA, 0);
+        if (statusFailed(added.status)) result.data.destroy();
+      }
+    } finally {
+      verts.destroy();
+      tris.destroy();
+      Raw.destroy(chunky.raw);
+    }
   }
 
   /** The mesh as bytes, for writing beside a level. */

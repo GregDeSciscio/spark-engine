@@ -7,10 +7,12 @@ export {
   type DestructionDeps,
   type DestructionEvents,
   type DestructionOptions,
+  type NavSoup,
   type DestructionStats,
   type DestructionStructure,
 } from './Destruction';
 export { Destructible } from './components';
+export { SharedBudget, budgetsOf, type BudgetMember, type DestructionBudgets } from './Budget';
 export {
   DESTRUCTION_SOUND_NAMES,
   DESTRUCTION_VOICES,

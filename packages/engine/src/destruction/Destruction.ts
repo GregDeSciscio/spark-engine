@@ -162,6 +162,17 @@ export interface DestructionEvents extends Record<string, unknown> {
    * it came in at (m/s) and its momentum (kg·m/s). Once per body per contact; the game decides the damage.
    */
   hit: { eid: Entity; part: number; at: THREE.Vector3; mass: number; speed: number; momentum: number };
+  /**
+   * What can be walked on or around changed inside `min`..`max`: chunks stopped standing, settled
+   * into rubble, or fell out of it. A navmesh rebuilds there (`Navigation.invalidate`), from
+   * `navGeometry`. Checked four times a second.
+   */
+  reshape: { min: THREE.Vector3; max: THREE.Vector3 };
+}
+
+/** Where `navGeometry` puts triangles: a `TriangleSoup` fits. */
+export interface NavSoup {
+  add(positions: ArrayLike<number>, indices: ArrayLike<number>): void;
 }
 
 export interface DestructionStats {
@@ -227,6 +238,12 @@ const tables = new WeakMap<EntityWorld, SideTable<Destruction>>();
 const watchers = new WeakMap<object, Map<Entity, ShapeDesc | null>>();
 /** Fixed steps a body and a watched entity must be apart before the body's next contact is a new hit. */
 const HIT_GAP = 12;
+/** Fixed steps between looks for chunks that changed what can be walked (`reshape`). */
+const RESHAPE_TICKS = 15;
+/** What a chunk is to a navmesh: not there (loose, gone), standing, or lying in the rubble. */
+const NAV_NONE = 0;
+const NAV_STANDING = 1;
+const NAV_RUBBLE = 2;
 
 function tableOf(entities: EntityWorld): SideTable<Destruction> {
   let table = tables.get(entities);
@@ -338,6 +355,10 @@ export class Destruction implements Disposable {
   /** Loose bodies and rubble chunks squeezed past `squeezeRatio` at the last read: a second read in a row crushes them. */
   private squeezed = new Set<BodyHandle>();
   private squeezedRubble = new Set<number>();
+  /** Each chunk as a navmesh last saw it (`NAV_*`), and each rubble chunk's world box then (6 per chunk). */
+  private readonly navClass: Uint8Array;
+  private readonly navBox: Float32Array;
+  private readonly reshapeBox = new THREE.Box3();
   /** Debris body and watched entity pairs touching, by `eid:body`, and the tick each was last seen (`detectHits`). */
   private readonly touching = new Map<string, number>();
   /** Dents per standing chunk: how far it has been shoved, and which way (accumulates, capped). */
@@ -455,6 +476,8 @@ export class Destruction implements Disposable {
 
     this.broken = new Uint8Array(connections.length);
     this.hits = new Uint8Array(pieces.length);
+    this.navClass = new Uint8Array(pieces.length).fill(NAV_STANDING);
+    this.navBox = new Float32Array(pieces.length * 6);
     this.contactsOf = pieces.map(() => []);
     for (const c of connections) {
       this.contactsOf[c.a]!.push(c.id);
@@ -1059,6 +1082,83 @@ export class Destruction implements Disposable {
     this.smokes.spawn(kind, new THREE.Vector3(point.x, point.y, point.z));
   }
 
+  /**
+   * The structure's walkable geometry inside `min`..`max` (anything reaching into it), as it is
+   * now: standing chunks where they were built, rubble where it lies. Loose debris is left out:
+   * it is still moving. For `Navigation.tiled`'s geometry callback, with the level's own.
+   */
+  navGeometry(soup: NavSoup, min: Vec3Like, max: Vec3Like): void {
+    if (this.disposed) return;
+    const { pieces, debris } = this;
+    const m = this.restM;
+    const v = new THREE.Vector3();
+    for (const p of pieces) {
+      const state = debris.state[p.id];
+      if (state === STANDING) {
+        if (p.max[0] < min.x || p.min[0] > max.x || p.max[1] < min.y || p.min[1] > max.y || p.max[2] < min.z || p.min[2] > max.z) continue;
+        this.addFaces(soup, p, null);
+      } else if (state === RUBBLE) {
+        const b = this.navBox;
+        const o = p.id * 6;
+        if (b[o + 3]! < min.x || b[o]! > max.x || b[o + 4]! < min.y || b[o + 1]! > max.y || b[o + 5]! < min.z || b[o + 2]! > max.z) continue;
+        this.addFaces(soup, p, debris.restToWorld(p.id, m), v);
+      }
+    }
+  }
+
+  /** A chunk's faces as triangles (fanned, counter-clockwise seen from outside, as Recast wants them), moved by `to` if given. */
+  private addFaces(soup: NavSoup, p: Piece, to: THREE.Matrix4 | null, v = new THREE.Vector3()): void {
+    const positions: number[] = [];
+    for (const [x, y, z] of p.vertices) {
+      if (to) {
+        v.set(x, y, z).applyMatrix4(to);
+        positions.push(v.x, v.y, v.z);
+      } else positions.push(x, y, z);
+    }
+    const indices: number[] = [];
+    for (const f of p.faces) for (let i = 1; i + 1 < f.verts.length; i++) indices.push(f.verts[0]!, f.verts[i]!, f.verts[i + 1]!);
+    soup.add(positions, indices);
+  }
+
+  /** Chunks that stopped standing, settled into rubble or left it since the last look: one `reshape` over all of them. */
+  private checkReshape(): void {
+    const { pieces, debris } = this;
+    const box = this.reshapeBox.makeEmpty();
+    const b = this.navBox;
+    const v = new THREE.Vector3();
+    for (let p = 0; p < pieces.length; p++) {
+      const state = debris.state[p];
+      const now = state === STANDING ? NAV_STANDING : state === RUBBLE ? NAV_RUBBLE : NAV_NONE;
+      const was = this.navClass[p]!;
+      if (now === was) continue;
+      const piece = pieces[p]!;
+      const o = p * 6;
+      if (was === NAV_STANDING) {
+        box.expandByPoint(v.set(piece.min[0], piece.min[1], piece.min[2]));
+        box.expandByPoint(v.set(piece.max[0], piece.max[1], piece.max[2]));
+      } else if (was === NAV_RUBBLE) {
+        box.expandByPoint(v.set(b[o]!, b[o + 1]!, b[o + 2]!));
+        box.expandByPoint(v.set(b[o + 3]!, b[o + 4]!, b[o + 5]!));
+      }
+      if (now === NAV_RUBBLE) {
+        // Where it lies now, kept so its leaving can be told too.
+        const m = debris.restToWorld(p, this.restM);
+        const lo = new THREE.Vector3(Infinity, Infinity, Infinity);
+        const hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+        for (const [x, y, z] of piece.vertices) {
+          v.set(x, y, z).applyMatrix4(m);
+          lo.min(v);
+          hi.max(v);
+        }
+        b.set([lo.x, lo.y, lo.z, hi.x, hi.y, hi.z], o);
+        box.expandByPoint(lo);
+        box.expandByPoint(hi);
+      }
+      this.navClass[p] = now;
+    }
+    if (!box.isEmpty()) this.events.emit('reshape', { min: box.min.clone(), max: box.max.clone() });
+  }
+
   /** How thick this structure's smoke or gas is at `point` (0-1). `Destruction.densityAt` asks every structure. */
   densityAt(kind: SmokeKind, point: Vec3Like): number {
     if (this.disposed) return 0;
@@ -1187,6 +1287,7 @@ export class Destruction implements Disposable {
     const pull = hinges.fixedUpdate(dt, this.o.gravity);
     this.syncRopes();
     if (loadTick) this.syncLoads(pull);
+    if (this.tick % RESHAPE_TICKS === 0) this.checkReshape();
 
     // Something hanging off its last hinges groans now and then; a hung body clangs when it hits.
     const { ratio, at } = hinges.strain;
