@@ -18,7 +18,7 @@ export interface Arena {
 
 export const ARENA_A: Partial<BuildingParams> = { x: -16, z: -4, width: 12, depth: 8, floors: 3, seed: 7 };
 export const ARENA_B: Partial<BuildingParams> = { x: 6, z: -5, width: 14, depth: 10, floors: 4, seed: 11 };
-/** The optional tower (`?tower=1`): eight storeys behind the street, for the solver at the size it was scaled for. */
+/** The tower (on unless `?tower=0`): eight storeys behind the street, for the solver at the size it was scaled for. */
 export const TOWER: Partial<BuildingParams> = { x: -4, z: 12, width: 10, depth: 8, floors: 8, seed: 19 };
 
 export function buildArena(options: { tower?: boolean } = {}): Arena {

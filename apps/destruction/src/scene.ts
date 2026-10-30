@@ -43,7 +43,7 @@ const WEAPONS: Record<Weapon, { radius: number; label: string }> = {
 
 export interface SandboxOptions {
   strain: 'worker' | 'inline';
-  /** Add the eight-storey tower (`?tower=1`). */
+  /** Add the eight-storey tower (on unless `?tower=0`). */
   tower?: boolean | undefined;
   /** Is the engine's stats panel showing? The HUD shows its counters with it. Default: always. */
   statsShown?: (() => boolean) | undefined;

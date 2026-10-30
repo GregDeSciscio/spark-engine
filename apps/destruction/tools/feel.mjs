@@ -26,6 +26,8 @@ await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
 const server = await createServer({ root, configFile: path.join(root, 'vite.config.ts'), logLevel: 'error', server: { port: 5395, strictPort: false, host: '127.0.0.1', hmr: false, watch: null } });
 await server.listen();
+// `--query=&tower=0`: more of the sandbox's URL (without the tower, say).
+const query = process.argv.find((a) => a.startsWith('--query='))?.slice('--query='.length) ?? '';
 const browser = await launchBrowser(process.argv.includes('--headed'));
 const report = {};
 try {
@@ -33,7 +35,7 @@ try {
   const page = await context.newPage();
   const problems = [];
   page.on('pageerror', (e) => problems.push(String(e)));
-  await page.goto(`${server.resolvedUrls.local[0]}?overlay=0`, { waitUntil: 'load' });
+  await page.goto(`${server.resolvedUrls.local[0]}?overlay=0${query}`, { waitUntil: 'load' });
   await page.waitForFunction(() => window.__spark?.ready && window.__spark.game.stats().init !== null, null, { timeout: 120_000 });
 
   // A frame-time recorder and probes that note the first frame something changed, all in page time.
