@@ -295,6 +295,11 @@ export class ChunkMesh {
     for (let i = 0; i < this.soot.length; i++) this.paint(i);
   }
 
+  /** How black a chunk is with soot (0-1). */
+  sootOf(piece: number): number {
+    return this.soot[piece] ?? 0;
+  }
+
   /** Blacken a chunk by `amount` (soot builds up to fully black). */
   scorch(piece: number, amount: number): void {
     const s = Math.min(1, this.soot[piece]! + amount);

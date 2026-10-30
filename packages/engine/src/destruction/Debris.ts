@@ -41,6 +41,17 @@ export interface DebrisSettings {
 
 export type DebrisOptions = { [K in keyof DebrisSettings]?: DebrisSettings[K] | undefined };
 
+/**
+ * What the debris layer holds, as plain data (`Debris.save`): chunks gone, rubble by the settling it
+ * came to rest in (one rest-to-world matrix each, column-major), and loose bodies with their matrix
+ * and velocities. Hinges, nets and the support graph are not kept: they are rebuilt or let go.
+ */
+export interface DebrisSave {
+  gone: number[];
+  piles: Array<{ pieces: number[]; pose: number[] }>;
+  bodies: Array<{ pieces: number[]; pose: number[]; linvel: [number, number, number]; angvel: [number, number, number] }>;
+}
+
 export const DEFAULT_DEBRIS: Readonly<DebrisSettings> = { density: 2400, shatterDeltaV: 3.5, shatterCell: 2, maxBodies: 360, pileAfterTicks: 25 };
 
 /** Velocity clamps for loose bodies (m/s, rad/s). */
@@ -1369,6 +1380,88 @@ export class Debris implements BudgetMember {
     this.setState(p, id);
     this.addBody({ id, body, pieces: [p], origin: new THREE.Vector3(cx, cy, cz), born: this.tick, from, lastVel: vel.clone(), jolt: 0, motion: 1, asleepTicks: 0 });
     return id;
+  }
+
+  /** What this layer holds, as plain data (`DebrisSave`), for a checkpoint. */
+  save(): DebrisSave {
+    const gone: number[] = [];
+    for (let p = 0; p < this.state.length; p++) if (this.state[p] === GONE) gone.push(p);
+    const piles: DebrisSave['piles'] = [];
+    for (const set of this.pileChunks.values()) {
+      const pieces = [...set].sort((a, b) => a - b);
+      const pose = this.rubblePose[pieces[0]!];
+      if (pose) piles.push({ pieces, pose: [...pose.elements] });
+    }
+    const bodies: DebrisSave['bodies'] = [];
+    const m = new THREE.Matrix4();
+    for (const b of this.bodies.values()) {
+      const pieces = [...b.pieces].sort((x, y) => x - y);
+      this.physics.bodies.velocity(b.body, _lv, _av);
+      bodies.push({ pieces, pose: [...this.restToWorld(pieces[0]!, m).elements], linvel: [_lv.x, _lv.y, _lv.z], angvel: [_av.x, _av.y, _av.z] });
+    }
+    return { gone, piles, bodies };
+  }
+
+  /**
+   * Put a structure that has only just been built into the state `save` recorded: chunks gone,
+   * rubble where it lay (resting on whatever it rests on now), loose bodies where they were and
+   * moving as they were. Chunks named twice, or not standing any more, are skipped.
+   */
+  load(save: DebrisSave): void {
+    for (const p of save.gone) if (this.state[p] === STANDING) this.remove(p);
+    const restored: number[] = [];
+    for (const pile of save.piles) {
+      const pieces = pile.pieces.filter((p) => this.state[p] === STANDING);
+      if (pieces.length === 0) continue;
+      const pose = new THREE.Matrix4().fromArray(pile.pose);
+      const id = this.nextPile++;
+      this.pileChunks.set(id, new Set(pieces));
+      pose.decompose(_p, _q, _s);
+      for (const p of pieces) {
+        this.dropFixed(p);
+        const [cx, cy, cz] = this.pieces[p]!.centroid;
+        const center = new THREE.Vector3(cx, cy, cz).applyMatrix4(pose);
+        this.collider[p] = this.addChunkCollider(this.rubble, p, true, center, { x: _q.x, y: _q.y, z: _q.z, w: _q.w });
+        this.rubblePose[p] = pose.clone();
+        this.setState(p, RUBBLE);
+        this.pileOf[p] = id;
+        this.rubbleSet.add(p);
+        this.rubbleAt.set([center.x, center.y, center.z], p * 3);
+        const key = this.rubbleCell(p);
+        let cell = this.rubbleCells.get(key);
+        if (!cell) this.rubbleCells.set(key, (cell = new Set()));
+        cell.add(p);
+        restored.push(p);
+      }
+      this.onSettle?.(pieces, pieces.length === 1);
+    }
+    for (const saved of save.bodies) {
+      const pieces = saved.pieces.filter((p) => this.state[p] === STANDING);
+      if (pieces.length === 0) continue;
+      const pose = new THREE.Matrix4().fromArray(saved.pose);
+      pose.decompose(_p, _q, _s);
+      let mass = 0;
+      const com = new THREE.Vector3();
+      for (const p of pieces) {
+        const piece = this.pieces[p]!;
+        mass += piece.mass;
+        com.x += piece.centroid[0] * piece.mass;
+        com.y += piece.centroid[1] * piece.mass;
+        com.z += piece.centroid[2] * piece.mass;
+      }
+      com.divideScalar(mass);
+      const v = new THREE.Vector3(...saved.linvel);
+      const body = this.physics.bodies.create({ type: 'dynamic', position: com.clone().applyMatrix4(pose), rotation: _q.clone(), linearVelocity: v, angularVelocity: new THREE.Vector3(...saved.angvel), ccd: pieces.length === 1 || v.length() > FAST });
+      const id = this.nextBodyId++;
+      for (const p of pieces) {
+        this.dropFixed(p);
+        this.collider[p] = this.addChunkCollider(body, p, true, this.offset(p, com), undefined, this.options.density);
+        this.setState(p, id);
+      }
+      this.addBody({ id, body, pieces, origin: com, born: this.tick, from: 'wake', lastVel: v.clone(), jolt: 0, motion: 1, asleepTicks: 0 });
+    }
+    // What the restored rubble rests on, once all of it is in.
+    for (const p of restored) this.link(p, this.findSupports(p));
   }
 
   /** Write each moving chunk's matrix. Standing, rubble and gone chunks are skipped (rubble is written on settling). */

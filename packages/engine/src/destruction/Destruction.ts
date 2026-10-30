@@ -18,7 +18,7 @@ import { findConnections, type Connection } from './core/connections';
 import type { Piece } from './core/pieces';
 import type { NodeLoad } from './core/strain';
 import { buildStructure } from './core/structure';
-import { Debris, GONE, RUBBLE, STANDING, type Census, type DebrisOptions, type Fling, type Sink } from './Debris';
+import { Debris, GONE, RUBBLE, STANDING, type Census, type DebrisOptions, type DebrisSave, type Fling, type Sink } from './Debris';
 import { DestructionFx, type Heard } from './DestructionFx';
 import { GravelField } from './Gravel';
 import { Hinges, type HingeOptions } from './Hinges';
@@ -168,6 +168,25 @@ export interface DestructionEvents extends Record<string, unknown> {
    * `navGeometry`. Checked four times a second.
    */
   reshape: { min: THREE.Vector3; max: THREE.Vector3 };
+}
+
+/**
+ * A structure's destroyed state as plain data (JSON as it is), for a checkpoint: `save()` it, and
+ * `restore()` it on the same structure built afresh. Chunks gone, rubble where it lay, loose
+ * debris where it was and moving as it was, the glue Strain broke, chunks' hits and soot. Not
+ * kept: hinges and nets (what hung lets go and falls), smoke, gravel and dents. Strain checks the
+ * restored structure again, without the loads that were resting on it.
+ */
+export interface DestructionSave {
+  readonly version: 1;
+  /** The structure's chunk count, to tell a save of another structure. */
+  readonly chunks: number;
+  readonly debris: DebrisSave;
+  readonly broken: number[];
+  /** [chunk, hits] for chunks still standing that have taken some (`damage`). */
+  readonly hits: Array<[number, number]>;
+  /** [chunk, soot 0-1] for chunks that have any. */
+  readonly soot: Array<[number, number]>;
 }
 
 /** Where `navGeometry` puts triangles: a `TriangleSoup` fits. */
@@ -1157,6 +1176,44 @@ export class Destruction implements Disposable {
       this.navClass[p] = now;
     }
     if (!box.isEmpty()) this.events.emit('reshape', { min: box.min.clone(), max: box.max.clone() });
+  }
+
+  /** The destroyed state as plain data, for a checkpoint (`DestructionSave`). */
+  save(): DestructionSave {
+    const broken: number[] = [];
+    for (let c = 0; c < this.broken.length; c++) if (this.broken[c]) broken.push(c);
+    const hits: Array<[number, number]> = [];
+    const soot: Array<[number, number]> = [];
+    for (let p = 0; p < this.pieces.length; p++) {
+      if (this.hits[p]! > 0 && this.debris.state[p] === STANDING) hits.push([p, this.hits[p]!]);
+      const s = this.chunks.sootOf(p);
+      if (s > 0) soot.push([p, s]);
+    }
+    return { version: 1, chunks: this.pieces.length, debris: this.debris.save(), broken, hits, soot };
+  }
+
+  /**
+   * Put this structure, built afresh and not yet touched, into the state `save()` recorded (a
+   * checkpoint reload). Strain is told what no longer stands and checks the rest on its next step;
+   * a navmesh hears of it through `reshape` as usual.
+   */
+  restore(save: DestructionSave): void {
+    if (this.disposed) throw new Error('Destruction.restore: disposed');
+    if (save.version !== 1) throw new Error(`Destruction.restore: unknown save version ${String(save.version)}`);
+    if (save.chunks !== this.pieces.length) throw new Error(`Destruction.restore: the save is of a structure of ${save.chunks} chunks, this one has ${this.pieces.length}`);
+    for (let p = 0; p < this.pieces.length; p++) if (this.debris.state[p] !== STANDING) throw new Error('Destruction.restore: the structure has already been damaged; restore onto one built afresh');
+    this.debris.load(save.debris);
+    const gone: number[] = [];
+    for (let p = 0; p < this.pieces.length; p++) {
+      if (this.debris.state[p] === GONE) this.chunks.setVisible(p, false);
+      if (this.debris.state[p] !== STANDING) gone.push(p);
+    }
+    for (const c of save.broken) if (c >= 0 && c < this.broken.length) this.broken[c] = 1;
+    this.rebar.broke(save.broken.filter((c) => c >= 0 && c < this.broken.length));
+    for (const [p, n] of save.hits) if (this.debris.state[p] === STANDING) this.hits[p] = Math.min(255, n);
+    for (const [p, s] of save.soot) this.chunks.scorch(p, s);
+    this.smokes.markDirty();
+    this.strainRemove(gone);
   }
 
   /** How thick this structure's smoke or gas is at `point` (0-1). `Destruction.densityAt` asks every structure. */
