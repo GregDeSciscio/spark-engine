@@ -1,6 +1,6 @@
 # Destruction in the Task Unit sequel's missions
 
-Proposed 2026-10-31, for Greg's sign-off. The engine's destruction subsystem is ready for a game (`docs/design/destruction-game-readiness.md`), and Greg chose the Task Unit sequel (ADR-005) to be that game. Its mission shape (`docs/design/mission-shape.md`) has no structural destruction: its "demolition" is a bomb-plant objective. This says where destruction fits, and what the first mission to use it should prove.
+Accepted 2026-10-31: Greg took the four recommendations below. The engine's destruction subsystem is ready for a game (`docs/design/destruction-game-readiness.md`), and Greg chose the Task Unit sequel (ADR-005) to be that game. Its mission shape (`docs/design/mission-shape.md`) has no structural destruction: its "demolition" is a bomb-plant objective. This says where destruction fits, and what the first mission to use it should prove.
 
 ## The idea
 
@@ -40,9 +40,9 @@ Milestone 10's street mission is the place to prove it, because its objectives a
 - **Chunks take their building's surfaces: built 2026-10-31.** A box's `spark.surface`, or its Blender material name as the surface library reads it (`brick.facade` is brick), picks what its chunks' painted faces wear: `brick`, `concrete` or `metal` (with the material's colour). The surface is sampled where each face was built, so the courses ride on a falling chunk. Broken faces stay raw concrete. The yard's depot is brick, its tower concrete and its shed painted metal. Each surface is one more draw a pass for its building. Tests: `ChunkFinish.test.ts`.
 - **Sight through smoke** (decision below): perception raycasts ignore smoke today. `Destruction.densityAt` can make smoke block a hostile's sight if that is wanted.
 
-## Decisions for Greg
+## Decisions (Greg, 2026-10-31)
 
-1. **Breach charges: a loadout, or pickups?** Recommended: the Breacher loadout carries two, and missions can place more.
-2. **Bringing down whole buildings: never in v1?** Recommended: never; only designated soft structures.
-3. **Does smoke block hostiles' sight?** Recommended: yes, through `densityAt` on their line of sight: smoke then becomes a stealth tool, as it is in Task Unit.
-4. **A collapse that kills a hostile: a kill like any other?** Recommended: yes, and quiet if nobody sees it fall.
+1. **Breach charges: a loadout, or pickups?** The Breacher loadout carries two, and missions can place more.
+2. **Bringing down whole buildings: never in v1?** Never; only designated soft structures.
+3. **Does smoke block hostiles' sight?** Yes, through `densityAt` on their line of sight: smoke becomes a stealth tool, as it is in Task Unit.
+4. **A collapse that kills a hostile: a kill like any other?** Yes, and quiet if nobody sees it fall.
