@@ -99,20 +99,32 @@ function asphalt(): THREE.MeshStandardNodeMaterial {
 }
 
 /**
+ * Where a surface is sampled: a point and its normal. Level geometry is shaded where it stands
+ * (world space); a destructible chunk is shaded where it was built (its rest pose), so the bricks
+ * ride on the chunk as it falls instead of sliding across it.
+ */
+export interface SurfaceSpace {
+  readonly position: typeof positionWorld;
+  readonly normal: typeof normalWorld;
+}
+
+const WORLD: SurfaceSpace = { position: positionWorld, normal: normalWorld };
+
+/**
  * Brick: courses along the wall's horizontal axis (picked per face from the
- * world normal, so ±X and ±Z walls both tile), half-brick offset per course,
+ * normal, so ±X and ±Z walls both tile), half-brick offset per course,
  * mortar recessed through a normal tilt, per-brick tint, grime and streaks,
  * wet toward the ground.
  */
-function brick(): THREE.MeshStandardNodeMaterial {
-  const m = new THREE.MeshStandardNodeMaterial();
-  m.name = 'surface:brick';
+function brickGraph(space: SurfaceSpace): { color: Vec3Node; roughness: FloatNode; normal: Vec3Node } {
+  const p = space.position;
+  const n = space.normal;
   const brickW = 0.46;
   const brickH = 0.155;
   const mortarW = 0.02;
-  const facingX = abs(normalWorld.x).greaterThan(0.5);
-  const u = facingX.select(positionWorld.z, positionWorld.x);
-  const v = positionWorld.y;
+  const facingX = abs(n.x).greaterThan(0.5);
+  const u = facingX.select(p.z, p.x);
+  const v = p.y;
   const row = floor(v.div(brickH));
   const offset = fract(row.mul(0.5)).mul(brickW);
   const u2 = u.add(offset).add(200.0);
@@ -125,37 +137,57 @@ function brick(): THREE.MeshStandardNodeMaterial {
   const mortar = smoothstep(mortarW * 0.6, mortarW * 1.6, edge).oneMinus();
   const brickId = hash(col.add(row.mul(131.0)).add(7.0));
   const brickId2 = hash(col.add(row.mul(131.0)).add(91.0));
-  const grime = mx_fractal_noise_float(positionWorld.mul(0.35), 3, 2.0, 0.5, 0.5).add(0.5);
-  const streaks = mx_fractal_noise_float(vec3(positionWorld.x.mul(1.6), positionWorld.y.mul(0.12), positionWorld.z.mul(1.6)), 2, 2.0, 0.5, 0.5).add(0.5);
-  const wet = smoothstep(3.5, 0.0, positionWorld.y);
+  const grime = mx_fractal_noise_float(p.mul(0.35), 3, 2.0, 0.5, 0.5).add(0.5);
+  const streaks = mx_fractal_noise_float(vec3(p.x.mul(1.6), p.y.mul(0.12), p.z.mul(1.6)), 2, 2.0, 0.5, 0.5).add(0.5);
+  const wet = smoothstep(3.5, 0.0, p.y);
   const brickTint = mix(color(0x4a3a36), color(0x5e4a44), brickId).mul(brickId2.mul(0.35).add(0.8));
   const surface = mix(brickTint, color(0x3b3a3f), smoothstep(0.35, 0.8, grime).mul(0.55)).mul(mix(float(0.7), float(1.05), streaks));
   const base = mix(surface, color(0x2a2a2c), mortar);
-  m.colorNode = mix(base, base.mul(0.6), wet);
-  const speckle = mx_noise_float(positionWorld.mul(9.0)).mul(0.08);
+  const speckle = mx_noise_float(p.mul(9.0)).mul(0.08);
   const dryRough = mix(float(0.74).add(speckle), float(0.93), mortar);
-  // Damp, not mirror-wet: walls stay above the SSR gloss threshold so the puddles carry the reflections.
-  m.roughnessNode = mix(dryRough, float(0.5), wet.mul(0.85));
-  m.metalnessNode = float(0.0);
   const tiltU = fu.sub(brickW * 0.5).sign().mul(smoothstep(mortarW * 1.8, mortarW * 0.4, edgeU));
   const tiltY = fv.sub(brickH * 0.5).sign().mul(smoothstep(mortarW * 1.8, mortarW * 0.4, edgeV));
-  const bumps = mx_noise_float(positionWorld.mul(14.0)).mul(0.06);
+  const bumps = mx_noise_float(p.mul(14.0)).mul(0.06);
   const tilt = facingX.select(vec3(0.0, tiltY.mul(-0.28).add(bumps), tiltU.mul(-0.28).add(bumps)), vec3(tiltU.mul(-0.28).add(bumps), tiltY.mul(-0.28).add(bumps), 0.0));
-  m.normalNode = transformNormalToView(normalWorld.add(tilt).normalize());
+  return {
+    color: mix(base, base.mul(0.6), wet) as unknown as Vec3Node,
+    // Damp, not mirror-wet: walls stay above the SSR gloss threshold so the puddles carry the reflections.
+    roughness: mix(dryRough, float(0.5), wet.mul(0.85)) as unknown as FloatNode,
+    normal: n.add(tilt).normalize() as unknown as Vec3Node,
+  };
+}
+
+function brick(): THREE.MeshStandardNodeMaterial {
+  const m = new THREE.MeshStandardNodeMaterial();
+  m.name = 'surface:brick';
+  const g = brickGraph(WORLD);
+  m.colorNode = g.color;
+  m.roughnessNode = g.roughness;
+  m.metalnessNode = float(0.0);
+  m.normalNode = transformNormalToView(g.normal);
   return m;
 }
 
 /** Concrete: light grey with aggregate speckle and stains, damp at the base. */
+function concreteGraph(space: SurfaceSpace): { color: Vec3Node; roughness: FloatNode } {
+  const p = space.position;
+  const speckle = mx_noise_float(p.mul(22.0)).mul(0.5).add(0.5);
+  const stain = mx_fractal_noise_float(p.mul(1.3), 2, 2.0, 0.5, 0.5).add(0.5);
+  const base = mix(color(0x5c5d5a), color(0x6e6f6a), speckle).mul(mix(float(0.75), float(1.0), stain));
+  const damp = smoothstep(0.12, 0.0, p.y);
+  const upWet = saturate(space.normal.y).mul(0.5);
+  return {
+    color: mix(base, base.mul(0.55), max(damp.mul(0.8), upWet)) as unknown as Vec3Node,
+    roughness: mix(float(0.86).sub(speckle.mul(0.1)), float(0.3), max(damp, upWet)) as unknown as FloatNode,
+  };
+}
+
 function concrete(): THREE.MeshStandardNodeMaterial {
   const m = new THREE.MeshStandardNodeMaterial();
   m.name = 'surface:concrete';
-  const speckle = mx_noise_float(positionWorld.mul(22.0)).mul(0.5).add(0.5);
-  const stain = mx_fractal_noise_float(positionWorld.mul(1.3), 2, 2.0, 0.5, 0.5).add(0.5);
-  const base = mix(color(0x5c5d5a), color(0x6e6f6a), speckle).mul(mix(float(0.75), float(1.0), stain));
-  const damp = smoothstep(0.12, 0.0, positionWorld.y);
-  const upWet = saturate(normalWorld.y).mul(0.5);
-  m.colorNode = mix(base, base.mul(0.55), max(damp.mul(0.8), upWet));
-  m.roughnessNode = mix(float(0.86).sub(speckle.mul(0.1)), float(0.3), max(damp, upWet));
+  const g = concreteGraph(WORLD);
+  m.colorNode = g.color;
+  m.roughnessNode = g.roughness;
   m.metalnessNode = float(0.0);
   return m;
 }
@@ -337,6 +369,42 @@ export function surfaceKindOf(name: string | null | undefined): SurfaceKind {
   }
   for (const [pattern, kind] of KIND_RULES) if (pattern.test(name)) return kind;
   return 'unknown';
+}
+
+/** The surfaces a destructible chunk's painted faces can wear (`surfaceShading`). */
+export const CHUNK_SURFACES: readonly SurfaceName[] = ['brick', 'concrete', 'metal'];
+
+/**
+ * A surface's colour, roughness and metalness sampled at `space`, without its normal relief: what a
+ * destructible chunk's painted faces wear (destruction/ChunkMesh.ts), sampled in the chunk's rest pose.
+ * Null for the surfaces chunks don't take (asphalt, skyline, window). `metal` takes `options.color`.
+ */
+export function surfaceShading(name: string, space: SurfaceSpace, options: SurfaceOptions = {}): { color: Vec3Node; roughness: FloatNode; metalness: FloatNode } | null {
+  const base = name.split('.')[0] as string;
+  switch (base) {
+    case 'brick': {
+      const g = brickGraph(space);
+      return { color: g.color, roughness: g.roughness, metalness: float(0) as unknown as FloatNode };
+    }
+    case 'concrete': {
+      const g = concreteGraph(space);
+      return { color: g.color, roughness: g.roughness, metalness: float(0) as unknown as FloatNode };
+    }
+    case 'metal': {
+      // The wet sheen of `metal`, over a painted colour: darker and glossier facing up and near the ground.
+      const wet = saturate(saturate(space.normal.y).mul(0.8).add(smoothstep(1.3, 0.0, space.position.y).mul(0.35)));
+      const paint = color(new THREE.Color(options.color ?? 0x3a3f4a).getHex());
+      const sheen = mix(paint, paint.mul(0.6), wet.mul(0.7));
+      const chips = mx_noise_float(space.position.mul(6.0)).mul(0.5).add(0.5);
+      return {
+        color: mix(sheen, sheen.mul(0.7), smoothstep(0.7, 0.85, chips).mul(0.6)) as unknown as Vec3Node,
+        roughness: mix(float(options.roughness ?? 0.55), float(0.13), wet) as unknown as FloatNode,
+        metalness: float(options.metalness ?? 0.35) as unknown as FloatNode,
+      };
+    }
+    default:
+      return null;
+  }
 }
 
 function create(name: SurfaceName, options: SurfaceOptions): THREE.MeshStandardNodeMaterial {

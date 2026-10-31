@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { attribute, bumpMap, float, Fn, int, ivec2, mat4, mix, mx_fractal_noise_float, mx_noise_float, mx_worley_noise_float, normalLocal, normalView, positionGeometry, positionPrevious, smoothstep, textureLoad, uniform, varying, vec3, vec4 } from 'three/tsl';
+import { CHUNK_SURFACES, surfaceShading, type SurfaceSpace } from '../rendering/Surfaces';
 import { writesVelocity } from '../rendering/Velocity';
 import { rng } from './core/math';
 import type { Piece, Surface } from './core/pieces';
@@ -90,13 +91,18 @@ function floatTexture(texels: number, multiple: number): { texture: THREE.DataTe
  * `position` (the rest pose), and every chunk that has moved blurs back
  * toward where it stood.
  */
-function concreteMaterial(pool: ChunkPool): THREE.MeshStandardNodeMaterial {
-  const m = new THREE.MeshStandardNodeMaterial({ vertexColors: true, metalness: 0 });
-  const chunk = int(attribute('chunk', 'float') as unknown as ReturnType<typeof float>);
+/** Each vertex's chunk, read from its `chunk` attribute. */
+function chunkIndex(): ReturnType<typeof int> {
+  return int(attribute('chunk', 'float') as unknown as ReturnType<typeof float>);
+}
+
+/** Where a vertex is now: its chunk's matrix (from `pool`) applied to its rest position, its normal turned with it. */
+function chunkPosition(pool: ChunkPool): THREE.Node {
+  const chunk = chunkIndex();
   // The pool's widths are uniforms, not constants: as constants every structure (each its own size) compiled
   // shaders of its own, and a level of three buildings, or a checkpoint that rebuilt them, paid for each.
   const mw = uniform(pool.matrixWidth, 'int');
-  m.positionNode = Fn((builder) => {
+  return Fn((builder) => {
     const j = chunk.mul(4).toConst();
     const x = j.mod(mw).toConst();
     const y = j.div(mw).toConst();
@@ -121,9 +127,20 @@ function concreteMaterial(pool: ChunkPool): THREE.MeshStandardNodeMaterial {
         .add(c2.xyz.mul(n.z.div(c2.xyz.dot(c2.xyz)))),
     );
     return mat4(c0, c1, c2, c3).mul(vec4(positionGeometry, 1)).xyz;
-  })();
+  })() as unknown as THREE.Node;
+}
+
+/** Its chunk's tint (soot, the stress view), one texel a chunk. */
+function chunkTint(pool: ChunkPool): ReturnType<typeof vec3> {
+  const chunk = chunkIndex();
   const tw = uniform(pool.tintWidth, 'int');
-  const tint = varying(textureLoad(pool.tints, ivec2(chunk.mod(tw), chunk.div(tw))).rgb);
+  return varying(textureLoad(pool.tints, ivec2(chunk.mod(tw), chunk.div(tw))).rgb) as unknown as ReturnType<typeof vec3>;
+}
+
+function concreteMaterial(pool: ChunkPool): THREE.MeshStandardNodeMaterial {
+  const m = new THREE.MeshStandardNodeMaterial({ vertexColors: true, metalness: 0 });
+  m.positionNode = chunkPosition(pool);
+  const tint = chunkTint(pool);
   const rest = attribute('position', 'vec3') as unknown as ReturnType<typeof vec3>;
   // 1 on break faces: broken concrete is pitted and uneven, paint is not.
   const broken = attribute('rough', 'float') as unknown as ReturnType<typeof float>;
@@ -139,6 +156,39 @@ function concreteMaterial(pool: ChunkPool): THREE.MeshStandardNodeMaterial {
   const bumped = bumpMap(relief, float(0.9)) as unknown as ReturnType<typeof vec3>;
   m.normalNode = mix(normalView, bumped, broken);
   return m;
+}
+
+/**
+ * A finished face (`Piece.finish`): its building's surface (brick, concrete, painted metal from
+ * rendering/Surfaces.ts), sampled where the face was built, so the courses and stains ride on the
+ * chunk as it falls. The surface's colour and roughness, not its normal relief; the chunk's tint
+ * (soot, the stress view) on top.
+ */
+function finishedMaterial(pool: ChunkPool, finish: string, paint?: Piece['paint']): THREE.MeshStandardNodeMaterial | null {
+  const space: SurfaceSpace = {
+    position: attribute('position', 'vec3') as unknown as SurfaceSpace['position'],
+    normal: attribute('normal', 'vec3') as unknown as SurfaceSpace['normal'],
+  };
+  const shading = surfaceShading(finish, space, paint ? { color: paint.color, metalness: paint.metalness } : {});
+  if (!shading) return null;
+  const m = new THREE.MeshStandardNodeMaterial();
+  m.name = `chunks:${finish}`;
+  m.positionNode = chunkPosition(pool);
+  m.colorNode = (shading.color as unknown as ReturnType<typeof vec3>).mul(chunkTint(pool));
+  m.roughnessNode = shading.roughness;
+  m.metalnessNode = shading.metalness;
+  return m;
+}
+
+/**
+ * The surface a piece's painted faces wear, if chunks can wear it (`CHUNK_SURFACES`), as a group key:
+ * the surface, and for `metal` its paint too (two colours of metal are two materials). Null: the
+ * structure's paint.
+ */
+function finishOf(piece: Piece): string | null {
+  const base = piece.finish?.split('.')[0];
+  if (base === undefined || !(CHUNK_SURFACES as readonly string[]).includes(base)) return null;
+  return base === 'metal' && piece.paint ? `metal#${piece.paint.color.toString(16)}#${piece.paint.metalness ?? ''}` : base;
 }
 
 /** Between full size and the loose collision hulls in Debris.ts (HULL_SHRINK, 0.97): no visible sinking, no visible gaps. */
@@ -159,7 +209,8 @@ const SOOT = new THREE.Color(0.2, 0.18, 0.16);
  * frame for the sandbox's 1,800 chunks, 10,100 with the tower.
  */
 export class ChunkMesh {
-  readonly mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardNodeMaterial>;
+  /** One material, or (when pieces are finished in surfaces) the paint first and a material per surface: a draw each. */
+  readonly mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardNodeMaterial | THREE.MeshStandardNodeMaterial[]>;
   private readonly pool: ChunkPool;
   /** Per chunk: where it is (rest → world, 16 floats) whether shown or not, and whether it is shown. */
   private readonly poses: Float32Array;
@@ -179,25 +230,53 @@ export class ChunkMesh {
   constructor(pieces: readonly Piece[], seed = 1) {
     const random = rng(seed);
     const n = pieces.length;
-    const geometries = pieces.map((p) => pieceGeometry(p, random));
-    const vertexCount = geometries.reduce((s, g) => s + g.getAttribute('position').count, 0);
-    // One geometry: every chunk's triangles in its rest pose, each vertex marked with its chunk.
+    // Each chunk's triangles in its rest pose, each vertex marked with its chunk, grouped by what they are
+    // finished in: painted faces of finished pieces go with their surface, the rest (broken faces, and
+    // pieces with no finish) with the structure's paint. One group a material, one draw a group.
+    const groups = new Map<string, Array<{ g: THREE.BufferGeometry; chunk: number }>>([['', []]]);
+    /** Each group's paint (a `metal` finish's colour), from its first piece. */
+    const paints = new Map<string, Piece['paint']>();
+    pieces.forEach((p, i) => {
+      const finish = finishOf(p);
+      if (!finish) {
+        groups.get('')!.push({ g: pieceGeometry(p, random), chunk: i });
+        return;
+      }
+      const shade = random();
+      const painted = { ...p, faces: p.faces.filter((f) => f.surface !== 'fracture') };
+      const broken = { ...p, faces: p.faces.filter((f) => f.surface === 'fracture') };
+      // The same shade as `pieceGeometry` draws for its broken faces, so a finish changes nothing else.
+      const once = (): number => shade;
+      groups.get('')!.push({ g: pieceGeometry(broken, once), chunk: i });
+      if (!groups.has(finish)) {
+        groups.set(finish, []);
+        paints.set(finish, p.paint);
+      }
+      groups.get(finish)!.push({ g: pieceGeometry(painted, once), chunk: i });
+    });
+    const parts = [...groups.values()].flat();
+    const vertexCount = parts.reduce((s, { g }) => s + g.getAttribute('position').count, 0);
     const position = new Float32Array(vertexCount * 3);
     const normal = new Float32Array(vertexCount * 3);
     const color = new Float32Array(vertexCount * 3);
     const rough = new Float32Array(vertexCount);
     const chunk = new Float32Array(vertexCount);
+    const ranges: Array<{ finish: string; start: number; count: number }> = [];
     let at = 0;
-    geometries.forEach((g, i) => {
-      const count = g.getAttribute('position').count;
-      position.set(g.getAttribute('position').array, at * 3);
-      normal.set(g.getAttribute('normal').array, at * 3);
-      color.set(g.getAttribute('color').array, at * 3);
-      rough.set(g.getAttribute('rough').array, at);
-      chunk.fill(i, at, at + count);
-      at += count;
-      g.dispose();
-    });
+    for (const [finish, list] of groups) {
+      const start = at;
+      for (const { g, chunk: i } of list) {
+        const count = g.getAttribute('position').count;
+        position.set(g.getAttribute('position').array, at * 3);
+        normal.set(g.getAttribute('normal').array, at * 3);
+        color.set(g.getAttribute('color').array, at * 3);
+        rough.set(g.getAttribute('rough').array, at);
+        chunk.fill(i, at, at + count);
+        at += count;
+        g.dispose();
+      }
+      ranges.push({ finish, start, count: at - start });
+    }
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(position, 3));
     geometry.setAttribute('normal', new THREE.BufferAttribute(normal, 3));
@@ -228,7 +307,17 @@ export class ChunkMesh {
     }
     this.pool.previousData.set(this.pool.matrixData);
     this.pool.tintData.fill(1);
-    this.mesh = new THREE.Mesh(geometry, concreteMaterial(this.pool));
+    const paint = concreteMaterial(this.pool);
+    if (ranges.length === 1) this.mesh = new THREE.Mesh(geometry, paint);
+    else {
+      const materials = [paint];
+      for (const r of ranges) {
+        const m = r.finish === '' ? paint : finishedMaterial(this.pool, r.finish.split('#')[0] as string, paints.get(r.finish));
+        const index = m === paint || m === null ? 0 : materials.push(m) - 1;
+        if (r.count > 0) geometry.addGroup(r.start, r.count, index);
+      }
+      this.mesh = new THREE.Mesh(geometry, materials);
+    }
     this.mesh.castShadow = true;
     this.mesh.receiveShadow = true;
     // Its bounds are the rest pose, and chunks fly well out of them.
@@ -326,7 +415,7 @@ export class ChunkMesh {
 
   dispose(): void {
     this.mesh.geometry.dispose();
-    this.mesh.material.dispose();
+    for (const m of Array.isArray(this.mesh.material) ? this.mesh.material : [this.mesh.material]) m.dispose();
     this.pool.matrices.dispose();
     this.pool.previous.dispose();
     this.pool.tints.dispose();

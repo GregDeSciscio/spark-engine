@@ -29,6 +29,14 @@ export interface Piece {
   mass: number;
   min: V3;
   max: V3;
+  /**
+   * What its painted faces are finished in: a surface name (`brick`, `concrete`, `metal`; a suffix
+   * after a dot is a variant, as Blender material names have). Broken faces are raw concrete
+   * whatever it is. Left out: the structure's own paint (`CHUNK_PALETTE`).
+   */
+  finish?: string | undefined;
+  /** The paint under a finish that takes one (`metal`), as the material's colour and metalness: what `SurfaceLibrary.applyTo` keeps for level geometry. */
+  paint?: { color: number; metalness?: number | undefined } | undefined;
 }
 
 /** A slab's local frame: `u`, `v` span the face, `n = u × v` is the thickness direction. */

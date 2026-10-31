@@ -11,7 +11,7 @@ pnpm --filter @spark/slice exec node tools/play.mjs   # a session through real i
 
 Controls: WASD to move, Space to jump, click to lock the mouse (or right-drag to look), left-click to fire. 1 rocket, 2 rifle, 3 gas grenade. F5 save, F9 load.
 
-The sounds are the destruction sandbox's ElevenLabs takes (`apps/destruction/public/sfx`), served at `/sfx` and copied into the build by `vite.config.ts` rather than duplicated.
+The depot is brick, the tower concrete and the shed painted metal: each building's Blender material is an engine surface name, and its chunks wear that surface (broken faces raw concrete). The sounds are the destruction sandbox's ElevenLabs takes (`apps/destruction/public/sfx`), served at `/sfx` and copied into the build by `vite.config.ts` rather than duplicated.
 
 ## What it wires together
 

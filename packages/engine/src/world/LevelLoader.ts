@@ -33,6 +33,10 @@ export interface LevelNode {
   readonly scale: readonly [number, number, number];
   /** Local (unscaled) bounding-box half extents of the mesh, if any. */
   readonly halfExtents?: readonly [number, number, number] | undefined;
+  /** The mesh's material name, if any: a destructible box's finish when it has no `spark.surface`. */
+  readonly material?: string | undefined;
+  /** The mesh's material colour and metalness, if it is a standard material: the paint under a `metal` finish. */
+  readonly paint?: { color: number; metalness: number } | undefined;
 }
 
 export type LevelEntityDescriptor =
@@ -168,11 +172,13 @@ export function parseLevelNodes(nodes: readonly LevelNode[]): LevelEntityDescrip
         const kind = named === 'wall' || named === 'slab' || named === 'column' ? named : b < 2 * a && c > 3 * b ? 'column' : halfExtents[1] === a ? 'slab' : 'wall';
         const cell = typeof s.cell === 'number' && s.cell > 0 ? s.cell : undefined;
         const density = typeof s.density === 'number' && s.density > 0 ? s.density : undefined;
+        // Its chunks are finished in its surface: `spark.surface`, else the material's name (`brick.facade` is brick), as SurfaceLibrary picks.
+        const finish = asString(s.surface) ?? asString(node.material) ?? undefined;
         out.push({
           kind: 'destructible',
           node,
           structure: asString(s.structure) ?? 'default',
-          box: { center: [...node.position], quaternion: [...node.quaternion], halfExtents, kind, cell, density },
+          box: { center: [...node.position], quaternion: [...node.quaternion], halfExtents, kind, cell, density, finish, paint: node.paint },
         });
         break;
       }
@@ -237,6 +243,8 @@ export function collectLevelNodes(root: THREE.Object3D): { nodes: LevelNode[]; o
         quaternion: [_quaternion.x, _quaternion.y, _quaternion.z, _quaternion.w],
         scale: [_scale.x, _scale.y, _scale.z],
         halfExtents,
+        material: hasMesh && !Array.isArray(mesh.material) ? mesh.material?.name || undefined : undefined,
+        paint: hasMesh && (mesh.material as THREE.MeshStandardMaterial)?.isMeshStandardMaterial ? { color: (mesh.material as THREE.MeshStandardMaterial).color.getHex(), metalness: (mesh.material as THREE.MeshStandardMaterial).metalness } : undefined,
       });
       objects.push(object);
     }

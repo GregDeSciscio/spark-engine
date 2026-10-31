@@ -22,6 +22,10 @@ export interface PieceBox {
   readonly cell?: number | undefined;
   /** kg/m³. Default 2400 (concrete). */
   readonly density?: number | undefined;
+  /** What its chunks' painted faces are finished in (`Piece.finish`): the box's surface, from its material name or `spark.surface`. */
+  readonly finish?: string | undefined;
+  /** The paint under a finish that takes one (`Piece.paint`): the box's material colour and metalness. */
+  readonly paint?: { color: number; metalness?: number | undefined } | undefined;
 }
 
 export interface AuthoredOptions {
@@ -77,7 +81,10 @@ export function fractureBoxes(boxes: readonly PieceBox[], options: AuthoredOptio
     let plus: Surface = minus;
     if (box.kind === 'slab') [minus, plus] = n[1] >= 0 ? ['ceiling', 'floor'] : ['floor', 'ceiling'];
     for (const poly of fractureRect(w, h, cell, random)) {
-      pieces.push(prism({ id: firstId + pieces.length, element, kind: box.kind, poly, frame: { origin, u, v }, thickness: t, width: w, height: h, minus, plus, density: box.density ?? 2400 }));
+      const piece = prism({ id: firstId + pieces.length, element, kind: box.kind, poly, frame: { origin, u, v }, thickness: t, width: w, height: h, minus, plus, density: box.density ?? 2400 });
+      if (box.finish !== undefined) piece.finish = box.finish;
+      if (box.paint !== undefined) piece.paint = box.paint;
+      pieces.push(piece);
     }
   });
   return pieces;

@@ -17,6 +17,8 @@ Everything gameplay-relevant is a custom property on an object, never a name:
 The buildings meet face to face (walls on the ground, slabs on the walls,
 columns under the slabs), because touching faces are what the engine glues.
 "shed" is turned 20 degrees to keep the pipeline honest about rotation.
+Each building's material name is an engine surface name (`brick`, `concrete`,
+`metal.shed`), so its chunks are finished in that surface.
 
 Engine space is Y-up; Blender is Z-up. The glTF exporter maps Blender
 (x, y, z) to glTF (x, z, -y), so an engine position (x, y, z) is authored at
@@ -191,7 +193,10 @@ class Building:
 def build(level):
     ground = material('ground', (0.18, 0.19, 0.17), 0.95)
     boundary = material('boundary', (0.25, 0.24, 0.22), 0.9)
+    # The buildings' material names are engine surface names: their chunks wear brick, concrete or painted metal.
+    brick = material('brick', (0.29, 0.23, 0.21), 0.8)
     concrete = material('concrete', (0.55, 0.53, 0.5), 0.9)
+    sheet = material('metal.shed', (0.23, 0.25, 0.29), 0.55)
 
     level.solid('ground', 0.0, -0.5, 0.0, YARD + 2, 0.5, YARD + 2, ground)
     for i, (x, z, hx, hz) in enumerate([(0, -YARD, YARD, 0.4), (0, YARD, YARD, 0.4), (-YARD, 0, 0.4, YARD), (YARD, 0, 0.4, YARD)]):
@@ -200,11 +205,11 @@ def build(level):
     level.solid('cover_0', -4.0, 0.6, -6.0, 5.0, 0.6, 0.3, boundary)
 
     # The depot: two storeys, 12 x 8 m, its door facing the player.
-    Building(level, 'depot', concrete, -14.0, 6.0).block(12.0, 8.0, 2, door_at=6.0, columns=[(-2.0, 0.0), (2.0, 0.0)])
+    Building(level, 'depot', brick, -14.0, 6.0).block(12.0, 8.0, 2, door_at=6.0, columns=[(-2.0, 0.0), (2.0, 0.0)])
     # The tower: four storeys, 8 x 8 m.
     Building(level, 'tower', concrete, 13.0, 10.0).block(8.0, 8.0, 4, door_at=4.0, columns=[(0.0, 0.0)])
     # The shed: one storey, 6 x 5 m, turned 20 degrees.
-    Building(level, 'shed', concrete, 2.0, -16.0, yaw=math.radians(20)).block(6.0, 5.0, 1, door_at=3.0)
+    Building(level, 'shed', sheet, 2.0, -16.0, yaw=math.radians(20)).block(6.0, 5.0, 1, door_at=3.0)
 
     level.empty('spawn_player', 0.0, 0.1, -30.0, {'type': 'spawn', 'team': 'player'})
     for i, (x, z) in enumerate([(-14.0, -6.0), (13.0, 0.0), (-24.0, 20.0), (24.0, 24.0), (0.0, 18.0)]):

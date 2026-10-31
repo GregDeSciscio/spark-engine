@@ -81,7 +81,7 @@ Reinforcements are built dormant at load and deployed with a pose, never instant
 
 `apps/slice` (`pnpm dev:slice`) is the reference: its `src/scene.ts` does each of these, and `tools/probe.mjs` checks them.
 
-1. **Buildings from the level.** In Blender, give each box of a building `spark.type = destructible`, `spark.structure = <name>` and `spark.piece = wall | slab | column` (`tools/level-authoring/yard.py`). Boxes glue where their faces meet, so snap them; give them no `COL_` twin. After `LevelLoader.load`, build one structure per name:
+1. **Buildings from the level.** In Blender, give each box of a building `spark.type = destructible`, `spark.structure = <name>` and `spark.piece = wall | slab | column` (`tools/level-authoring/yard.py`). Boxes glue where their faces meet, so snap them; give them no `COL_` twin. A box's material name, or `spark.surface`, picks the surface its chunks wear (`brick`, `concrete`, `metal` with the material's colour), as `SurfaceLibrary` names them; anything else gets the structure's own paint. After `LevelLoader.load`, build one structure per name:
 
    ```ts
    for (const [name, boxes] of level.destructibles) {
